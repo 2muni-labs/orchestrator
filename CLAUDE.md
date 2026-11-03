@@ -39,21 +39,23 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | # | Step | What to do |
 | --- | --- | --- |
 | 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
-| 1 | Prepare | `git fetch origin`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
-| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests fail, and make exactly one commit. To fix it before dispatch, use `git commit --amend`; never add a second commit. |
+| 1 | Prepare | `git fetch origin`, update the hub clone's `main` to `origin/main`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
+| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. |
 | 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
-| 4 | Run | In a background shell, run `~/.local/share/mise/installs/codex/0.160.0/bin/codex exec -C R/worktrees/<id> -m gpt-6.1-sol -c model_reasoning_effort=<effort> --sandbox workspace-write - < R/tasks/<id>.md > R/logs/<id>.log 2>&1`. Report the dispatch and end the turn. Do not poll. |
-| 5 | Judge | On the completion notice, move `.orch-result.json` from the worktree to `R/results/<id>.json`. Missing means failed. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>`. |
+| 4 | Run | In a background shell, run `scripts/run-sub.sh <id>` from the hub clone. Report the dispatch and end the turn. Do not poll. |
+| 5 | Judge | On the completion notice, read `R/results/<id>.json`, which `run-sub.sh` has moved there or written as a failure. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>` from the hub clone. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
 | 7 | Review | For L3 and above, or risk areas: run `git diff <test_sha>..HEAD > R/reviews/<id>.diff`, then start `orch-reviewer` in the background with the path to that diff and the worktree. Save its JSON as `R/reviews/<id>.json`. |
 | 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, create the pull request in English, and report to the user. |
-| 9 | After merge | The user merges on GitHub. Then remove the worktree and local branch. |
+| 9 | After merge | The user merges on GitHub. Return to the hub clone, then remove the worktree and local branch. |
 | 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
 
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
   not overlap.
 - `<test_sha>` is the first commit after the branch point from `origin/main`, which is why step 2 allows exactly one commit.
-- Run Codex by the absolute path of the globally pinned version (`mise use -g codex@0.160.0`), not through `PATH` or a mise shim, because a shim follows the current directory's mise settings.
+- `run-sub.sh` reads the lane, model, effort and `timeout_min` from the spec's front matter, removes tokens from the sub-agent's environment, enforces the time limit, reports `BLOCKED_QUOTA` when a run without a valid result ends with a usage limit message, and runs lane B only. Keep the worktree of a `BLOCKED_QUOTA` task and wait for the user. It runs Codex by the absolute path of the globally pinned version (`mise use -g codex@0.160.0`), not through `PATH` or a mise shim, because a shim follows the current directory's mise settings.
+- Use absolute paths in commands. `cd` into a worktree carries over to later commands, and you cannot remove a worktree you are still inside.
+- Run `run-sub.sh` and `gate.sh` from the hub clone, not the worktree. A sub-agent can change the worktree's copy.
 - **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
   G1 fails if a file under `tests/` changes.
 - Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network

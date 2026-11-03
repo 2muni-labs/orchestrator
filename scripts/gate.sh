@@ -23,6 +23,9 @@ RESULT_FILE = ".orch-result.json"
 COMMAND_TIMEOUT_SEC = 15 * 60
 DETAIL_LIMIT = 500
 
+# Each gate's result, reported in the output JSON.
+GATES = {"G1": "not_run", "G2": "not_run", "G3": "not_run"}
+
 # Files that sub-agents may never change, whatever the task's modify list says.
 TEST_GLOBS = ("tests/**",)
 SHARED_GLOBS = (
@@ -50,9 +53,11 @@ def usage_error(error: str, message: str) -> NoReturn:
 
 
 def gate_failure(gate: str, detail: str, log_path: Path | None = None) -> NoReturn:
+    GATES[gate] = "failed"
     payload: dict[str, Any] = {
         "ok": True,
         "passed": False,
+        "gates": GATES,
         "failed_gate": gate,
         "detail": detail[:DETAIL_LIMIT],
     }
@@ -216,18 +221,22 @@ def main() -> None:
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
     check_scope(worktree, task)
+    GATES["G1"] = "passed"
 
     # pytest exits 5 when it collects nothing, which only tests = "none" may do.
     pytest_ok = (0, 5) if task.get("tests") == "none" else (0,)
     run_gate("G2", ["uv", "run", "--locked", "pytest"], worktree, log_path, env, pytest_ok)
     run_gate("G2", ["bash", "-c", task["verify"]], worktree, log_path, env)
+    GATES["G2"] = "passed"
 
     run_gate("G3", ["uv", "run", "--locked", "ruff", "check", "."], worktree, log_path, env)
     run_gate(
         "G3", ["uv", "run", "--locked", "ruff", "format", "--check", "."], worktree, log_path, env
     )
 
-    emit({"ok": True, "passed": True, "log_path": str(log_path)}, 0)
+    GATES["G3"] = "passed"
+
+    emit({"ok": True, "passed": True, "gates": GATES, "log_path": str(log_path)}, 0)
 
 
 try:

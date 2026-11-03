@@ -33,6 +33,11 @@ depends_on = []
 
 Passing `verify` above is required. Gates G1 to G3 run again afterwards.
 
+Gate G3 runs ruff, so also pass these on the files you changed:
+
+- `.venv/bin/python -m ruff check <paths>`
+- `.venv/bin/python -m ruff format --check <paths>`
+
 # Budget
 
 - Time: `timeout_min`, enforced.

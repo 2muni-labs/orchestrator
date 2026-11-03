@@ -50,6 +50,7 @@ tests/             tests, owned by the main agent
 templates/task.md  task spec template
 schemas/           result and review JSON schemas
 scripts/gate.sh    manual gates G1 to G3
+scripts/run-sub.sh manual sub-agent runner, until M6
 .claude/agents/    read-only sub-agent definitions
 
 ~/.orch/orchestrator/   runtime data, never committed
