@@ -7,6 +7,9 @@
 # Prints one line of JSON. Exit codes follow the status: 0 DONE, 10 PARTIAL,
 # 20 FAILED, 30 BLOCKED, 40 BLOCKED_QUOTA, 64 bad usage or task setup.
 #
+# A missing or invalid result becomes BLOCKED_QUOTA if the end of the log shows a
+# usage limit message, and FAILED/report_missing otherwise.
+#
 # ORCH_RUNTIME overrides the runtime directory (default ~/.orch/orchestrator).
 # ORCH_CODEX overrides the Codex binary, for tests only.
 set -euo pipefail
@@ -28,6 +31,12 @@ RESULT_FILE = ".orch-result.json"
 REMOVED_ENV = ("GH_TOKEN", "GITHUB_TOKEN", "VIRTUAL_ENV")
 TERM_GRACE_SEC = 10
 SUMMARY_LIMIT = 700
+
+# Best guesses: the real `codex exec` message is unconfirmed. Add it here when first seen.
+USAGE_LIMIT = re.compile(
+    r"usage limit|rate limit|hit your .*limit|limit reached|quota|out of credits", re.IGNORECASE
+)
+LOG_TAIL_LINES = 20
 
 EFFORTS = {"low", "medium", "high", "xhigh"}
 STATUS_EXIT = {"DONE": 0, "PARTIAL": 10, "FAILED": 20, "BLOCKED": 30, "BLOCKED_QUOTA": 40}
@@ -213,6 +222,15 @@ def result_error(data: object, task_id: str) -> str | None:
     return None
 
 
+def hit_usage_limit(log_path: Path, spec: Path) -> bool:
+    """Look for a limit message at the end of the log, ignoring the echoed task spec."""
+    echoed = set(spec.read_text(encoding="utf-8").splitlines())
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return any(
+        USAGE_LIMIT.search(line) for line in lines[-LOG_TAIL_LINES:] if line not in echoed
+    )
+
+
 def write_atomic(path: Path, data: dict[str, Any]) -> None:
     temp = path.with_name(f"{path.name}.tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -251,15 +269,21 @@ def main() -> None:
 
     failure = {"timeout": "timeout", "signal": "killed"}.get(reason)
     summary = f"실행이 {reason}로 끝났습니다."
+    status = "FAILED"
+    report_valid = False
     if failure is None:
         try:
             error = result_error(json.loads(worktree_result.read_text(encoding="utf-8")), task_id)
         except (OSError, ValueError) as exc:
             error = f"결과 파일을 읽지 못했습니다: {type(exc).__name__}"
-        if error is not None:
+        if error is None:
+            report_valid = True
+        elif hit_usage_limit(log_path, spec):
+            status, summary = "BLOCKED_QUOTA", "로그에서 사용량 한도 문구를 감지했습니다."
+        else:
             failure, summary = "report_missing", f"결과 보고가 없거나 형식이 틀립니다: {error}"
 
-    if failure is None:
+    if report_valid:
         os.replace(worktree_result, result_path)
     else:
         if worktree_result.exists():
@@ -268,7 +292,7 @@ def main() -> None:
             result_path,
             {
                 "task_id": task_id,
-                "status": "FAILED",
+                "status": status,
                 "failure_reason": failure,
                 "summary": summary[:SUMMARY_LIMIT],
                 "changed_paths": [],
