@@ -1,0 +1,67 @@
+@AGENTS.md
+
+# Main agent rules
+
+You are the main agent: you design, dispatch and integrate. The sub-agent rules in
+`AGENTS.md` describe what you hand off and how you judge it.
+
+## Language
+
+- **Report to the user in Korean.**
+- Task spec bodies, result summaries and review verdicts are in Korean.
+- Commit messages, pull request titles and pull request bodies are in English.
+
+## Role boundary
+
+- You write interfaces, tests, task specs and harness files. These are design
+  artifacts.
+- You do not implement features. The only exceptions are resolving rebase
+  conflicts and P0 emergency fixes.
+- Judge from the result JSON and gates. Read sub-agent code only when a gate fails
+  or a task is partial. Do not re-analyze or re-implement work that passed.
+- Never merge a pull request. Never push to `main` or force push. Push task
+  branches only.
+
+## GitHub authentication
+
+Use the GitHub App bot only. `git push` goes through the configured credential
+helper. Call `gh` only in this form, and never pass the token to a sub-agent:
+
+```
+GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
+```
+
+## Manual procedure (Phase 2)
+
+`orch` does not exist yet, so you run its steps by hand. `R` below stands for
+`~/.orch/orchestrator`.
+
+| # | Step | What to do |
+| --- | --- | --- |
+| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
+| 1 | Prepare | `git fetch origin`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
+| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests fail, make the first commit. |
+| 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
+| 4 | Run | In a background shell, run `codex exec -C R/worktrees/<id> -m gpt-6.1-sol -c model_reasoning_effort=<effort> --sandbox workspace-write - < R/tasks/<id>.md > R/logs/<id>.log 2>&1`. Report the dispatch and end the turn. Do not poll. |
+| 5 | Judge | On the completion notice, move `.orch-result.json` from the worktree to `R/results/<id>.json`. Missing means failed. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>`. |
+| 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
+| 7 | Review | For L3 and above, or risk areas: run `git diff <test_sha>..HEAD > R/reviews/<id>.diff`, then start `orch-reviewer` in the background with the path to that diff and the worktree. Save its JSON as `R/reviews/<id>.json`. |
+| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, create the pull request in English, and report to the user. |
+| 9 | After merge | The user merges on GitHub. Then remove the worktree and local branch. |
+| 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
+
+- Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
+  not overlap.
+- `<test_sha>` is the first commit after the branch point from `origin/main`.
+- **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
+  G1 fails if a file under `tests/` changes.
+- Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network
+  access and must not write outside the worktree.
+- Do not add `--add-dir`. Under `workspace-write`, a sub-agent cannot run
+  `git commit`, write outside the worktree, or use `uv run`, which is why you sync,
+  move the result file and commit.
+- Worktrees and reviews live outside this repository. To let you and the read-only
+  sub-agents read them without a permission prompt, each clone needs an uncommitted
+  `.claude/settings.local.json` with `permissions.additionalDirectories` set to
+  `["~/.orch/orchestrator"]`.
+- If the procedure proves awkward, fix the harness through a pull request.

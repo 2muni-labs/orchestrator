@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sub-agent result report",
+  "description": "summary and unresolved together must not exceed 700 characters, and must not contain code or diffs. JSON Schema cannot express the combined limit, so the orch results module enforces it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "status",
+    "failure_reason",
+    "summary",
+    "changed_paths",
+    "out_of_scope_changes",
+    "verification",
+    "unresolved",
+    "log_path"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["DONE", "PARTIAL", "FAILED", "BLOCKED", "BLOCKED_QUOTA"]
+    },
+    "failure_reason": {
+      "description": "Required when status is FAILED or BLOCKED; otherwise null.",
+      "enum": [
+        null,
+        "report_missing",
+        "timeout",
+        "killed",
+        "aborted",
+        "spec_mismatch",
+        "out_of_scope"
+      ]
+    },
+    "summary": {
+      "description": "What was done, in Korean.",
+      "type": "string"
+    },
+    "changed_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "out_of_scope_changes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "passed"],
+      "properties": {
+        "command": { "type": "string" },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "unresolved": {
+      "description": "Unresolved items, in Korean.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "log_path": { "type": "string" }
+  },
+  "if": {
+    "properties": { "status": { "enum": ["FAILED", "BLOCKED"] } }
+  },
+  "then": {
+    "properties": { "failure_reason": { "type": "string" } }
+  },
+  "else": {
+    "properties": { "failure_reason": { "const": null } }
+  }
+}
