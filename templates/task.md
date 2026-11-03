@@ -8,7 +8,7 @@ effort = "medium"             # low | medium | high | xhigh
 timeout_min = 45
 modify = ["src/orch/<module>.py"]
 read = ["src/orch/**", "tests/**", "docs/design/**"]
-verify = "uv run pytest tests/test_<module>.py"
+verify = ".venv/bin/python -m pytest tests/test_<module>.py"  # no network, no writes outside the worktree
 depends_on = []
 # tests = "none"              # L1 only: dispatch without a test commit
 +++
@@ -26,7 +26,8 @@ depends_on = []
 # Interface
 
 <!-- Signatures and schemas to implement. Omit if not applicable.
-     Do not point at stubs in the test commit: those files are frozen. -->
+     Stubs in the first commit have `raise NotImplementedError` bodies; list their
+     files in `modify`. -->
 
 # Verification
 

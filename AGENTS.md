@@ -33,8 +33,9 @@ task, stop and report `BLOCKED`.
 - Python 3.14. The runtime uses the standard library only.
 - Type hints on all function signatures.
 - `pytest` and `ruff` are development-only dependencies.
-- Run tools through uv: `uv run pytest`, `uv run ruff check .`,
-  `uv run ruff format --check .`.
+- The main agent runs `uv sync --frozen` in each new worktree, outside the
+  sandbox. Sub-agents run tools from that environment, for example
+  `.venv/bin/python -m pytest`. `uv run` does not work inside the sandbox.
 - Code, identifiers and file names are in English.
 - Commit messages, pull request titles and pull request bodies are in English.
 - The `summary` and `unresolved` fields of a result, and the `summary` of a
@@ -74,11 +75,10 @@ design.
 
 **Tests come first**
 
-- The main agent writes the tests and commits them before you start. Make them
-  pass by implementing; never modify them.
-- Every file in the main agent's test commit is frozen, along with anything under
-  `tests/`, any `conftest.py`, and any `test_*.py` or `*_test.py` file. Changing
-  one fails gate G1.
+- The main agent's first commit holds the tests and the interface stubs, whose
+  bodies are `raise NotImplementedError`. Implement the stubs listed in `modify`
+  until the tests pass.
+- Never change anything under `tests/`. Doing so fails gate G1.
 - Shared files belong to the main agent: `pyproject.toml`, `uv.lock`,
   `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.github/`, `docs/`,
   `schemas/`, `scripts/`, `templates/`. If one must change, report `BLOCKED` with
@@ -86,8 +86,13 @@ design.
 
 **Do not commit**
 
-- Leave your changes uncommitted in the worktree. The main agent reviews the gate
-  result and commits them.
+- Leave your changes uncommitted in the worktree. The main agent commits them
+  after the gates pass.
+
+**Verification**
+
+- The `verify` command must work without network access and must not write outside
+  the worktree.
 
 **Result report (mandatory)**
 
@@ -103,7 +108,7 @@ agent moves it to `~/.orch/orchestrator/results/<id>.json`.
 
 ## Prohibited
 
-- `git commit`, unless your task spec explicitly says otherwise.
+- `git commit`.
 - `git push`, merging, force pushing, or deleting remote branches.
 - Running commands in the background. It causes a premature completion report.
 - Adding runtime dependencies. Installing packages or using the network, unless

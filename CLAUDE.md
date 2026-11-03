@@ -39,10 +39,10 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | # | Step | What to do |
 | --- | --- | --- |
 | 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
-| 1 | Prepare | `git fetch origin`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`. |
-| 2 | Tests first | Write tests in the worktree, confirm they fail, make the first commit. |
+| 1 | Prepare | `git fetch origin`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
+| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests fail, make the first commit. |
 | 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
-| 4 | Run | Start the sub-agent with a background shell, logging to `R/logs/<id>.log`. Report the dispatch and end the turn. Do not poll. |
+| 4 | Run | In a background shell, run `codex exec -C R/worktrees/<id> -m gpt-6.1-sol -c model_reasoning_effort=<effort> --sandbox workspace-write - < R/tasks/<id>.md > R/logs/<id>.log 2>&1`. Report the dispatch and end the turn. Do not poll. |
 | 5 | Judge | On the completion notice, move `.orch-result.json` from the worktree to `R/results/<id>.json`. Missing means failed. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>`. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
 | 7 | Review | For L3 and above, or risk areas: run `git diff <test_sha>..HEAD > R/reviews/<id>.diff`, then start `orch-reviewer` in the background with the path to that diff and the worktree. Save its JSON as `R/reviews/<id>.json`. |
@@ -53,11 +53,15 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
   not overlap.
 - `<test_sha>` is the first commit after the branch point from `origin/main`.
-- **Everything in the test commit is frozen.** Gate G1 fails if any of those files
-  change, so do not put a stub the sub-agent must fill in into that commit. Give
-  the signature in the spec's Interface section, and let the tests fail on the
-  missing code.
-- Execution command, sandbox and result location are provisional until the Phase 1
-  sandbox experiment is reported. Do not add `--add-dir` for the repository's whole
-  `.git` directory.
+- **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
+  G1 fails if a file under `tests/` changes.
+- Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network
+  access and must not write outside the worktree.
+- Do not add `--add-dir`. Under `workspace-write`, a sub-agent cannot run
+  `git commit`, write outside the worktree, or use `uv run`, which is why you sync,
+  move the result file and commit.
+- Worktrees and reviews live outside this repository. To let you and the read-only
+  sub-agents read them without a permission prompt, each clone needs an uncommitted
+  `.claude/settings.local.json` with `permissions.additionalDirectories` set to
+  `["~/.orch/orchestrator"]`.
 - If the procedure proves awkward, fix the harness through a pull request.

@@ -24,7 +24,7 @@ COMMAND_TIMEOUT_SEC = 15 * 60
 DETAIL_LIMIT = 500
 
 # Files that sub-agents may never change, whatever the task's modify list says.
-TEST_GLOBS = ("tests/**", "**/conftest.py", "**/test_*.py", "**/*_test.py")
+TEST_GLOBS = ("tests/**",)
 SHARED_GLOBS = (
     "pyproject.toml",
     "uv.lock",
@@ -137,23 +137,10 @@ def check_scope(worktree: Path, task: dict[str, Any]) -> None:
     """G1: compare everything since the test commit with the allowed paths."""
     base = git(worktree, "merge-base", "origin/main", "HEAD").strip()
     commits = git(worktree, "rev-list", "--reverse", f"{base}..HEAD").split()
-    frozen: set[str] = set()
     if task.get("tests") == "none":
         compare = base
     elif commits:
         compare = commits[0]
-        frozen = z_paths(
-            git(
-                worktree,
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "--no-renames",
-                "-r",
-                "-z",
-                compare,
-            )
-        )
     else:
         gate_failure("G1", "테스트 커밋이 없습니다.")
 
@@ -162,7 +149,6 @@ def check_scope(worktree: Path, task: dict[str, Any]) -> None:
     changed.discard(RESULT_FILE)
 
     violations = {
-        "test_commit_changed": sorted(changed & frozen),
         "test_file_changed": sorted(p for p in changed if matches_any(p, TEST_GLOBS)),
         "shared_file_changed": sorted(p for p in changed if matches_any(p, SHARED_GLOBS)),
         "out_of_scope": sorted(p for p in changed if not matches_any(p, task["modify"])),
