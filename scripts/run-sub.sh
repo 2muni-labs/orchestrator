@@ -303,7 +303,8 @@ def main() -> None:
             },
         )
 
-    status = json.loads(result_path.read_text(encoding="utf-8"))["status"]
+    recorded = json.loads(result_path.read_text(encoding="utf-8"))
+    status, failure = recorded["status"], recorded["failure_reason"]
     log_line(f"result status={status} failure_reason={failure}")
     print(
         json.dumps(
