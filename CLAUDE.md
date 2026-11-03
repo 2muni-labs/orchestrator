@@ -40,9 +40,9 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | --- | --- | --- |
 | 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
 | 1 | Prepare | `git fetch origin`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
-| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests fail, make the first commit. |
+| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests fail, and make exactly one commit. To fix it before dispatch, use `git commit --amend`; never add a second commit. |
 | 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
-| 4 | Run | In a background shell, run `codex exec -C R/worktrees/<id> -m gpt-6.1-sol -c model_reasoning_effort=<effort> --sandbox workspace-write - < R/tasks/<id>.md > R/logs/<id>.log 2>&1`. Report the dispatch and end the turn. Do not poll. |
+| 4 | Run | In a background shell, run `~/.local/share/mise/installs/codex/0.160.0/bin/codex exec -C R/worktrees/<id> -m gpt-6.1-sol -c model_reasoning_effort=<effort> --sandbox workspace-write - < R/tasks/<id>.md > R/logs/<id>.log 2>&1`. Report the dispatch and end the turn. Do not poll. |
 | 5 | Judge | On the completion notice, move `.orch-result.json` from the worktree to `R/results/<id>.json`. Missing means failed. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>`. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
 | 7 | Review | For L3 and above, or risk areas: run `git diff <test_sha>..HEAD > R/reviews/<id>.diff`, then start `orch-reviewer` in the background with the path to that diff and the worktree. Save its JSON as `R/reviews/<id>.json`. |
@@ -52,7 +52,8 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
   not overlap.
-- `<test_sha>` is the first commit after the branch point from `origin/main`.
+- `<test_sha>` is the first commit after the branch point from `origin/main`, which is why step 2 allows exactly one commit.
+- Run Codex by the absolute path of the globally pinned version (`mise use -g codex@0.160.0`), not through `PATH` or a mise shim, because a shim follows the current directory's mise settings.
 - **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
   G1 fails if a file under `tests/` changes.
 - Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network
