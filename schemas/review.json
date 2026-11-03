@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cross-review report",
+  "description": "verdict is BLOCK if and only if findings contain a P0 or P1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "reviewer", "verdict", "findings"],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "reviewer": { "enum": ["claude-reviewer", "codex-review"] },
+    "verdict": { "enum": ["PASS", "BLOCK"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "path", "summary"],
+        "properties": {
+          "severity": { "enum": ["P0", "P1", "P2", "P3"] },
+          "path": { "type": "string" },
+          "summary": {
+            "description": "One or two sentences, in Korean.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "findings": {
+        "contains": {
+          "properties": { "severity": { "enum": ["P0", "P1"] } },
+          "required": ["severity"]
+        }
+      }
+    },
+    "required": ["findings"]
+  },
+  "then": {
+    "properties": { "verdict": { "const": "BLOCK" } }
+  },
+  "else": {
+    "properties": { "verdict": { "const": "PASS" } }
+  }
+}

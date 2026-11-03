@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Sub-agent result file, moved out of the worktree by the main agent
+.orch-result.json
+
+# Secrets must never be committed
+.env
+.env.*
+*.pem
+
+# Local Claude Code settings
+.claude/settings.local.json
