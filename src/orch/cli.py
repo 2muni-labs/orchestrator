@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import traceback
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -365,56 +366,80 @@ def _command(
     return 0, {"task_id": task_id, "state": _get_task(conn, task_id).state}
 
 
+def _redact(text: str, secrets: list[str]) -> str:
+    for token in secrets:
+        escaped = json.dumps(token, ensure_ascii=False)[1:-1]
+        text = text.replace(escaped, "[REDACTED]")
+        text = text.replace(token, "[REDACTED]")
+    return text
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one orch command and return its exit code."""
     secrets: list[str] = []
     try:
-        args = _parser().parse_args(argv)
-        code, data = _execute(args, secrets)
-        if args.command == "status" and args.human:
-            for task in data["tasks"]:
-                print(f"{task['id']} {task['state']}")
-            for chain in data["blocked_chains"]:
-                print(
-                    f"{chain['task_id']} {chain['state']}: {', '.join(chain['causes'])}"
-                )
-            return code
-        output = {"ok": True, **data}
-    except _UsageError as exc:
-        code = 64
-        output = {
-            "ok": False,
-            "error": "usage",
-            "message": f"인자 또는 환경 변수가 잘못되었습니다: {exc}",
-        }
-    except (
-        lifecycle.LifecycleError,
-        review.ReviewFlowError,
-        gate.GateError,
-        runner.RunError,
-        scheduler.DispatchError,
-        prflow.PullRequestFlowError,
-        config.ConfigError,
-        taskfile.TaskFileError,
-        store.TaskNotFoundError,
-        store.StateMismatchError,
-        store.IllegalTransitionError,
-    ) as exc:
-        code = 64
-        output = {
-            "ok": False,
-            "error": "refused",
-            "message": f"명령을 수행할 수 없습니다: {exc}",
-        }
-    except Exception as exc:
-        code = 70
-        output = {
-            "ok": False,
-            "error": "internal",
-            "message": f"내부 오류가 발생했습니다: {exc}",
-        }
-    if not output["ok"]:
-        for token in secrets:
-            output["message"] = output["message"].replace(token, "[REDACTED]")
-    print(json.dumps(output, ensure_ascii=False))
-    return code
+        try:
+            args = _parser().parse_args(argv)
+            code, data = _execute(args, secrets)
+            if args.command == "status" and args.human:
+                for task in data["tasks"]:
+                    print(f"{task['id']} {task['state']}")
+                for chain in data["blocked_chains"]:
+                    print(
+                        f"{chain['task_id']} {chain['state']}: "
+                        f"{', '.join(chain['causes'])}"
+                    )
+                return code
+            output = {"ok": True, **data}
+        except _UsageError as exc:
+            code = 64
+            output = {
+                "ok": False,
+                "error": "usage",
+                "message": f"인자 또는 환경 변수가 잘못되었습니다: {exc}",
+            }
+        except (
+            lifecycle.LifecycleError,
+            review.ReviewFlowError,
+            gate.GateError,
+            runner.RunError,
+            scheduler.DispatchError,
+            prflow.PullRequestFlowError,
+            config.ConfigError,
+            taskfile.TaskFileError,
+            store.TaskNotFoundError,
+            store.StateMismatchError,
+            store.IllegalTransitionError,
+        ) as exc:
+            code = 64
+            output = {
+                "ok": False,
+                "error": "refused",
+                "message": f"명령을 수행할 수 없습니다: {exc}",
+            }
+        except Exception as exc:
+            code = 70
+            output = {
+                "ok": False,
+                "error": "internal",
+                "message": f"내부 오류가 발생했습니다: {exc}",
+            }
+        print(_redact(json.dumps(output, ensure_ascii=False), secrets))
+        return code
+    except BaseException as exc:
+        if isinstance(exc, SystemExit) and not secrets:
+            raise
+        try:
+            sys.stderr.write(_redact("".join(traceback.format_exception(exc)), secrets))
+        except BaseException:
+            pass
+        try:
+            output = {
+                "ok": False,
+                "error": "internal",
+                "message": "내부 오류가 발생했습니다.",
+            }
+            print(_redact(json.dumps(output, ensure_ascii=False), secrets))
+        except BaseException:
+            pass
+        return 70
