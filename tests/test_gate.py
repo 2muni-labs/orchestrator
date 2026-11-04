@@ -206,6 +206,7 @@ def test_sha(worktree: Path) -> str:
 def make_spec(**overrides: object) -> TaskSpec:
     values: dict[str, object] = {
         "id": "feat-x",
+        "title": "Add the feature",
         "target": "sample",
         "grade": Grade.L2,
         "lane": Lane.B,

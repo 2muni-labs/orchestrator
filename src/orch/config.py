@@ -4,7 +4,7 @@ import os
 import re
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +31,14 @@ class TargetPaths:
     logs: Path
     worktrees: Path
     todo: Path
+
+    def review_path(self, task_id: str, attempt: int | None = None) -> Path:
+        """Return the current review, or the one archived for an attempt."""
+        raise NotImplementedError
+
+    def triage_path(self, task_id: str, attempt: int | None = None) -> Path:
+        """Return the current triage file, or the one archived for an attempt."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -259,6 +267,29 @@ def load_targets(path: Path) -> dict[str, Target]:
             shared_paths=tuple(shared),
         )
     return targets
+
+
+def home_relative(path: Path, home: Path) -> str:
+    """Return an existing directory under home in the form ~/relative."""
+    raise NotImplementedError
+
+
+def add_target(
+    targets_file: Path,
+    name: str,
+    *,
+    path: Path,
+    github: str,
+    default_branch: str,
+    setup_command: str,
+    test_command: str,
+    lint_command: str,
+    shared_paths: Iterable[str] = (),
+    home: Path,
+    orch_home: Path,
+) -> Target:
+    """Register a target in targets.toml and create its runtime directories."""
+    raise NotImplementedError
 
 
 def _positive_integer(value: object) -> int:

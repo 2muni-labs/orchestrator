@@ -19,6 +19,7 @@ class TaskSpec:
     """A parsed task spec."""
 
     id: str
+    title: str
     target: str
     grade: Grade
     lane: Lane
