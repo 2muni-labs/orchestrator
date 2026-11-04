@@ -11,6 +11,7 @@ read = ["src/orch/**", "tests/**", "docs/design/**"]
 verify = ".venv/bin/python -m pytest tests/test_<module>.py"  # no network, no writes outside the worktree
 depends_on = []
 # tests = "none"              # L1 only: dispatch without a test commit
+# review = true               # risk area: adds a review; L3 and L3R always get one
 +++
 
 <!-- Write the body in Korean. Keep identifiers and paths in English. -->

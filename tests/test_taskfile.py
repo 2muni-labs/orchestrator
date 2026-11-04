@@ -49,6 +49,26 @@ def test_parse_task_returns_every_field() -> None:
     )
 
 
+def test_review_defaults_to_false() -> None:
+    assert parse_task(spec_text()).review is False
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
+def test_review_accepts_a_boolean(value: str, expected: bool) -> None:
+    assert parse_task(spec_text(review=value)).review is expected
+
+
+def test_review_false_is_accepted_on_a_grade_that_always_reviews() -> None:
+    text = spec_text(grade='"L3"', effort='"high"', review="false")
+    assert parse_task(text).review is False
+
+
+@pytest.mark.parametrize("value", ['"true"', "1", "0", "[]"])
+def test_review_must_be_a_boolean(value: str) -> None:
+    with pytest.raises(TaskFileError):
+        parse_task(spec_text(review=value))
+
+
 def test_body_is_kept_exactly_and_may_be_empty() -> None:
     assert parse_task(spec_text(body="")).body == ""
     assert parse_task(spec_text(body="+++\nx\r\n")).body == "+++\nx\r\n"

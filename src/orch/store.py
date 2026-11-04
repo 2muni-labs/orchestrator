@@ -453,6 +453,17 @@ def record_gate_result(
     )
 
 
+def clear_gate_results(
+    conn: sqlite3.Connection, task_id: str, attempt: int, gates: Iterable[Gate]
+) -> None:
+    """Remove the named gates' results for one attempt of one task."""
+    with transaction(conn):
+        conn.executemany(
+            "DELETE FROM gate_results WHERE task_id = ? AND attempt = ? AND gate = ?",
+            ((task_id, attempt, gate.value) for gate in gates),
+        )
+
+
 def gate_results(
     conn: sqlite3.Connection, task_id: str, attempt: int
 ) -> tuple[GateResult, ...]:
