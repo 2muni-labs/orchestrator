@@ -6,7 +6,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from orch.config import TargetNameError, validate_target_name
+from orch.config import (
+    ConfigError,
+    TargetNameError,
+    validate_target_name,
+    validate_task_id,
+)
 from orch.models import Effort, Grade, Lane
 
 
@@ -19,6 +24,7 @@ class TaskSpec:
     """A parsed task spec."""
 
     id: str
+    title: str
     target: str
     grade: Grade
     lane: Lane
@@ -35,13 +41,10 @@ class TaskSpec:
 
 
 def _validate_id(value: object) -> None:
-    if (
-        not isinstance(value, str)
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value)
-        or ".." in value
-        or value.endswith((".", ".lock"))
-    ):
-        raise TaskFileError("Invalid task id")
+    try:
+        validate_task_id(value)
+    except ConfigError as exc:
+        raise TaskFileError("Invalid task id") from exc
 
 
 def _paths(value: object) -> tuple[str, ...]:
@@ -75,6 +78,7 @@ def parse_task(text: str) -> TaskSpec:
         raise TaskFileError("Invalid front matter TOML") from exc
     required = {
         "id",
+        "title",
         "target",
         "grade",
         "lane",
@@ -91,6 +95,14 @@ def parse_task(text: str) -> TaskSpec:
     review = data.get("review", False)
     if type(review) is not bool:
         raise TaskFileError("review must be a boolean")
+    title = data["title"]
+    if (
+        not isinstance(title, str)
+        or not 1 <= len(title) <= 72
+        or title != title.strip()
+        or any(not " " <= char <= "~" for char in title)
+    ):
+        raise TaskFileError("Invalid task title")
     _validate_id(data["id"])
     try:
         validate_target_name(data["target"])
@@ -141,6 +153,7 @@ def parse_task(text: str) -> TaskSpec:
         raise TaskFileError("Model and effort do not match grade and lane")
     return TaskSpec(
         id=data["id"],
+        title=title,
         target=data["target"],
         grade=grade,
         lane=lane,

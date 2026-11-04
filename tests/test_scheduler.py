@@ -774,6 +774,7 @@ def test_next_rolls_back_when_a_spec_cannot_be_read(conn: sqlite3.Connection) ->
 def make_spec(task_id: str = "a", **overrides: object) -> TaskSpec:
     values: dict[str, object] = {
         "id": task_id,
+        "title": "Add the feature",
         "target": TARGET,
         "grade": Grade.L2,
         "lane": Lane.B,

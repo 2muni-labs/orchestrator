@@ -46,6 +46,7 @@ OUTSIDE = "outside/fake_change.py"
 TEST_FILE = "tests/test_fake_change.py"
 SPEC = """+++
 id = "{task_id}"
+title = "Add the feature"
 target = "sample"
 grade = "L2"
 lane = "{lane}"

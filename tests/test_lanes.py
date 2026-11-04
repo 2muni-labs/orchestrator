@@ -23,6 +23,7 @@ PATTERNS = ("usage limit", "rate limit", "hit your .*limit", "quota")
 def make_spec(lane: Lane = Lane.B, **overrides: object) -> TaskSpec:
     values: dict[str, object] = {
         "id": "feat-x",
+        "title": "Add the feature",
         "target": "sample",
         "grade": Grade.L3,
         "lane": lane,

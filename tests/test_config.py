@@ -14,8 +14,10 @@ from orch.config import (
     Limits,
     Target,
     TargetNameError,
+    add_target,
     config_path,
     ensure_target,
+    home_relative,
     load_config,
     load_targets,
     orch_home,
@@ -533,3 +535,368 @@ def test_invalid_config_raises(tmp_path: Path, text: str) -> None:
     write(config_path(tmp_path), text)
     with pytest.raises(ConfigError):
         load_config(tmp_path)
+
+
+# Review and triage paths
+
+
+def test_review_and_triage_paths(tmp_path: Path) -> None:
+    paths = target_paths(tmp_path / "missing", "hub")
+    reviews = tmp_path / "missing" / "hub" / "reviews"
+    assert paths.review_path("feat") == reviews / "feat.json"
+    assert paths.triage_path("feat") == reviews / "feat.triage.md"
+    assert paths.review_path("feat", 1) == reviews / "attempts" / "feat.1.json"
+    assert paths.triage_path("feat", 2) == reviews / "attempts" / "feat.2.triage.md"
+    assert not (tmp_path / "missing").exists()
+
+
+def test_an_archived_review_cannot_collide_with_another_tasks_current_one(
+    tmp_path: Path,
+) -> None:
+    """An id may hold a dot, so a.1 and attempt 1 of a must stay apart."""
+    paths = target_paths(tmp_path, "hub")
+    assert paths.review_path("a", 1) != paths.review_path("a.1")
+    assert paths.triage_path("a", 1) != paths.triage_path("a.1")
+    assert paths.review_path("a.1", 1) != paths.review_path("a", 1)
+
+
+@pytest.mark.parametrize("task_id", ["", "../x", "a/b", ".hidden", "a..b", "a."])
+@pytest.mark.parametrize("method", ["review_path", "triage_path"])
+def test_review_paths_refuse_an_invalid_task_id(
+    tmp_path: Path, method: str, task_id: str
+) -> None:
+    paths = target_paths(tmp_path, "hub")
+    with pytest.raises(ConfigError):
+        getattr(paths, method)(task_id)
+
+
+@pytest.mark.parametrize("attempt", [0, -1, True, "1", 1.0])
+@pytest.mark.parametrize("method", ["review_path", "triage_path"])
+def test_review_paths_refuse_an_invalid_attempt(
+    tmp_path: Path, method: str, attempt: object
+) -> None:
+    paths = target_paths(tmp_path, "hub")
+    with pytest.raises(ConfigError):
+        getattr(paths, method)("feat", attempt)
+
+
+# home_relative
+
+
+def test_home_relative_returns_the_tilde_form(tmp_path: Path) -> None:
+    directory = tmp_path / "home" / "work" / "app"
+    directory.mkdir(parents=True)
+    assert home_relative(directory, tmp_path / "home") == "~/work/app"
+
+
+def test_home_relative_normalizes_parent_segments(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "work" / "app").mkdir(parents=True)
+    (home / "other").mkdir()
+    path = home / "other" / ".." / "work" / "app"
+    assert home_relative(path, home) == "~/work/app"
+
+
+def test_home_relative_refuses_a_parent_segment_that_leaves_home(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "outside").mkdir()
+    with pytest.raises(ConfigError):
+        home_relative(home / ".." / "outside", home)
+
+
+def test_home_relative_refuses_a_path_outside_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ConfigError):
+        home_relative(outside, home)
+
+
+def test_home_relative_refuses_a_sibling_with_the_same_prefix(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    sibling = tmp_path / "home-other"
+    sibling.mkdir()
+    with pytest.raises(ConfigError):
+        home_relative(sibling, home)
+
+
+def test_home_relative_refuses_home_itself(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    with pytest.raises(ConfigError):
+        home_relative(home, home)
+
+
+def test_home_relative_refuses_a_symlink_that_leaves_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "link").symlink_to(outside)
+    with pytest.raises(ConfigError):
+        home_relative(home / "link", home)
+
+
+def test_home_relative_stores_the_real_location_of_a_symlink(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "real" / "app").mkdir(parents=True)
+    outside = tmp_path / "outside-link"
+    outside.symlink_to(home / "real" / "app")
+    assert home_relative(outside, home) == "~/real/app"
+
+
+def test_home_relative_follows_a_symlinked_home(tmp_path: Path) -> None:
+    real = tmp_path / "real-home"
+    (real / "app").mkdir(parents=True)
+    linked = tmp_path / "linked-home"
+    linked.symlink_to(real)
+    assert home_relative(real / "app", linked) == "~/app"
+    assert home_relative(linked / "app", real) == "~/app"
+
+
+def test_home_relative_refuses_a_missing_directory(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    with pytest.raises(ConfigError):
+        home_relative(home / "missing", home)
+
+
+def test_home_relative_refuses_a_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "file").write_text("x", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        home_relative(home / "file", home)
+
+
+# add_target
+
+
+@pytest.fixture
+def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    home = tmp_path / "home"
+    (home / "work" / "app").mkdir(parents=True)
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return {
+        "targets_file": hub / "targets.toml",
+        "home": home,
+        "orch_home": tmp_path / "runtime",
+    }
+
+
+def add(workspace: dict[str, object], name: str = "app", **overrides: object) -> Target:
+    values: dict[str, object] = {
+        "path": workspace["home"] / "work" / "app",  # type: ignore[operator]
+        "github": "owner/app",
+        "default_branch": "main",
+        "setup_command": "uv sync --frozen",
+        "test_command": ".venv/bin/python -m pytest",
+        "lint_command": ".venv/bin/python -m ruff check .",
+        "home": workspace["home"],
+        "orch_home": workspace["orch_home"],
+    }
+    values.update(overrides)
+    return add_target(workspace["targets_file"], name, **values)  # type: ignore[arg-type]
+
+
+def test_add_target_stores_only_the_tilde_form(workspace: dict[str, object]) -> None:
+    add(workspace)
+    text = workspace["targets_file"].read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    entry = tomllib.loads(text)["targets"]["app"]
+    assert entry["path"] == "~/work/app"
+    assert str(workspace["home"]) not in text
+
+
+def test_add_target_round_trips_through_load_targets(
+    workspace: dict[str, object],
+) -> None:
+    returned = add(workspace, shared_paths=("uv.lock", "migrations/"))
+    loaded = load_targets(workspace["targets_file"])  # type: ignore[arg-type]
+    assert loaded == {"app": returned}
+    assert returned == Target(
+        name="app",
+        path=workspace["home"] / "work" / "app",  # type: ignore[operator]
+        github="owner/app",
+        default_branch="main",
+        setup_command="uv sync --frozen",
+        test_command=".venv/bin/python -m pytest",
+        lint_command=".venv/bin/python -m ruff check .",
+        shared_paths=("uv.lock", "migrations/"),
+    )
+
+
+def test_add_target_creates_the_runtime_directories(
+    workspace: dict[str, object],
+) -> None:
+    add(workspace)
+    root = workspace["orch_home"] / "app"  # type: ignore[operator]
+    assert SUBDIRS <= {entry.name for entry in root.iterdir()}
+    assert marker_github(workspace["orch_home"], "app") == "owner/app"  # type: ignore[arg-type]
+
+
+def test_add_target_escapes_values(workspace: dict[str, object]) -> None:
+    home = workspace["home"]
+    (home / "작업 공간").mkdir()  # type: ignore[operator]
+    command = 'sh -c "echo \\"a\\" \\\\ b"\ttail'
+    returned = add(workspace, path=home / "작업 공간", setup_command=command)  # type: ignore[operator]
+    loaded = load_targets(workspace["targets_file"])  # type: ignore[arg-type]
+    assert loaded["app"] == returned
+    assert loaded["app"].setup_command == command
+    text = workspace["targets_file"].read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert tomllib.loads(text)["targets"]["app"]["path"] == "~/작업 공간"
+
+
+def test_add_target_keeps_existing_text_and_entries(
+    workspace: dict[str, object],
+) -> None:
+    targets_file = workspace["targets_file"]
+    original = "# Registered targets\n" + VALID_TARGET.rstrip("\n")
+    targets_file.write_text(original, encoding="utf-8")  # type: ignore[attr-defined]
+    add(workspace)
+    text = targets_file.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert text.startswith(original)
+    assert set(load_targets(targets_file)) == {"sample-app", "app"}  # type: ignore[arg-type]
+
+
+def test_add_target_refuses_a_duplicate_and_changes_nothing(
+    workspace: dict[str, object],
+) -> None:
+    add(workspace)
+    before = workspace["targets_file"].read_bytes()  # type: ignore[attr-defined]
+    with pytest.raises(TargetNameError):
+        add(workspace)
+    with pytest.raises(TargetNameError):
+        add(workspace, "APP")
+    assert workspace["targets_file"].read_bytes() == before  # type: ignore[attr-defined]
+
+
+def test_add_target_refuses_a_path_outside_home(
+    workspace: dict[str, object], tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ConfigError):
+        add(workspace, path=outside)
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+    assert not (workspace["orch_home"] / "app").exists()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["setup_command", "test_command", "lint_command", "default_branch"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/Users/someone/bin/run",
+        "/home/someone/bin/run",
+        "/private/tmp/run",
+        "/var/folders/ab/run",
+        "ghp_" + "a" * 40,
+    ],
+)
+def test_add_target_refuses_a_personal_path_or_secret_in_a_field(
+    workspace: dict[str, object], field: str, value: str
+) -> None:
+    with pytest.raises(ConfigError):
+        add(workspace, **{field: value})
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("base", ["home", "orch_home"])
+def test_add_target_refuses_the_known_paths_in_a_field(
+    workspace: dict[str, object], base: str
+) -> None:
+    """redact would replace these, and the replaced text must not be stored."""
+    with pytest.raises(ConfigError):
+        add(workspace, setup_command=f"{workspace[base]}/bin/setup")
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+def test_add_target_refuses_a_personal_path_in_shared_paths(
+    workspace: dict[str, object],
+) -> None:
+    with pytest.raises(ConfigError):
+        add(workspace, shared_paths=("docs/home/page.md",))
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("shared", [("/abs",), ("../up",), ("*.lock",), ("",)])
+def test_add_target_refuses_an_invalid_shared_path(
+    workspace: dict[str, object], shared: tuple[str, ...]
+) -> None:
+    with pytest.raises(ConfigError):
+        add(workspace, shared_paths=shared)
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+    assert not (workspace["orch_home"] / "app").exists()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"github": "not a repo"},
+        {"default_branch": ""},
+        {"setup_command": ""},
+        {"test_command": ""},
+        {"lint_command": ""},
+    ],
+)
+def test_add_target_refuses_invalid_fields(
+    workspace: dict[str, object], overrides: dict[str, object]
+) -> None:
+    with pytest.raises(ConfigError):
+        add(workspace, **overrides)
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("name", ["bin", "../x", ""])
+def test_add_target_refuses_an_invalid_name(
+    workspace: dict[str, object], name: str
+) -> None:
+    with pytest.raises(TargetNameError):
+        add(workspace, name)
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+def test_add_target_refuses_a_malformed_file_and_keeps_it(
+    workspace: dict[str, object],
+) -> None:
+    workspace["targets_file"].write_text("not toml [", encoding="utf-8")  # type: ignore[attr-defined]
+    with pytest.raises(ConfigError):
+        add(workspace)
+    assert workspace["targets_file"].read_text(encoding="utf-8") == "not toml ["  # type: ignore[attr-defined]
+
+
+def test_add_target_refuses_a_runtime_owned_by_another_repository(
+    workspace: dict[str, object],
+) -> None:
+    ensure_target(workspace["orch_home"], "app", "owner/other")  # type: ignore[arg-type]
+    with pytest.raises(TargetNameError):
+        add(workspace)
+    assert not workspace["targets_file"].exists()  # type: ignore[attr-defined]
+
+
+def test_add_target_keeps_files_in_an_existing_runtime(
+    workspace: dict[str, object],
+) -> None:
+    """The hub's runtime directory exists from the manual phase, without a marker."""
+    logs = workspace["orch_home"] / "app" / "logs"  # type: ignore[operator]
+    logs.mkdir(parents=True)
+    (logs / "old.1.log").write_text("x", encoding="utf-8")
+    add(workspace)
+    assert (logs / "old.1.log").read_text(encoding="utf-8") == "x"
+
+
+def test_add_target_leaves_no_temporary_file(workspace: dict[str, object]) -> None:
+    add(workspace)
+    with pytest.raises(TargetNameError):
+        add(workspace)
+    hub = workspace["targets_file"].parent  # type: ignore[attr-defined]
+    assert [entry.name for entry in hub.iterdir()] == ["targets.toml"]

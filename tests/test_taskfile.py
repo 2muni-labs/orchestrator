@@ -9,6 +9,7 @@ BODY = "\n# Purpose\n\n본문 +++ 그대로\n"
 
 FRONT = {
     "id": '"feat-login"',
+    "title": '"Add the login form"',
     "target": '"sample-app"',
     "grade": '"L2"',
     "lane": '"B"',
@@ -34,6 +35,7 @@ def spec_text(body: str = BODY, drop: tuple[str, ...] = (), **changes: str) -> s
 def test_parse_task_returns_every_field() -> None:
     assert parse_task(spec_text()) == TaskSpec(
         id="feat-login",
+        title="Add the login form",
         target="sample-app",
         grade=Grade.L2,
         lane=Lane.B,
@@ -425,3 +427,45 @@ def test_custom_test_paths() -> None:
 def test_error_names_the_offending_glob() -> None:
     with pytest.raises(TaskFileError, match="uv.lock"):
         check_modify(["uv.lock"], SHARED)
+
+
+# Title
+
+
+def test_title_is_required() -> None:
+    with pytest.raises(TaskFileError):
+        parse_task(spec_text(drop=("title",)))
+
+
+def test_title_may_be_72_characters() -> None:
+    title = "A" * 72
+    assert parse_task(spec_text(title=f'"{title}"')).title == title
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '""',
+        '"   "',
+        '" Leading space"',
+        '"Trailing space "',
+        '"Line one\\nline two"',
+        '"Tab\\there"',
+        '"Delete\\u007fcharacter"',
+        '"로그인 폼 추가"',
+        '"Caf\\u00e9"',
+        '"' + "A" * 73 + '"',
+        "1",
+        "true",
+        '["Add the login form"]',
+    ],
+)
+def test_invalid_titles_raise(value: str) -> None:
+    with pytest.raises(TaskFileError):
+        parse_task(spec_text(title=value))
+
+
+def test_title_accepts_every_printable_ascii_character() -> None:
+    title = "Fix `a_b` (#3): don't use x/y, z=1; 100% ok?"
+    text = spec_text(title=f"'''{title}'''")
+    assert parse_task(text).title == title
