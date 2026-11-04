@@ -440,11 +440,10 @@ def test_unmet_dependency_queues_without_locks(conn: sqlite3.Connection) -> None
 
 
 def test_only_closed_satisfies_a_dependency(conn: sqlite3.Connection) -> None:
-    for state in (TaskState.PR_OPEN, TaskState.DISCARDED, TaskState.READY):
+    for state in (TaskState.PR_OPEN, TaskState.READY):
         add_task(conn, state.value, state)
-    add_task(conn, "b", depends_on=("pr_open", "discarded", "ready", "unknown"))
+    add_task(conn, "b", depends_on=("pr_open", "ready", "unknown"))
     assert reserve(conn, "b").waiting_for == (
-        "dep:discarded",
         "dep:pr_open",
         "dep:ready",
         "dep:unknown",
@@ -510,6 +509,118 @@ def test_a_lock_held_while_waiting_for_a_slot_blocks_others(
     add_task(conn, "later", lane=Lane.C)
     reserve(conn, "waiting", ("src/**",))
     assert reserve(conn, "later", ("src/a.py",)).waiting_for == ("lock:waiting",)
+
+
+# Discarded dependencies
+
+
+def events_of(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    rows = conn.execute(
+        "SELECT from_state, to_state FROM events WHERE task_id = ? ORDER BY id",
+        (task_id,),
+    )
+    return list(rows)
+
+
+def test_a_prepared_task_with_a_discarded_dependency_passes_through_queued(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", depends_on=("a",))
+    decision = reserve(conn, "b")
+    assert decision == Decision(state=TaskState.BLOCKED, waiting_for=("dep:a",))
+    assert state_of(conn, "b") is TaskState.BLOCKED
+    assert events_of(conn, "b") == [("prepared", "queued"), ("queued", "blocked")]
+    assert holders(conn) == set()
+
+
+def test_only_discarded_dependencies_are_reported_and_sorted(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "z", TaskState.DISCARDED)
+    add_task(conn, "y", TaskState.DISCARDED)
+    add_task(conn, "open", TaskState.PR_OPEN)
+    add_task(conn, "done", TaskState.CLOSED)
+    add_task(conn, "b", depends_on=("z", "open", "done", "y", "unknown"))
+    assert reserve(conn, "b") == Decision(
+        state=TaskState.BLOCKED, waiting_for=("dep:y", "dep:z")
+    )
+
+
+def test_resuming_with_the_dependency_still_discarded_blocks_again(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.BLOCKED, depends_on=("a",))
+    decision = reserve(conn, "b", expected=TaskState.BLOCKED)
+    assert decision == Decision(state=TaskState.BLOCKED, waiting_for=("dep:a",))
+    assert state_of(conn, "b") is TaskState.BLOCKED
+    assert events_of(conn, "b") == [("blocked", "queued"), ("queued", "blocked")]
+
+
+def test_a_blocked_task_clears_its_expiry(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",), slot_expires_at=expiry(5))
+    assert reserve(conn, "b", expected=TaskState.QUEUED).state is TaskState.BLOCKED
+    task = get_task(conn, "b")
+    assert task is not None
+    assert task.slot_expires_at is None
+
+
+def test_a_dependency_on_a_blocked_task_keeps_waiting(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.BLOCKED)
+    add_task(conn, "b", depends_on=("a",))
+    assert reserve(conn, "b") == Decision(
+        state=TaskState.QUEUED, waiting_for=("dep:a",)
+    )
+
+
+def test_next_blocks_a_queued_task_and_reserves_the_others(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(
+        conn,
+        "b",
+        TaskState.QUEUED,
+        depends_on=("a",),
+        created_at="2026-11-04T00:00:01+00:00",
+    )
+    add_task(conn, "c", TaskState.QUEUED, created_at="2026-11-04T00:00:02+00:00")
+    reserved = next_reservations(
+        conn,
+        modify_of=lambda task: (f"{task.id}/**",),
+        limits=LIMITS,
+        ttl_min=TTL,
+        now=NOW,
+    )
+    assert reserved == ("c",)
+    assert state_of(conn, "b") is TaskState.BLOCKED
+    assert events_of(conn, "b") == [("queued", "blocked")]
+    assert holders(conn) == {"c"}
+
+
+def test_next_leaves_a_blocked_task_alone(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.BLOCKED, depends_on=("a",))
+    assert (
+        next_reservations(
+            conn, modify_of=lambda task: ("b/**",), limits=LIMITS, ttl_min=TTL, now=NOW
+        )
+        == ()
+    )
+    assert events_of(conn, "b") == []
+
+
+def test_a_blocked_task_holds_no_slot(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "x", TaskState.RUNNING)
+    add_task(conn, "b", depends_on=("a",))
+    reserve(conn, "b")
+    add_task(conn, "c")
+    assert reserve(conn, "c").state is TaskState.RESERVED
 
 
 # Expiry
@@ -790,6 +901,22 @@ def test_dispatch_queues_with_the_test_commit_recorded(
     task = get_task(conn, "a")
     assert task is not None
     assert task.test_sha == first
+
+
+def test_dispatch_blocks_on_a_discarded_dependency_with_the_test_commit_recorded(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    add_task(conn, "d", TaskState.DISCARDED)
+    base = git(repo, "rev-parse", "HEAD")
+    first = commit(repo, "test.txt")
+    add_task(conn, "a", worktree=str(repo), base_sha=base, depends_on=("d",))
+    decision = run_dispatch(conn, make_spec())
+    assert decision == Decision(state=TaskState.BLOCKED, waiting_for=("dep:d",))
+    task = get_task(conn, "a")
+    assert task is not None
+    assert task.state is TaskState.BLOCKED
+    assert task.test_sha == first
+    assert events_of(conn, "a") == [("prepared", "queued"), ("queued", "blocked")]
 
 
 # Concurrency

@@ -33,7 +33,7 @@ from orch.models import (
 # Technical design, chapter 3. Written out here so that the test pins the table.
 EXPECTED_TRANSITIONS = {
     "prepared": {"reserved", "queued", "discarded"},
-    "queued": {"reserved", "discarded"},
+    "queued": {"reserved", "discarded", "blocked"},
     "reserved": {"running", "queued", "discarded"},
     "running": {"judging", "orphaned"},
     "judging": {"gating", "reserved", "queued", "discarded", "blocked"},
