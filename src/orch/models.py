@@ -125,6 +125,7 @@ class Task:
     depends_on: tuple[str, ...] = ()
     worktree: str | None = None
     pr_url: str | None = None
+    pushed_sha: str | None = None
     slot_expires_at: str | None = None
 
 
@@ -217,7 +218,9 @@ TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
         TaskState.CONFLICT: frozenset(
             {TaskState.PR_OPEN, TaskState.DISCARDED, TaskState.JUDGING}
         ),
-        TaskState.PR_OPEN: frozenset({TaskState.CLOSED, TaskState.DISCARDED}),
+        TaskState.PR_OPEN: frozenset(
+            {TaskState.CONFLICT, TaskState.CLOSED, TaskState.DISCARDED}
+        ),
         TaskState.CLOSED: frozenset(),
         TaskState.BLOCKED: frozenset(
             {TaskState.RESERVED, TaskState.QUEUED, TaskState.DISCARDED}
