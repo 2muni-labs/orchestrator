@@ -17,6 +17,7 @@ from orch import config, github, prflow, store
 from orch.cli import main
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
+from orch.gitops import GitError
 from orch.models import Effort, Grade, Lane, Task, TaskState
 from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
 
@@ -1061,6 +1062,37 @@ def test_a_github_failure_is_internal_and_hides_the_token(
     result = orch("pr", TASK)
     assert_error(result, INTERNAL, "internal")
     assert TOKEN not in json.dumps(result[1])
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("error", "code", "kind"),
+    [
+        (GitHubError, INTERNAL, "internal"),
+        (GitError, INTERNAL, "internal"),
+        (RuntimeError, INTERNAL, "internal"),
+        (PullRequestFlowError, USAGE, "refused"),
+    ],
+)
+def test_a_token_inside_an_exception_message_is_removed(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
+    code: int,
+    kind: str,
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+
+    def failed(*args: object, **kwargs: object) -> None:
+        raise error(f"bad {TOKEN} here")
+
+    monkeypatch.setattr(prflow, "open_pull_request", failed)
+    result = orch("pr", TASK)
+    assert_error(result, code, kind)
+    assert TOKEN not in json.dumps(result[1])
+    assert "bad [REDACTED] here" in str(result[1]["message"])
 
 
 @pytest.mark.usefixtures("target")
