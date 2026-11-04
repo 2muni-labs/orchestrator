@@ -196,7 +196,10 @@ def update_pull_request(
     spec: TaskSpec,
     target: Target,
     *,
+    token: str,
     log_path: Path,
+    home: Path,
+    orch_home: Path,
 ) -> UpdateReport:
     """Check an open pull request against the moved default branch, without pushing."""
     task = store.get_task(conn, spec.id)
