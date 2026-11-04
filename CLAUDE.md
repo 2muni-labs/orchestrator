@@ -63,6 +63,10 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | 9 | After merge | The user merges on GitHub. Return to the hub clone, then remove the worktree, the local branch and `R/pushes/<id>`. |
 | 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
 
+- A harness pull request you write yourself must also pass before you push: in its
+  worktree, run `.venv/bin/python -m pytest`, `.venv/bin/python -m ruff check .` and
+  `.venv/bin/python -m ruff format --check .` on the final commit. This covers every
+  push to that branch. Put the results in the pull request body.
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
   not overlap.
 - `<test_sha>` is the first commit after the branch point from `origin/main`, which is why step 2 allows exactly one commit.
