@@ -201,6 +201,13 @@ def push_task_branch(worktree: Path, branch: str, remote: str = "origin") -> Non
     _git(worktree, "push", "-u", remote, f"{branch}:refs/heads/{branch}")
 
 
+def update_task_branch(
+    worktree: Path, task_id: str, expected_remote_sha: str, remote: str = "origin"
+) -> str:
+    """Replace task/<task_id> on the remote, leased on the last pushed commit."""
+    raise NotImplementedError
+
+
 def reset_to(worktree: Path, sha: str) -> None:
     """Return a linked worktree to a commit and remove untracked files."""
     _validate_value(sha)

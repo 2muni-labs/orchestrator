@@ -1,4 +1,6 @@
 import ast
+import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -24,6 +26,7 @@ from orch.gitops import (
     remove_worktree,
     reset_to,
     rev_parse,
+    update_task_branch,
 )
 from orch.redact import ResidualPathError, SecretFoundError
 
@@ -457,6 +460,242 @@ def test_push_failure_raises(worktree: Path, repo: Path) -> None:
     git(repo, "remote", "set-url", "origin", "/nonexistent/remote.git")
     with pytest.raises(GitError):
         push_task_branch(worktree, BRANCH)
+
+
+# Branch update
+
+
+@pytest.fixture
+def git_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put a logging git first on PATH. Each line of the log is one call's arguments."""
+    real_git = shutil.which("git")
+    assert real_git is not None
+    directory = tmp_path / "shim"
+    log = tmp_path / "git-calls.log"
+    write(
+        directory / "git",
+        f"""#!/bin/sh
+printf '%s\\037' "$@" >> '{log}'
+printf '\\n' >> '{log}'
+exec '{real_git}' "$@"
+""",
+    )
+    (directory / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+def push_calls(log: Path) -> list[list[str]]:
+    """Return the arguments after "push" of every logged push."""
+    if not log.exists():
+        return []
+    calls = [line.split("\037")[:-1] for line in log.read_text().splitlines()]
+    return [call[call.index("push") + 1 :] for call in calls if "push" in call]
+
+
+@pytest.fixture
+def pushed(worktree: Path) -> str:
+    """Push the task branch, rewrite the local commit and return the pushed id."""
+    sha = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    git(worktree, "commit", "-q", "--amend", "-m", "rewritten")
+    return sha
+
+
+def test_update_replaces_the_remote_branch_and_returns_the_new_id(
+    worktree: Path, remote: Path, pushed: str
+) -> None:
+    main_before = git(remote, "rev-parse", "refs/heads/main")
+    new = git(worktree, "rev-parse", "HEAD")
+    assert new != pushed
+    assert update_task_branch(worktree, "m1", pushed) == new
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == new
+    assert git(remote, "rev-parse", "refs/heads/main") == main_before
+
+
+def test_update_runs_exactly_the_allowed_push_command(
+    worktree: Path, pushed: str, git_calls: Path
+) -> None:
+    update_task_branch(worktree, "m1", pushed)
+    assert push_calls(git_calls) == [
+        [
+            f"--force-with-lease={BRANCH}:{pushed}",
+            "origin",
+            f"{BRANCH}:refs/heads/{BRANCH}",
+        ]
+    ]
+
+
+def test_update_refuses_when_someone_else_pushed(
+    worktree: Path, remote: Path, tmp_path: Path, pushed: str
+) -> None:
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", "-b", BRANCH, str(remote), str(other)], check=True
+    )
+    theirs = add_commit(other, "theirs.txt")
+    git(other, "push", "-q", "origin", BRANCH)
+    head = git(worktree, "rev-parse", "HEAD")
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", pushed)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == theirs
+    assert git(worktree, "rev-parse", "HEAD") == head
+
+
+def test_lease_uses_the_given_id_even_after_a_fetch_moved_the_tracking_branch(
+    worktree: Path, remote: Path, tmp_path: Path, pushed: str
+) -> None:
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", "-b", BRANCH, str(remote), str(other)], check=True
+    )
+    theirs = add_commit(other, "theirs.txt")
+    git(other, "push", "-q", "origin", BRANCH)
+    git(worktree, "fetch", "-q", "origin")
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", pushed)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == theirs
+
+
+def test_update_refuses_a_remote_branch_that_does_not_exist(
+    worktree: Path, remote: Path
+) -> None:
+    sha = add_commit(worktree, "a.txt")
+    add_commit(worktree, "b.txt")
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", sha)
+    assert git(remote, "for-each-ref", "refs/heads/task") == ""
+
+
+def test_update_with_nothing_to_change_does_not_push(
+    worktree: Path, git_calls: Path
+) -> None:
+    sha = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    git_calls.unlink()
+    assert update_task_branch(worktree, "m1", sha) == sha
+    assert push_calls(git_calls) == []
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "",
+        "../main",
+        "a/b",
+        "-x",
+        "+x",
+        "x:refs/heads/main",
+        "HEAD:refs/heads/main",
+        "a b",
+        "a..b",
+        "a.",
+        "a.lock",
+        ".x",
+        "m1\n",
+    ],
+)
+def test_update_refuses_bad_task_ids_without_pushing(
+    worktree: Path, remote: Path, pushed: str, git_calls: Path, task_id: str
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    main_before = git(remote, "rev-parse", "refs/heads/main")
+    with pytest.raises(GitError):
+        update_task_branch(worktree, task_id, pushed)
+    assert push_calls(git_calls) == []
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == pushed
+    assert git(remote, "rev-parse", "refs/heads/main") == main_before
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        "",
+        "--force",
+        "abc",
+        "A" * 40,
+        "g" * 40,
+        "a" * 39,
+        "a" * 41,
+        "a" * 40 + "\n",
+        "HEAD",
+        "origin/task/m1",
+    ],
+)
+def test_update_requires_a_full_commit_id_as_the_lease(
+    worktree: Path, remote: Path, pushed: str, git_calls: Path, expected: str
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", expected)
+    assert push_calls(git_calls) == []
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == pushed
+
+
+def test_update_refuses_a_task_other_than_the_current_branch(
+    worktree: Path, remote: Path, pushed: str, git_calls: Path
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "other", pushed)
+    assert push_calls(git_calls) == []
+    assert git(remote, "for-each-ref", "refs/heads/task/other") == ""
+
+
+def test_update_refuses_the_main_working_tree(
+    repo: Path, remote: Path, git_calls: Path
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    main = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(GitError):
+        update_task_branch(repo, "main", main)
+    assert push_calls(git_calls) == []
+    assert git(remote, "for-each-ref", "refs/heads/task") == ""
+
+
+def test_update_refuses_a_detached_head(
+    worktree: Path, pushed: str, git_calls: Path
+) -> None:
+    git(worktree, "checkout", "-q", "--detach")
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", pushed)
+    assert push_calls(git_calls) == []
+
+
+@pytest.mark.parametrize("value", ["", "-x", "--upload-pack=x"])
+def test_update_refuses_option_shaped_remotes(
+    worktree: Path, pushed: str, git_calls: Path, value: str
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", pushed, value)
+    assert push_calls(git_calls) == []
+
+
+def test_push_task_branch_still_refuses_after_a_rewrite(
+    worktree: Path, remote: Path, pushed: str, git_calls: Path
+) -> None:
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        push_task_branch(worktree, BRANCH)
+    assert push_calls(git_calls) == []
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == pushed
+
+
+def test_only_update_task_branch_uses_a_force_option() -> None:
+    tree = ast.parse(Path(gitops.__file__).read_text(encoding="utf-8"))
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if node.value.startswith("--force-with-lease"):
+                assert function.name == "update_task_branch"
+            assert node.value not in {"-f", "--force-if-includes"}
+            if node.value == "--force":
+                assert function.name == "remove_worktree"
 
 
 # Reset
