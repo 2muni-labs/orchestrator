@@ -4,7 +4,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from orch.config import Config, Target
-from orch.lanes.base import LaneCommand
+from orch.lanes import base, claude, codex
+from orch.lanes.base import LaneCommand, LaneError
 from orch.models import Lane
 from orch.taskfile import TaskSpec
 
@@ -20,7 +21,26 @@ def build_command(
     log_label: str,
 ) -> LaneCommand:
     """Build the command of the spec's lane. Lanes other than B and C are refused."""
-    raise NotImplementedError
+    if spec.lane is Lane.B:
+        return codex.build_command(
+            spec=spec,
+            spec_text=spec_text,
+            worktree=worktree,
+            config=config,
+            environ=environ,
+            log_label=log_label,
+        )
+    if spec.lane is Lane.C:
+        return claude.build_command(
+            spec=spec,
+            spec_text=spec_text,
+            worktree=worktree,
+            target=target,
+            config=config,
+            environ=environ,
+            log_label=log_label,
+        )
+    raise LaneError(f"Unsupported lane: {spec.lane}")
 
 
 def hit_usage_limit(
@@ -32,4 +52,16 @@ def hit_usage_limit(
     environ: Mapping[str, str],
 ) -> bool:
     """Judge a run that left no valid result. Lanes other than B and C are refused."""
-    raise NotImplementedError
+    if lane is Lane.B:
+        return codex.hit_usage_limit(
+            log_path,
+            patterns=base.patterns_for(config, codex.PROVIDER),
+            environ=environ,
+        )
+    if lane is Lane.C:
+        return claude.hit_usage_limit(
+            log_path,
+            spec_text=spec_text,
+            patterns=base.patterns_for(config, claude.PROVIDER),
+        )
+    raise LaneError(f"Unsupported lane: {lane}")
