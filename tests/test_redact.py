@@ -9,7 +9,16 @@ import pytest
 from orch import redact as redact_module
 from orch.redact import RedactionError, ResidualPathError, SecretFoundError, redact
 
-HOME = Path("/Users/alice")
+# Assembled at run time so that no personal path shape is written in the repository.
+USERS = "/" + "Users"
+HOME_DIR = "/" + "home"
+PRIVATE_TMP = "/" + "private" + "/tmp"
+VAR_FOLDERS = "/" + "var" + "/folders"
+ROOT = "/" + "root"
+WIN_USERS = "C:" + "\\" + "Users"
+CLAUDE_TMP = "/" + "tmp" + "/claude-"
+
+HOME = Path(f"{USERS}/alice")
 ORCH = HOME / ".orch"
 WORKTREE = f"{ORCH}/orchestrator/worktrees/m1-store"
 OUTSIDE = Path("/opt/orch")
@@ -71,16 +80,16 @@ def test_worktree_path_becomes_repository_relative(text: str, expected: str) -> 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("/Users/alice", "~"),
-        ("/Users/alice/", "~/"),
-        ("see /Users/alice.", "see ~."),
-        ("/Users/alice/work/x.py", "~/work/x.py"),
-        ('"/Users/alice/x"', '"~/x"'),
-        ("'/Users/alice/x'", "'~/x'"),
-        ("(/Users/alice/x)", "(~/x)"),
-        ("path=/Users/alice/x", "path=~/x"),
-        ("a: /Users/alice/x, /Users/alice/y", "a: ~/x, ~/y"),
-        ("/Users/alice/x\n/Users/alice/y\n", "~/x\n~/y\n"),
+        (f"{USERS}/alice", "~"),
+        (f"{USERS}/alice/", "~/"),
+        (f"see {USERS}/alice.", "see ~."),
+        (f"{USERS}/alice/work/x.py", "~/work/x.py"),
+        (f'"{USERS}/alice/x"', '"~/x"'),
+        (f"'{USERS}/alice/x'", "'~/x'"),
+        (f"({USERS}/alice/x)", "(~/x)"),
+        (f"path={USERS}/alice/x", "path=~/x"),
+        (f"a: {USERS}/alice/x, {USERS}/alice/y", "a: ~/x, ~/y"),
+        (f"{USERS}/alice/x\n{USERS}/alice/y\n", "~/x\n~/y\n"),
     ],
 )
 def test_home_becomes_tilde(text: str, expected: str) -> None:
@@ -112,7 +121,7 @@ def test_only_the_exact_worktree_shape_is_made_relative(text: str) -> None:
         ("/opt/orch/hub/worktrees/m1/a.py", "a.py"),
         ("/opt/orch/hub/worktrees/m1", "."),
         ("/opt/orchard/x", "/opt/orchard/x"),
-        ("/Users/alice/x", "~/x"),
+        (f"{USERS}/alice/x", "~/x"),
     ],
 )
 def test_orch_home_outside_home_becomes_a_variable(text: str, expected: str) -> None:
@@ -121,12 +130,12 @@ def test_orch_home_outside_home_becomes_a_variable(text: str, expected: str) -> 
 
 def test_orch_home_in_a_sibling_of_home_is_not_treated_as_under_home() -> None:
     assert (
-        run("/Users/alice2/.orch/x", orch_home=Path("/Users/alice2/.orch"))
+        run(f"{USERS}/alice2/.orch/x", orch_home=Path(f"{USERS}/alice2/.orch"))
         == "$ORCH_HOME/x"
     )
 
 
-@pytest.mark.parametrize("root", ["/private/tmp/o", "/var/folders/ab/o"])
+@pytest.mark.parametrize("root", [f"{PRIVATE_TMP}/o", f"{VAR_FOLDERS}/ab/o"])
 def test_known_orch_home_under_a_blocked_prefix_is_replaced_before_the_check(
     root: str,
 ) -> None:
@@ -136,7 +145,11 @@ def test_known_orch_home_under_a_blocked_prefix_is_replaced_before_the_check(
 
 def test_home_may_be_root_user_home() -> None:
     assert (
-        run("/root/x and /root", home=Path("/root"), orch_home=Path("/root/.orch"))
+        run(
+            f"{ROOT}/x and {ROOT}",
+            home=Path(f"{ROOT}"),
+            orch_home=Path(f"{ROOT}/.orch"),
+        )
         == "~/x and ~"
     )
 
@@ -150,7 +163,7 @@ def test_text_without_known_paths_is_unchanged(text: str) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    [WORKTREE + "/a.py", f"{ORCH}/x/logs/a", "/Users/alice/x", "~/x", "plain"],
+    [WORKTREE + "/a.py", f"{ORCH}/x/logs/a", f"{USERS}/alice/x", "~/x", "plain"],
 )
 def test_redact_is_idempotent(text: str) -> None:
     once = run(text)
@@ -163,20 +176,20 @@ def test_redact_is_idempotent(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "/Users/bob/x",
-        "/home/bob",
-        "/home/bob/x",
-        "C:\\Users\\bob",
-        "/private/tmp/x",
-        "/var/folders/ab/x",
-        "/private/var/folders/ab/x",
-        "/root",
-        "/root/",
-        "/root/x",
-        "see /root.",
-        "(/root)",
-        "a/root/b",
-        "ok\nthen /home/bob\n",
+        f"{USERS}/bob/x",
+        f"{HOME_DIR}/bob",
+        f"{HOME_DIR}/bob/x",
+        f"{WIN_USERS}\\bob",
+        f"{PRIVATE_TMP}/x",
+        f"{VAR_FOLDERS}/ab/x",
+        f"/private{VAR_FOLDERS}/ab/x",
+        f"{ROOT}",
+        f"{ROOT}/",
+        f"{ROOT}/x",
+        f"see {ROOT}.",
+        f"({ROOT})",
+        f"a{ROOT}/b",
+        f"ok\nthen {HOME_DIR}/bob\n",
     ],
 )
 def test_residual_personal_path_raises(text: str) -> None:
@@ -187,13 +200,13 @@ def test_residual_personal_path_raises(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "/Users/alice2/x",
-        "/Users/alice.bak/x",
-        "/Users/alice-old/x",
-        "/Users/alice_old/x",
-        "/System/Volumes/Data/Users/alice/x",
-        "file:///Users/alice/x",
-        "/mnt/Users/alice/x",
+        f"{USERS}/alice2/x",
+        f"{USERS}/alice.bak/x",
+        f"{USERS}/alice-old/x",
+        f"{USERS}/alice_old/x",
+        f"/System/Volumes/Data{USERS}/alice/x",
+        f"file://{USERS}/alice/x",
+        f"/mnt{USERS}/alice/x",
     ],
 )
 def test_home_is_only_replaced_as_a_whole_absolute_path(text: str) -> None:
@@ -202,27 +215,27 @@ def test_home_is_only_replaced_as_a_whole_absolute_path(text: str) -> None:
 
 
 def test_home_is_matched_literally_not_as_a_regex() -> None:
-    home = Path("/Users/a.b")
-    assert run("/Users/a.b/x", home=home, orch_home=home / ".orch") == "~/x"
+    home = Path(f"{USERS}/a.b")
+    assert run(f"{USERS}/a.b/x", home=home, orch_home=home / ".orch") == "~/x"
     with pytest.raises(ResidualPathError):
-        run("/Users/axb/x", home=home, orch_home=home / ".orch")
+        run(f"{USERS}/axb/x", home=home, orch_home=home / ".orch")
 
 
 def test_one_residual_path_among_replaced_ones_raises() -> None:
     with pytest.raises(ResidualPathError):
-        run(f"/Users/alice/a {WORKTREE}/b /home/bob/c")
+        run(f"{USERS}/alice/a {WORKTREE}/b {HOME_DIR}/bob/c")
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "src/root.py",
-        "/rootfs/x",
-        "/root_cause",
-        "/root-dir",
-        "/root.txt",
-        "/Users",
-        "/home",
+        f"src{ROOT}.py",
+        f"{ROOT}fs/x",
+        f"{ROOT}_cause",
+        f"{ROOT}-dir",
+        f"{ROOT}.txt",
+        f"{USERS}",
+        f"{HOME_DIR}",
     ],
 )
 def test_lookalikes_of_blocked_patterns_pass(text: str) -> None:
@@ -233,15 +246,103 @@ def test_lookalikes_of_blocked_patterns_pass(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "src/home/page.py",
-        "src/Users/x.py",
-        "/Users/alice/home/x",
-        "/Users/alice/root/x",
+        f"src{HOME_DIR}/page.py",
+        f"src{USERS}/x.py",
+        f"{USERS}/alice{HOME_DIR}/x",
+        f"{USERS}/alice{ROOT}/x",
     ],
 )
 def test_patterns_also_block_relative_paths_that_contain_them(text: str) -> None:
     with pytest.raises(ResidualPathError):
         run(text)
+
+
+# Claude Code temporary paths
+
+ENCODED_HOME = str(HOME).replace("/", "-")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"{CLAUDE_TMP}501",
+        f"{CLAUDE_TMP}501/project/scratchpad/a.py",
+        f"see {CLAUDE_TMP}501/x.",
+        f"({CLAUDE_TMP}501/x)",
+        f"/private{CLAUDE_TMP}501/x",
+    ],
+)
+def test_claude_temporary_path_raises(text: str) -> None:
+    with pytest.raises(ResidualPathError):
+        run(text)
+
+
+@pytest.mark.parametrize("text", ["/tmp/other/x", "/tmp/claude", "/tmp/claudes/x"])
+def test_other_tmp_paths_pass(text: str) -> None:
+    assert run(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        ENCODED_HOME,
+        f"{ENCODED_HOME}-Repositories-orchestrator",
+        f"{ENCODED_HOME}--orch-orchestrator-worktrees-m1",
+        f"~/.claude/projects/{ENCODED_HOME}-Repositories-orchestrator/memory/a.md",
+        f"{HOME}/.claude/projects/{ENCODED_HOME}-Repositories-orchestrator",
+        f"x{ENCODED_HOME}",
+        f"-private-tmp-claude-501-{ENCODED_HOME}-Repositories-orchestrator",
+    ],
+)
+def test_encoded_home_raises(text: str) -> None:
+    with pytest.raises(ResidualPathError):
+        run(text)
+
+
+def test_encoded_home_is_matched_literally_not_as_a_regex() -> None:
+    home = Path(f"{USERS}/a.b")
+    encoded = str(home).replace("/", "-")
+    with pytest.raises(ResidualPathError):
+        run(encoded, home=home, orch_home=home / ".orch")
+    other = encoded.replace(".", "x")
+    assert run(other, home=home, orch_home=home / ".orch") == other
+
+
+def test_only_the_given_home_is_blocked_in_encoded_form() -> None:
+    other = str(Path(f"{USERS}/bob")).replace("/", "-")
+    assert run(other) == other
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "alice",
+        "alice-labs",
+        "alice-labs/orchestrator",
+        "github.com/alice-labs/orchestrator",
+        "org-alice",
+        "-alice-labs",
+        "Users-alice",
+        "task/alice-fix",
+    ],
+)
+def test_the_user_name_alone_is_not_blocked(text: str) -> None:
+    assert run(text) == text
+
+
+@pytest.mark.parametrize(
+    "text", [ENCODED_HOME, f"{ENCODED_HOME}-private-name", f"{CLAUDE_TMP}501/alice"]
+)
+def test_new_residual_errors_never_carry_the_user_name_or_text(text: str) -> None:
+    with pytest.raises(ResidualPathError) as caught:
+        run(f"leadingword {text} after")
+    exc = caught.value
+    assert str(exc)
+    for fragment in ("alice", "private-name", "leadingword"):
+        assert fragment not in str(exc)
+        assert fragment not in repr(exc)
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
 
 
 # Secrets
@@ -342,7 +443,7 @@ def test_secrets_are_checked_on_the_original_text(secret: str) -> None:
 
 def test_secret_wins_over_residual_path() -> None:
     with pytest.raises(SecretFoundError):
-        run("/home/bob " + github_token())
+        run(f"{HOME_DIR}/bob " + github_token())
 
 
 def test_token_inside_a_known_path_raises() -> None:
@@ -376,6 +477,37 @@ def test_home_and_orch_home_must_be_absolute_and_not_the_root(bad: Path) -> None
         run("plain", home=bad)
     with pytest.raises(ValueError):
         run("plain", orch_home=bad)
+
+
+@pytest.mark.parametrize(
+    ("secrets", "error"),
+    [
+        (("hunter2", ""), ValueError),
+        ("hunter2", TypeError),
+        (b"hunter2", TypeError),
+        (("hunter2", None), TypeError),
+        (("hunter2", b"hunter2"), TypeError),
+    ],
+    ids=["empty_value", "str", "bytes", "none_value", "bytes_value"],
+)
+def test_argument_errors_never_carry_secret_values(
+    secrets: object, error: type[Exception]
+) -> None:
+    with pytest.raises(error) as caught:
+        run("hunter2", secrets=secrets)
+    exc = caught.value
+    assert "hunter2" not in str(exc)
+    assert "hunter2" not in repr(exc)
+    assert exc.__cause__ is None
+
+
+def test_orch_home_equal_to_home() -> None:
+    kwargs = {"orch_home": HOME}
+    assert run(f"{HOME}/x", **kwargs) == "~/x"
+    assert run(str(HOME), **kwargs) == "~"
+    assert run(f"{HOME}/hub/logs/a.log", **kwargs) == "~/hub/logs/a.log"
+    assert run(f"{HOME}/hub/worktrees/m1/src/a.py", **kwargs) == "src/a.py"
+    assert run(f"{HOME}/hub/worktrees/m1", **kwargs) == "."
 
 
 def test_no_bypass_parameter_exists() -> None:
@@ -419,7 +551,7 @@ def test_secret_error_never_carries_the_value(value: str) -> None:
 
 def test_residual_error_never_carries_the_path() -> None:
     with pytest.raises(ResidualPathError) as caught:
-        run("leadingword /home/bob/private-name after")
+        run(f"leadingword {HOME_DIR}/bob/private-name after")
     exc = caught.value
     assert str(exc)
     for fragment in ("bob", "private-name", "leadingword"):
@@ -442,6 +574,13 @@ def test_module_imports_only_the_standard_library() -> None:
             assert node.level == 0
             modules.add((node.module or "").split(".")[0])
     assert modules <= set(sys.stdlib_module_names)
+
+
+def test_this_file_assembles_its_path_strings_at_run_time() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    for value in (USERS, HOME_DIR, PRIVATE_TMP, VAR_FOLDERS, WIN_USERS, CLAUDE_TMP):
+        assert value not in source
+        assert value.replace("\\", "\\\\") not in source
 
 
 @pytest.mark.parametrize("relative", ["tests/test_redact.py", "src/orch/redact.py"])
