@@ -20,8 +20,12 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   under the manual procedure.
 - Judge from the result JSON and gates. Read sub-agent code only when a gate fails
   or a task is partial. Do not re-analyze or re-implement work that passed.
-- Never merge a pull request. Never push to `main` or force push. Push task
-  branches only.
+- Never merge a pull request. Never push to `main`. Push task branches only.
+- Never force push. The one exception is step 8a: updating the `task/<id>` branch of
+  an open pull request that conflicts with `main`, with
+  `--force-with-lease=task/<id>:<last pushed sha>`. A `--force`, or a
+  `--force-with-lease` without that value, is never allowed, and neither is any
+  force push to `main` or another branch.
 
 ## Sessions
 
@@ -54,8 +58,9 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | 5 | Judge | On the completion notice, read `R/results/<id>.json`, which `run-sub.sh` has moved there or written as a failure. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>` from the hub clone. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
 | 7 | Review | For L3 and above, or risk areas: run `git diff <merge-base>..HEAD > R/reviews/<id>.diff` so that the diff holds the tests and the implementation, then start `orch-reviewer` in the background with the paths of that diff, the spec and the worktree. Save its JSON as `R/reviews/<id>.json`. |
-| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, create the pull request in English, and report to the user. Before copying review findings into the pull request body, confirm that they contain no personal paths such as `/Users/`. |
-| 9 | After merge | The user merges on GitHub. Return to the hub clone, then remove the worktree and local branch. |
+| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, write the pushed commit id to `R/pushes/<id>`, create the pull request in English, and report to the user. Before copying review findings into the pull request body, confirm that they contain no personal paths such as `/Users/`. |
+| 8a | Main moved | While a pull request is open and `origin/main` moves, do not push if there is no conflict. In the worktree, run `git merge --no-ff --no-edit origin/main`, run `scripts/gate.sh <id>` from the hub clone, then discard the merge with `git reset --hard $(cat R/pushes/<id>)`. If the merge conflicts: `git merge --abort`, rebase on `origin/main` and resolve; run `scripts/gate.sh <id>`; if the resolution changed logic and the task is L3 or above, repeat step 7; `git push --force-with-lease=task/<id>:$(cat R/pushes/<id>) origin task/<id>`; update `R/pushes/<id>`; and describe the resolution in a pull request comment. |
+| 9 | After merge | The user merges on GitHub. Return to the hub clone, then remove the worktree, the local branch and `R/pushes/<id>`. |
 | 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
 
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
