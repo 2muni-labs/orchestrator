@@ -11,6 +11,7 @@ import pytest
 from orch import gitops
 from orch.gitops import (
     GitError,
+    MergeResult,
     RebaseResult,
     changed_paths,
     commit,
@@ -26,6 +27,9 @@ from orch.gitops import (
     remove_worktree,
     reset_to,
     rev_parse,
+    task_changed_paths,
+    task_tip,
+    temporary_merge,
     update_task_branch,
 )
 from orch.redact import ResidualPathError, SecretFoundError
@@ -696,6 +700,284 @@ def test_only_update_task_branch_uses_a_force_option() -> None:
             assert node.value not in {"-f", "--force-if-includes"}
             if node.value == "--force":
                 assert function.name == "remove_worktree"
+
+
+# Temporary merge
+
+
+MAIN = "origin/main"
+
+
+def task_commit(worktree: Path, name: str = "task.txt", text: str = "task\n") -> str:
+    return add_commit(worktree, name, text)
+
+
+def move_main(repo: Path, worktree: Path, name: str, text: str = "main\n") -> str:
+    sha = advance_main(repo, name, text)
+    fetch(worktree)
+    return sha
+
+
+def merge_head_exists(worktree: Path) -> bool:
+    path = git(worktree, "rev-parse", "--git-path", "MERGE_HEAD")
+    return (worktree / path).exists()
+
+
+def test_temporary_merge_creates_a_merge_with_the_task_as_first_parent(
+    worktree: Path, repo: Path
+) -> None:
+    tip = task_commit(worktree)
+    main = move_main(repo, worktree, "main.txt")
+    assert temporary_merge(worktree, MAIN) == MergeResult(ok=True)
+    parents = git(worktree, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    assert parents[1:] == [tip, main]
+    assert (worktree / "main.txt").exists()
+
+
+def test_temporary_merge_runs_the_exact_command(
+    worktree: Path, repo: Path, git_calls: Path
+) -> None:
+    task_commit(worktree)
+    move_main(repo, worktree, "main.txt")
+    git_calls.unlink(missing_ok=True)
+    temporary_merge(worktree, MAIN)
+    calls = [line.split("\037")[:-1] for line in git_calls.read_text().splitlines()]
+    merges = [call for call in calls if "merge" in call and "--no-ff" in call]
+    assert len(merges) == 1
+    assert merges[0][-4:] == ["merge", "--no-ff", "--no-edit", MAIN]
+
+
+def test_temporary_merge_of_a_contained_ref_changes_nothing(worktree: Path) -> None:
+    tip = task_commit(worktree)
+    assert temporary_merge(worktree, MAIN) == MergeResult(ok=True)
+    assert git(worktree, "rev-parse", "HEAD") == tip
+
+
+def test_temporary_merge_conflict_aborts_and_reports_sorted_files(
+    worktree: Path, repo: Path
+) -> None:
+    add_commit(worktree, "z.txt", "task z\n")
+    tip = add_commit(worktree, "a.txt", "task a\n")
+    advance_main(repo, "z.txt", "main z\n")
+    move_main(repo, worktree, "a.txt", "main a\n")
+    result = temporary_merge(worktree, MAIN)
+    assert result == MergeResult(ok=False, conflicts=("a.txt", "z.txt"))
+    assert git(worktree, "rev-parse", "HEAD") == tip
+    assert not merge_head_exists(worktree)
+    assert git(worktree, "status", "--porcelain") == ""
+
+
+def test_temporary_merge_of_an_unknown_ref_raises(worktree: Path) -> None:
+    with pytest.raises(GitError):
+        temporary_merge(worktree, "origin/nope")
+    assert not merge_head_exists(worktree)
+
+
+def test_temporary_merge_of_a_dirty_tree_raises_and_leaves_no_merge_state(
+    worktree: Path, repo: Path
+) -> None:
+    tip = task_commit(worktree)
+    move_main(repo, worktree, "shared.txt", "main\n")
+    write(worktree / "shared.txt", "untracked\n")
+    with pytest.raises(GitError):
+        temporary_merge(worktree, MAIN)
+    assert git(worktree, "rev-parse", "HEAD") == tip
+    assert not merge_head_exists(worktree)
+    assert (worktree / "shared.txt").read_text() == "untracked\n"
+
+
+def test_temporary_merge_stopped_by_a_hook_raises_and_cleans_up(
+    worktree: Path, repo: Path
+) -> None:
+    tip = task_commit(worktree)
+    move_main(repo, worktree, "main.txt")
+    hook = repo / ".git" / "hooks" / "pre-merge-commit"
+    write(hook, "#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    with pytest.raises(GitError):
+        temporary_merge(worktree, MAIN)
+    assert git(worktree, "rev-parse", "HEAD") == tip
+    assert not merge_head_exists(worktree)
+    assert git(worktree, "status", "--porcelain") == ""
+
+
+def test_temporary_merge_refuses_the_main_working_tree(repo: Path) -> None:
+    head = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(GitError):
+        temporary_merge(repo, "HEAD~1")
+    assert git(repo, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("value", ["", "-x", "--abort"])
+def test_temporary_merge_refuses_option_shaped_refs(worktree: Path, value: str) -> None:
+    with pytest.raises(GitError):
+        temporary_merge(worktree, value)
+
+
+def test_reset_to_discards_a_temporary_merge(worktree: Path, repo: Path) -> None:
+    tip = task_commit(worktree)
+    move_main(repo, worktree, "main.txt")
+    temporary_merge(worktree, MAIN)
+    reset_to(worktree, tip)
+    assert git(worktree, "rev-parse", "HEAD") == tip
+    assert not (worktree / "main.txt").exists()
+
+
+# The task's last commit and changes, looking through a temporary merge
+
+
+def test_task_tip_without_a_merge_is_head(worktree: Path) -> None:
+    tip = task_commit(worktree)
+    assert task_tip(worktree, MAIN) == tip
+
+
+def test_task_tip_of_a_temporary_merge_is_its_first_parent(
+    worktree: Path, repo: Path
+) -> None:
+    tip = task_commit(worktree)
+    move_main(repo, worktree, "main.txt")
+    temporary_merge(worktree, MAIN)
+    assert task_tip(worktree, MAIN) == tip
+
+
+def test_task_tip_of_another_merge_is_head(worktree: Path, repo: Path) -> None:
+    task_commit(worktree)
+    git(worktree, "branch", "side", "HEAD~1")
+    git(worktree, "checkout", "-q", "side")
+    add_commit(worktree, "side.txt")
+    side = git(worktree, "rev-parse", "HEAD")
+    git(worktree, "checkout", "-q", BRANCH)
+    git(worktree, "merge", "-q", "--no-ff", "--no-edit", "side")
+    head = git(worktree, "rev-parse", "HEAD")
+    assert git(worktree, "rev-parse", "HEAD^2") == side
+    assert task_tip(worktree, MAIN) == head
+
+
+def test_task_tip_refuses_option_shaped_refs(worktree: Path) -> None:
+    with pytest.raises(GitError):
+        task_tip(worktree, "-x")
+
+
+def test_task_changed_paths_without_a_merge_matches_changed_paths(
+    worktree: Path,
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "committed.txt")
+    write(worktree / "first.txt", "edited\n")
+    write(worktree / "new.txt")
+    expected = {"committed.txt", "first.txt", "new.txt"}
+    assert task_changed_paths(worktree, since, MAIN) == expected
+    assert task_changed_paths(worktree, since, MAIN) == changed_paths(worktree, since)
+
+
+def test_task_changed_paths_leaves_out_main_files_of_a_temporary_merge(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "committed.txt")
+    move_main(repo, worktree, "main.txt")
+    temporary_merge(worktree, MAIN)
+    write(worktree / "untracked.txt")
+    write(worktree / "committed.txt", "edited after the merge\n")
+    write(worktree / "first.txt", "edited after the merge\n")
+    assert task_changed_paths(worktree, since, MAIN) == {
+        "committed.txt",
+        "first.txt",
+        "untracked.txt",
+    }
+
+
+def test_task_changed_paths_reports_a_deletion_through_a_merge(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    git(worktree, "rm", "-q", "first.txt")
+    git(worktree, "commit", "-qm", "delete")
+    move_main(repo, worktree, "main.txt")
+    temporary_merge(worktree, MAIN)
+    assert task_changed_paths(worktree, since, MAIN) == {"first.txt"}
+
+
+def test_task_changed_paths_ignores_ignored_files(worktree: Path) -> None:
+    since = task_commit(worktree)
+    write(worktree / ".orch-result.json", "{}\n")
+    assert task_changed_paths(worktree, since, MAIN) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("since", "main_ref"), [("-x", MAIN), ("HEAD", "-x"), ("", MAIN), ("HEAD", "")]
+)
+def test_task_changed_paths_refuses_option_shaped_values(
+    worktree: Path, since: str, main_ref: str
+) -> None:
+    with pytest.raises(GitError):
+        task_changed_paths(worktree, since, main_ref)
+
+
+# Remote names
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ext::sh -c touch%20pwned",
+        "fd::3",
+        "https://example.com/x.git",
+        "ssh://example.com/x.git",
+        "git@example.com:x.git",
+        "../other.git",
+        "/tmp/other.git",
+        "origin\n",
+        "",
+        "-x",
+        ".hidden",
+    ],
+)
+def test_only_remote_names_are_accepted(
+    worktree: Path,
+    repo: Path,
+    pushed: str,
+    git_calls: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    # A transport helper such as fd:: would wait for input if it ever reached git.
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT_SEC", 5)
+    git_calls.unlink(missing_ok=True)
+    with pytest.raises(GitError):
+        fetch(repo, value)
+    with pytest.raises(GitError):
+        push_task_branch(worktree, BRANCH, value)
+    with pytest.raises(GitError):
+        update_task_branch(worktree, "m1", pushed, value)
+    assert not git_calls.exists()
+
+
+@pytest.fixture
+def upstream(worktree: Path, repo: Path, tmp_path: Path) -> Path:
+    path = tmp_path / "upstream.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(path)], check=True)
+    git(repo, "remote", "add", "upstream", str(path))
+    git(repo, "push", "-q", "upstream", "main")
+    return path
+
+
+def test_fetch_from_another_remote_name(repo: Path, upstream: Path) -> None:
+    fetch(repo, "upstream")
+    assert git(repo, "rev-parse", "upstream/main") == git(repo, "rev-parse", "main")
+
+
+def test_push_and_update_use_the_given_remote_name(
+    worktree: Path, remote: Path, upstream: Path
+) -> None:
+    first = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH, "upstream")
+    assert git(upstream, "rev-parse", f"refs/heads/{BRANCH}") == first
+    git(worktree, "commit", "-q", "--amend", "-m", "rewritten")
+    second = update_task_branch(worktree, "m1", first, "upstream")
+    assert git(upstream, "rev-parse", f"refs/heads/{BRANCH}") == second
+    with pytest.raises(subprocess.CalledProcessError):
+        git(remote, "rev-parse", "--verify", f"refs/heads/{BRANCH}")
 
 
 # Reset

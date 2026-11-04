@@ -25,6 +25,14 @@ class RebaseResult:
     conflicts: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MergeResult:
+    """Outcome of a temporary merge. A conflict is an outcome, not an error."""
+
+    ok: bool
+    conflicts: tuple[str, ...] = ()
+
+
 def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
     """Run git with an isolated repository environment and a group timeout."""
     command = ["git", "-C", str(cwd), *args]
@@ -79,6 +87,11 @@ def _validate_branch(branch: str) -> None:
         raise GitError(f"Invalid task branch: {branch!r}")
 
 
+def _validate_remote(remote: str) -> None:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote) is None:
+        raise GitError(f"Invalid remote name: {remote!r}")
+
+
 def _git_path(worktree: Path, value: str) -> Path:
     """Resolve a git-reported path relative to the command's working tree."""
     return (worktree / value).resolve()
@@ -86,7 +99,7 @@ def _git_path(worktree: Path, value: str) -> Path:
 
 def fetch(repo: Path, remote: str = "origin") -> None:
     """Fetch from a remote."""
-    _validate_value(remote)
+    _validate_remote(remote)
     _git(repo, "fetch", remote)
 
 
@@ -191,7 +204,7 @@ def rebase(worktree: Path, onto: str) -> RebaseResult:
 def push_task_branch(worktree: Path, branch: str, remote: str = "origin") -> None:
     """Push a task branch without force. A differing remote branch is an error."""
     _validate_branch(branch)
-    _validate_value(remote)
+    _validate_remote(remote)
     current = _git(worktree, "symbolic-ref", "--short", "HEAD").strip()
     if current != branch:
         raise GitError(f"Current branch {current!r} differs from {branch!r}")
@@ -214,7 +227,7 @@ def update_task_branch(
     branch = f"task/{task_id}"
     if re.fullmatch(r"[0-9a-f]{40}", expected_remote_sha) is None:
         raise GitError(f"Invalid expected remote commit id: {expected_remote_sha!r}")
-    _validate_value(remote)
+    _validate_remote(remote)
     current = _git(worktree, "symbolic-ref", "--short", "HEAD").strip()
     if current != branch:
         raise GitError(f"Current branch {current!r} differs from {branch!r}")
@@ -243,3 +256,52 @@ def reset_to(worktree: Path, sha: str) -> None:
     _git(worktree, "reset", "--hard", sha)
     _git(worktree, "clean", "-fd")
     (worktree / ".orch-result.json").unlink(missing_ok=True)
+
+
+def temporary_merge(worktree: Path, ref: str) -> MergeResult:
+    """Merge a ref into a linked worktree to check it. Discard it with reset_to."""
+    _validate_value(ref)
+    git_dir, common_dir = _git(
+        worktree, "rev-parse", "--git-dir", "--git-common-dir"
+    ).splitlines()
+    if _git_path(worktree, git_dir) == _git_path(worktree, common_dir):
+        raise GitError("Refusing to merge in the main working tree")
+    try:
+        _git(worktree, "merge", "--no-ff", "--no-edit", ref)
+    except GitError:
+        conflicts = _git(worktree, "diff", "--name-only", "--diff-filter=U", "-z")
+        if conflicts:
+            _git(worktree, "merge", "--abort")
+            return MergeResult(
+                ok=False,
+                conflicts=tuple(sorted(path for path in conflicts.split("\0") if path)),
+            )
+        path = _git(worktree, "rev-parse", "--git-path", "MERGE_HEAD").strip()
+        if _git_path(worktree, path).exists():
+            _git(worktree, "merge", "--abort")
+        raise
+    return MergeResult(ok=True)
+
+
+def task_tip(worktree: Path, main_ref: str) -> str:
+    """Return the task's last commit, looking through a temporary merge of main_ref."""
+    _validate_value(main_ref)
+    commits = _git(worktree, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    if len(commits) == 3 and commits[2] == rev_parse(worktree, main_ref):
+        return commits[1]
+    return commits[0]
+
+
+def task_changed_paths(worktree: Path, since: str, main_ref: str) -> frozenset[str]:
+    """Return the task's changes since a revision, without main_ref's merged files."""
+    _validate_value(since)
+    _validate_value(main_ref)
+    tip = task_tip(worktree, main_ref)
+    if tip == rev_parse(worktree, "HEAD"):
+        return changed_paths(worktree, since)
+    committed = _git(worktree, "diff", "--name-only", "--no-renames", "-z", since, tip)
+    uncommitted = _git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD")
+    untracked = _git(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    return frozenset(
+        path for path in (committed + uncommitted + untracked).split("\0") if path
+    )
