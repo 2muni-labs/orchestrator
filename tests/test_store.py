@@ -33,6 +33,7 @@ from orch.store import (
     StoreError,
     TaskNotFoundError,
     add_locks,
+    clear_gate_results,
     connect,
     finish_run,
     gate_results,
@@ -984,6 +985,31 @@ def test_rerunning_a_gate_replaces_its_result(conn: sqlite3.Connection) -> None:
     assert gate_results(conn, "a", 1) == (
         GateResult(task_id="a", attempt=1, gate=Gate.G2_PRE_PR, passed=True, at="t2"),
     )
+
+
+def test_clear_gate_results_removes_only_the_named_gates_of_that_attempt(
+    conn: sqlite3.Connection,
+) -> None:
+    record_gate_result(conn, "a", 1, Gate.G1, passed=True, at="t1")
+    record_gate_result(conn, "a", 1, Gate.G2, passed=True, at="t2")
+    record_gate_result(conn, "a", 1, Gate.G2_PRE_PR, passed=True, at="t3")
+    record_gate_result(conn, "a", 2, Gate.G1, passed=True, at="t4")
+    record_gate_result(conn, "b", 1, Gate.G1, passed=True, at="t5")
+    clear_gate_results(conn, "a", 1, (Gate.G1, Gate.G2))
+    assert [r.gate for r in gate_results(conn, "a", 1)] == [Gate.G2_PRE_PR]
+    assert [r.gate for r in gate_results(conn, "a", 2)] == [Gate.G1]
+    assert [r.gate for r in gate_results(conn, "b", 1)] == [Gate.G1]
+
+
+def test_clear_gate_results_accepts_no_gates_and_missing_rows(
+    conn: sqlite3.Connection,
+) -> None:
+    record_gate_result(conn, "a", 1, Gate.G1, passed=True, at="t1")
+    clear_gate_results(conn, "a", 1, ())
+    clear_gate_results(conn, "a", 1, iter([Gate.G3]))
+    clear_gate_results(conn, "missing", 1, (Gate.G1,))
+    assert [r.gate for r in gate_results(conn, "a", 1)] == [Gate.G1]
+    assert conn.in_transaction is False
 
 
 def test_gate_result_defaults_to_the_current_utc_time(conn: sqlite3.Connection) -> None:

@@ -242,7 +242,7 @@ def run_gates(
     return GateReport(passed=True, gates=gates, log_path=str(log_path))
 
 
-def review_required(grade: Grade) -> bool:
+def review_required(grade: Grade, *, flag: bool = False) -> bool:
     """Return whether a passing task of this grade goes to cross-review."""
     return grade in (Grade.L3, Grade.L3R)
 

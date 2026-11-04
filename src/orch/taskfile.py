@@ -31,6 +31,7 @@ class TaskSpec:
     body: str
     effort: Effort | None = None
     tests: str | None = None
+    review: bool = False
 
 
 def _validate_id(value: object) -> None:

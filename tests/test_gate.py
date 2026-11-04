@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import gate
+from orch import gate, gitops, store
 from orch.config import Target
 from orch.gate import (
     GateError,
@@ -533,6 +533,30 @@ def test_review_required(grade: Grade, expected: bool) -> None:
     assert review_required(grade) is expected
 
 
+@pytest.mark.parametrize(
+    ("grade", "flag", "expected"),
+    [
+        (Grade.L1, False, False),
+        (Grade.L2, False, False),
+        (Grade.L1, True, True),
+        (Grade.L2, True, True),
+        (Grade.L3, False, True),
+        (Grade.L3R, False, True),
+        (Grade.L3, True, True),
+        (Grade.L3R, True, True),
+    ],
+)
+def test_the_review_flag_can_only_add_a_review(
+    grade: Grade, flag: bool, expected: bool
+) -> None:
+    assert review_required(grade, flag=flag) is expected
+
+
+def test_the_review_flag_is_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        review_required(Grade.L2, True)  # type: ignore[misc]
+
+
 # The orch gate flow
 
 
@@ -577,11 +601,14 @@ def add_judged_task(
 
 
 def run_flow(
-    conn: sqlite3.Connection, log_path: Path, target: Target | None = None
+    conn: sqlite3.Connection,
+    log_path: Path,
+    target: Target | None = None,
+    spec: TaskSpec | None = None,
 ) -> GateReport:
     return gate_task(
         conn,
-        make_spec(),
+        spec if spec is not None else make_spec(),
         target if target is not None else make_target(),
         main_ref=MAIN,
         log_path=log_path,
@@ -804,6 +831,192 @@ def test_no_database_transaction_stays_open_while_commands_run(
     assert latest_run(conn, "feat-x") is not None
 
 
+# The spec's review flag
+
+
+@pytest.mark.parametrize("grade", [Grade.L1, Grade.L2])
+def test_the_spec_flag_sends_a_lower_grade_to_review(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    grade: Grade,
+) -> None:
+    add_judged_task(conn, worktree, test_sha, grade=grade)
+    assert run_flow(conn, log_path, spec=make_spec(review=True)).passed is True
+    assert state_of(conn) is TaskState.REVIEWING
+
+
+@pytest.mark.parametrize("grade", [Grade.L3, Grade.L3R])
+def test_the_spec_flag_cannot_turn_off_a_required_review(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    grade: Grade,
+) -> None:
+    add_judged_task(conn, worktree, test_sha, grade=grade)
+    assert run_flow(conn, log_path, spec=make_spec(review=False)).passed is True
+    assert state_of(conn) is TaskState.REVIEWING
+
+
+# Interrupts and failed recovery
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+def test_an_interrupt_during_the_gates_returns_to_judging_and_propagates(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[BaseException],
+) -> None:
+    def fail(*args: object, **options: object) -> GateReport:
+        raise error
+
+    add_judged_task(conn, worktree, test_sha)
+    monkeypatch.setattr(gate, "run_gates", fail)
+    with pytest.raises(error):
+        run_flow(conn, log_path)
+    assert state_of(conn) is TaskState.JUDGING
+    assert states_passed(conn)[-1] == ("gating", "judging")
+
+
+def test_an_interrupt_during_the_commit_returns_to_judging_and_propagates(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **options: object) -> str:
+        raise KeyboardInterrupt
+
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "new.py")
+    monkeypatch.setattr(gitops, "commit", fail)
+    with pytest.raises(KeyboardInterrupt):
+        run_flow(conn, log_path)
+    assert state_of(conn) is TaskState.JUDGING
+
+
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
+def test_a_failing_recovery_does_not_hide_the_original_exception(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[BaseException],
+) -> None:
+    real = store.transition
+
+    def fail(*args: object, **options: object) -> GateReport:
+        raise error("original")
+
+    def transition(
+        conn: sqlite3.Connection,
+        task_id: str,
+        from_state: TaskState,
+        to_state: TaskState,
+        **options: object,
+    ) -> None:
+        if from_state is TaskState.GATING and to_state is TaskState.JUDGING:
+            raise sqlite3.OperationalError("disk I/O error")
+        real(conn, task_id, from_state, to_state, **options)
+
+    add_judged_task(conn, worktree, test_sha)
+    monkeypatch.setattr(gate, "run_gates", fail)
+    monkeypatch.setattr(store, "transition", transition)
+    with pytest.raises(error) as caught:
+        run_flow(conn, log_path)
+    assert "original" in str(caught.value)
+    assert "disk I/O error" in "\n".join(caught.value.__notes__)
+    assert state_of(conn) is TaskState.GATING
+
+
+def test_an_exception_from_run_command_returns_to_judging_and_raises(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object) -> int | None:
+        raise OSError("cannot start")
+
+    add_judged_task(conn, worktree, test_sha)
+    monkeypatch.setattr(gate, "run_command", fail)
+    with pytest.raises(OSError, match="cannot start"):
+        run_flow(conn, log_path)
+    assert state_of(conn) is TaskState.JUDGING
+    assert recorded(conn) == {}
+
+
+def test_an_interrupt_in_run_command_stops_the_group(
+    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "late.txt"
+    real_wait = subprocess.Popen.wait
+
+    def interrupted(self: subprocess.Popen[bytes], timeout: float | None = None) -> int:
+        if timeout is not None:
+            raise KeyboardInterrupt
+        return real_wait(self)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_command(f"sleep 1; echo x > '{marker}'", tmp_path, log_path)
+    time.sleep(1.5)
+    assert not marker.exists()
+
+
+# Rerunning the gates in the same attempt
+
+
+def test_a_rerun_clears_results_of_gates_that_did_not_run(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    run_flow(conn, log_path, make_target(test_command="exit 1"))
+    assert recorded(conn) == {Gate.G1: True, Gate.G2: False}
+    write(worktree / "outside.py")
+    run_flow(conn, log_path)
+    assert recorded(conn) == {Gate.G1: False}
+
+
+def test_a_rerun_keeps_the_pre_pr_gate_and_other_attempts(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha, attempt=2)
+    store.record_gate_result(conn, "feat-x", 1, Gate.G3, passed=True)
+    store.record_gate_result(conn, "feat-x", 2, Gate.G2_PRE_PR, passed=False)
+    store.record_gate_result(conn, "feat-x", 2, Gate.G3, passed=True)
+    run_flow(conn, log_path, make_target(test_command="exit 1"))
+    assert recorded(conn, 2) == {Gate.G2_PRE_PR: False, Gate.G1: True, Gate.G2: False}
+    assert recorded(conn, 1) == {Gate.G3: True}
+
+
+def test_an_exception_during_a_rerun_leaves_no_old_results(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **options: object) -> GateReport:
+        raise RuntimeError("boom")
+
+    add_judged_task(conn, worktree, test_sha)
+    run_flow(conn, log_path, make_target(test_command="exit 1"))
+    monkeypatch.setattr(gate, "run_gates", fail)
+    with pytest.raises(RuntimeError):
+        run_flow(conn, log_path)
+    assert recorded(conn) == {}
+    assert state_of(conn) is TaskState.JUDGING
+
+
 # Changes made while the gates run
 
 
@@ -893,6 +1106,22 @@ def test_run_gates_reports_a_scope_escape(
     assert report.failed_gate == "G1"
     assert report.gates["G1"] is GateStatus.FAILED
     assert report.gates["G2"] is GateStatus.PASSED
+
+
+def test_the_scope_is_checked_again_when_g3_is_skipped(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    report = run_gates(
+        make_spec(),
+        make_target(test_command="echo x > outside.py", lint_command=""),
+        worktree,
+        since=test_sha,
+        main_ref=MAIN,
+        log_path=log_path,
+    )
+    assert report.passed is False
+    assert report.failed_gate == "G1"
+    assert report.gates["G3"] is GateStatus.SKIPPED
 
 
 def test_a_failing_gate_keeps_its_own_failure_over_a_scope_escape(
