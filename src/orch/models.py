@@ -194,7 +194,9 @@ TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
         TaskState.PREPARED: frozenset(
             {TaskState.RESERVED, TaskState.QUEUED, TaskState.DISCARDED}
         ),
-        TaskState.QUEUED: frozenset({TaskState.RESERVED, TaskState.DISCARDED}),
+        TaskState.QUEUED: frozenset(
+            {TaskState.RESERVED, TaskState.DISCARDED, TaskState.BLOCKED}
+        ),
         TaskState.RESERVED: frozenset(
             {TaskState.RUNNING, TaskState.QUEUED, TaskState.DISCARDED}
         ),
