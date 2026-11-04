@@ -1,5 +1,6 @@
 +++
 id = "<task-id>"
+title = "<English commit and pull request title>"  # printable ASCII, one line, max 72
 target = "orchestrator"
 grade = "L2"                  # L1 | L2 | L3 | L3R (risk area)
 lane = "B"                    # B (Codex) | C (Claude) | D (interactive)

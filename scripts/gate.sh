@@ -4,7 +4,8 @@
 # Prints one line of JSON. Exit codes: 0 passed, 1 a gate failed, 64 bad usage or
 # task setup, 70 internal error. Full tool output goes to logs/<id>.gate.log.
 #
-# ORCH_RUNTIME overrides the runtime directory (default ~/.orch/orchestrator).
+# ORCH_RUNTIME overrides the runtime directory (default $ORCH_HOME/orchestrator,
+# where ORCH_HOME defaults to ~/.orch, as in src/orch/config.py).
 #
 # The system Python may lack tomllib, so uv supplies the interpreter.
 set -euo pipefail
@@ -223,7 +224,8 @@ def main() -> None:
     if len(sys.argv) != 2 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", sys.argv[1]):
         usage_error("usage", "사용법: scripts/gate.sh <task-id>")
     task_id = sys.argv[1]
-    runtime = Path(os.environ.get("ORCH_RUNTIME", "~/.orch/orchestrator")).expanduser()
+    home = os.environ.get("ORCH_HOME") or "~/.orch"
+    runtime = Path(os.environ.get("ORCH_RUNTIME") or f"{home}/orchestrator").expanduser()
     task = load_task(runtime, task_id)
     worktree = runtime / "worktrees" / task_id
     if not worktree.is_dir():

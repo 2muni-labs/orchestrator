@@ -11,7 +11,8 @@
 # BLOCKED_QUOTA if the end of this run's log shows a usage limit message, and
 # FAILED/report_missing otherwise. A valid report's log_path is set to that log.
 #
-# ORCH_RUNTIME overrides the runtime directory (default ~/.orch/orchestrator).
+# ORCH_RUNTIME overrides the runtime directory (default $ORCH_HOME/orchestrator,
+# where ORCH_HOME defaults to ~/.orch, as in src/orch/config.py).
 # ORCH_CODEX overrides the Codex binary, for tests only.
 set -euo pipefail
 exec uv run --no-project --python 3.14 python -I - "$@" <<'PY'
@@ -257,7 +258,8 @@ def main() -> None:
     if len(sys.argv) != 2 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", sys.argv[1]):
         usage_error("usage", "사용법: scripts/run-sub.sh <task-id>")
     task_id = sys.argv[1]
-    runtime = Path(os.environ.get("ORCH_RUNTIME", "~/.orch/orchestrator")).expanduser()
+    home = os.environ.get("ORCH_HOME") or "~/.orch"
+    runtime = Path(os.environ.get("ORCH_RUNTIME") or f"{home}/orchestrator").expanduser()
     spec = runtime / "tasks" / f"{task_id}.md"
     task = load_task(spec, task_id)
     worktree = runtime / "worktrees" / task_id
