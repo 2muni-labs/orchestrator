@@ -1,0 +1,562 @@
+import ast
+import subprocess
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from orch import gitops
+from orch.gitops import (
+    GitError,
+    RebaseResult,
+    changed_paths,
+    commit,
+    commits_since,
+    create_worktree,
+    delete_branch,
+    diff,
+    fetch,
+    merge_base,
+    prune_worktrees,
+    push_task_branch,
+    rebase,
+    remove_worktree,
+    reset_to,
+    rev_parse,
+)
+from orch.redact import ResidualPathError, SecretFoundError
+
+BRANCH = "task/m1"
+# Assembled at run time so that no path of this shape is written in the repository.
+FAKE_HOME = Path("/", "Users", "tester")
+FAKE_ORCH = FAKE_HOME / ".orch"
+REDACT = {"home": FAKE_HOME, "orch_home": FAKE_ORCH}
+
+
+def git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def write(path: Path, text: str = "x\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def add_commit(cwd: Path, name: str, text: str = "x\n") -> str:
+    write(cwd / name, text)
+    git(cwd, "add", "--", name)
+    git(cwd, "commit", "-qm", f"change {name}")
+    return git(cwd, "rev-parse", "HEAD")
+
+
+@pytest.fixture(autouse=True)
+def isolated_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "gitconfig"
+    config.write_text(
+        "[user]\n\tname = t\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture
+def remote(tmp_path: Path) -> Path:
+    path = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(path)], check=True)
+    return path
+
+
+@pytest.fixture
+def repo(tmp_path: Path, remote: Path) -> Path:
+    path = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    write(path / ".gitignore", ".venv/\n.orch-result.json\n")
+    add_commit(path, "base.txt")
+    git(path, "add", ".gitignore")
+    git(path, "commit", "-qm", "ignore")
+    git(path, "remote", "add", "origin", str(remote))
+    git(path, "push", "-q", "origin", "main")
+    git(path, "fetch", "-q", "origin")
+    return path
+
+
+@pytest.fixture
+def worktree(repo: Path, tmp_path: Path) -> Path:
+    path = tmp_path / "wt"
+    create_worktree(repo, path, BRANCH, "origin/main")
+    return path
+
+
+# Queries
+
+
+def test_fetch_updates_the_remote_tracking_branch(
+    repo: Path, tmp_path: Path, remote: Path
+) -> None:
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    sha = add_commit(other, "new.txt")
+    git(other, "push", "-q", "origin", "main")
+    fetch(repo)
+    assert git(repo, "rev-parse", "origin/main") == sha
+
+
+def test_fetch_from_unknown_remote_raises(repo: Path) -> None:
+    with pytest.raises(GitError):
+        fetch(repo, "nope")
+
+
+def test_rev_parse_returns_the_full_id(repo: Path) -> None:
+    assert rev_parse(repo, "HEAD") == git(repo, "rev-parse", "HEAD")
+    assert len(rev_parse(repo, "HEAD")) == 40
+
+
+def test_rev_parse_unknown_revision_raises(repo: Path) -> None:
+    with pytest.raises(GitError):
+        rev_parse(repo, "no-such-branch")
+
+
+def test_merge_base_and_commits_since_are_oldest_first(
+    worktree: Path, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "origin/main")
+    first = add_commit(worktree, "a.txt")
+    second = add_commit(worktree, "b.txt")
+    assert merge_base(worktree, "origin/main") == base
+    assert commits_since(worktree, base) == (first, second)
+    assert commits_since(worktree, second) == ()
+
+
+def test_changed_paths_includes_every_kind_of_change(worktree: Path) -> None:
+    since = rev_parse(worktree, "HEAD")
+    add_commit(worktree, "committed.txt")
+    write(worktree / "base.txt", "modified\n")
+    write(worktree / "staged.txt")
+    git(worktree, "add", "staged.txt")
+    write(worktree / "new dir" / "이름 있는 파일.txt")
+    write(worktree / ".venv" / "ignored.txt")
+    write(worktree / ".orch-result.json", "{}")
+    assert changed_paths(worktree, since) == {
+        "committed.txt",
+        "base.txt",
+        "staged.txt",
+        "new dir/이름 있는 파일.txt",
+    }
+
+
+def test_changed_paths_reports_both_sides_of_a_rename(worktree: Path) -> None:
+    since = rev_parse(worktree, "HEAD")
+    git(worktree, "mv", "base.txt", "moved.txt")
+    git(worktree, "commit", "-qm", "move")
+    assert changed_paths(worktree, since) == {"base.txt", "moved.txt"}
+
+
+def test_changed_paths_reports_a_deletion(worktree: Path) -> None:
+    since = rev_parse(worktree, "HEAD")
+    (worktree / "base.txt").unlink()
+    assert changed_paths(worktree, since) == {"base.txt"}
+
+
+def test_diff_covers_only_committed_changes_since_base(worktree: Path) -> None:
+    base = rev_parse(worktree, "HEAD")
+    add_commit(worktree, "a.txt", "committed-line\n")
+    write(worktree / "b.txt", "uncommitted-line\n")
+    text = diff(worktree, base)
+    assert "committed-line" in text
+    assert "uncommitted-line" not in text
+
+
+# Worktrees and branches
+
+
+def test_create_worktree_starts_at_the_start_point(worktree: Path, repo: Path) -> None:
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == BRANCH
+    assert git(worktree, "rev-parse", "HEAD") == git(repo, "rev-parse", "origin/main")
+
+
+def test_create_worktree_on_an_existing_branch_raises(
+    worktree: Path, repo: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(GitError):
+        create_worktree(repo, tmp_path / "wt2", BRANCH, "origin/main")
+
+
+def test_remove_worktree_refuses_a_dirty_one_without_force(
+    worktree: Path, repo: Path
+) -> None:
+    write(worktree / "dirty.txt")
+    with pytest.raises(GitError):
+        remove_worktree(repo, worktree)
+    assert worktree.is_dir()
+    remove_worktree(repo, worktree, force=True)
+    assert not worktree.exists()
+
+
+def test_delete_branch_removes_an_unmerged_task_branch(
+    worktree: Path, repo: Path
+) -> None:
+    add_commit(worktree, "a.txt")
+    remove_worktree(repo, worktree)
+    delete_branch(repo, BRANCH)
+    assert git(repo, "branch", "--list", BRANCH) == ""
+
+
+def test_prune_forgets_a_worktree_that_is_gone(
+    repo: Path, tmp_path: Path, worktree: Path
+) -> None:
+    subprocess.run(["rm", "-rf", str(worktree)], check=True)
+    prune_worktrees(repo)
+    assert str(worktree) not in git(repo, "worktree", "list")
+    delete_branch(repo, BRANCH)
+
+
+# Task branch rule
+
+
+@pytest.mark.parametrize(
+    "branch", ["main", "master", "feature/x", "task/", "task/a b", "task/-x", "-x", ""]
+)
+def test_only_task_branches_are_accepted(
+    repo: Path, tmp_path: Path, branch: str
+) -> None:
+    with pytest.raises(GitError):
+        create_worktree(repo, tmp_path / "wt3", branch, "origin/main")
+    assert not (tmp_path / "wt3").exists()
+    with pytest.raises(GitError):
+        delete_branch(repo, branch)
+    with pytest.raises(GitError):
+        push_task_branch(repo, branch)
+    assert git(repo, "rev-parse", "--verify", "main")
+
+
+@pytest.mark.parametrize("value", ["--all", "-x", "--upload-pack=x", ""])
+def test_values_that_look_like_options_are_refused(
+    repo: Path, tmp_path: Path, value: str
+) -> None:
+    with pytest.raises(GitError):
+        fetch(repo, value)
+    with pytest.raises(GitError):
+        rev_parse(repo, value)
+    with pytest.raises(GitError):
+        commits_since(repo, value)
+    with pytest.raises(GitError):
+        changed_paths(repo, value)
+    with pytest.raises(GitError):
+        diff(repo, value)
+    with pytest.raises(GitError):
+        merge_base(repo, value)
+    with pytest.raises(GitError):
+        rebase(repo, value)
+    with pytest.raises(GitError):
+        create_worktree(repo, tmp_path / "wt4", BRANCH, value)
+
+
+# Commit
+
+
+def test_commit_returns_the_new_id_and_keeps_a_multiline_message(
+    worktree: Path,
+) -> None:
+    write(worktree / "a.txt")
+    message = "Add a file\n\n본문 설명입니다.\n"
+    sha = commit(worktree, message, paths=["a.txt"], **REDACT)
+    assert sha == git(worktree, "rev-parse", "HEAD")
+    assert git(worktree, "log", "-1", "--format=%B") == message.strip()
+
+
+def test_commit_message_goes_through_redact(worktree: Path) -> None:
+    write(worktree / "a.txt")
+    tree = f"{FAKE_ORCH}/hub/worktrees/m1/src/a.py"
+    commit(worktree, f"Fix {tree} from {FAKE_HOME}/x", paths=["a.txt"], **REDACT)
+    assert git(worktree, "log", "-1", "--format=%s") == "Fix src/a.py from ~/x"
+
+
+def fake_token() -> str:
+    return "gh" + "s_" + "a" * 36
+
+
+@pytest.mark.parametrize(
+    ("make_message", "kwargs", "error"),
+    [
+        (fake_token, {}, SecretFoundError),
+        (lambda: "contains hunter2", {"secrets": ("hunter2",)}, SecretFoundError),
+        (lambda: "/" + "home" + "/someone/x", {}, ResidualPathError),
+    ],
+    ids=["token", "exact_secret", "residual_path"],
+)
+def test_rejected_message_commits_and_stages_nothing(
+    worktree: Path,
+    make_message: Callable[[], str],
+    kwargs: dict,
+    error: type[Exception],
+) -> None:
+    head = git(worktree, "rev-parse", "HEAD")
+    write(worktree / "a.txt")
+    with pytest.raises(error):
+        commit(worktree, make_message(), paths=["a.txt"], **REDACT, **kwargs)
+    assert git(worktree, "rev-parse", "HEAD") == head
+    assert git(worktree, "diff", "--cached", "--name-only") == ""
+
+
+def test_commit_includes_only_the_given_paths(worktree: Path) -> None:
+    write(worktree / "a.txt")
+    write(worktree / "other-staged.txt")
+    write(worktree / "unstaged.txt")
+    git(worktree, "add", "other-staged.txt")
+    commit(worktree, "Add a", paths=["a.txt"], **REDACT)
+    assert git(worktree, "show", "--name-only", "--format=", "HEAD") == "a.txt"
+    assert git(worktree, "diff", "--cached", "--name-only") == "other-staged.txt"
+
+
+def test_commit_stages_new_modified_and_deleted_paths(worktree: Path) -> None:
+    write(worktree / "new file.txt", "different content\n")
+    (worktree / "base.txt").unlink()
+    commit(worktree, "Change", paths=["new file.txt", "base.txt"], **REDACT)
+    shown = git(worktree, "show", "--name-status", "--format=", "HEAD").splitlines()
+    assert sorted(shown) == ["A\tnew file.txt", "D\tbase.txt"]
+
+
+def test_commit_path_that_looks_like_an_option_is_a_path(worktree: Path) -> None:
+    write(worktree / "-weird.txt")
+    commit(worktree, "Add", paths=["-weird.txt"], **REDACT)
+    assert git(worktree, "show", "--name-only", "--format=", "HEAD") == "-weird.txt"
+
+
+@pytest.mark.parametrize("paths", [[], ["missing.txt"]])
+def test_commit_without_usable_paths_raises(worktree: Path, paths: list[str]) -> None:
+    head = git(worktree, "rev-parse", "HEAD")
+    with pytest.raises(GitError):
+        commit(worktree, "Change", paths=paths, **REDACT)
+    assert git(worktree, "rev-parse", "HEAD") == head
+
+
+def test_commit_with_no_change_raises(worktree: Path) -> None:
+    with pytest.raises(GitError):
+        commit(worktree, "Change", paths=["base.txt"], **REDACT)
+
+
+@pytest.mark.parametrize("message", ["", "  \n"])
+def test_commit_with_an_empty_message_raises(worktree: Path, message: str) -> None:
+    write(worktree / "a.txt")
+    with pytest.raises(GitError):
+        commit(worktree, message, paths=["a.txt"], **REDACT)
+
+
+def test_commit_runs_hooks_and_reports_their_failure(
+    worktree: Path, repo: Path
+) -> None:
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    write(hook, "#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    write(worktree / "a.txt")
+    with pytest.raises(GitError):
+        commit(worktree, "Add", paths=["a.txt"], **REDACT)
+
+
+# Rebase
+
+
+def advance_main(repo: Path, name: str, text: str = "x\n") -> str:
+    sha = add_commit(repo, name, text)
+    git(repo, "push", "-q", "origin", "main")
+    git(repo, "fetch", "-q", "origin")
+    return sha
+
+
+def test_rebase_without_conflict(worktree: Path, repo: Path) -> None:
+    add_commit(worktree, "a.txt")
+    main = advance_main(repo, "b.txt")
+    assert rebase(worktree, "origin/main") == RebaseResult(ok=True)
+    assert git(worktree, "merge-base", "HEAD", "origin/main") == main
+
+
+def test_conflict_aborts_and_reports_the_files(worktree: Path, repo: Path) -> None:
+    add_commit(worktree, "same file.txt", "branch\n")
+    head = git(worktree, "rev-parse", "HEAD")
+    advance_main(repo, "same file.txt", "main\n")
+    assert rebase(worktree, "origin/main") == RebaseResult(
+        ok=False, conflicts=("same file.txt",)
+    )
+    assert git(worktree, "rev-parse", "HEAD") == head
+    assert git(worktree, "status", "--porcelain") == ""
+    state = git(worktree, "rev-parse", "--git-path", "rebase-merge")
+    assert not (worktree / state).exists()
+
+
+def test_unknown_onto_raises(worktree: Path) -> None:
+    with pytest.raises(GitError):
+        rebase(worktree, "no-such-branch")
+
+
+def test_rebase_of_a_dirty_tree_raises_and_leaves_no_rebase_state(
+    worktree: Path, repo: Path
+) -> None:
+    add_commit(worktree, "a.txt")
+    advance_main(repo, "b.txt")
+    write(worktree / "base.txt", "dirty\n")
+    with pytest.raises(GitError):
+        rebase(worktree, "origin/main")
+    assert (worktree / "base.txt").read_text(encoding="utf-8") == "dirty\n"
+    state = git(worktree, "rev-parse", "--git-path", "rebase-merge")
+    assert not (worktree / state).exists()
+
+
+# Push
+
+
+def test_push_creates_the_remote_branch_and_sets_upstream(
+    worktree: Path, remote: Path
+) -> None:
+    sha = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == sha
+    assert git(worktree, "rev-parse", "--abbrev-ref", "@{u}") == f"origin/{BRANCH}"
+
+
+def test_push_of_the_same_commit_again_succeeds(worktree: Path, remote: Path) -> None:
+    sha = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    push_task_branch(worktree, BRANCH)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == sha
+
+
+def test_push_refuses_when_the_remote_branch_is_behind(
+    worktree: Path, remote: Path
+) -> None:
+    first = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    add_commit(worktree, "b.txt")
+    with pytest.raises(GitError):
+        push_task_branch(worktree, BRANCH)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == first
+
+
+def test_push_refuses_a_diverged_remote_branch(worktree: Path, remote: Path) -> None:
+    first = add_commit(worktree, "a.txt")
+    push_task_branch(worktree, BRANCH)
+    git(worktree, "commit", "-q", "--amend", "-m", "rewritten")
+    with pytest.raises(GitError):
+        push_task_branch(worktree, BRANCH)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == first
+
+
+def test_push_refuses_a_branch_other_than_the_current_one(
+    worktree: Path, remote: Path
+) -> None:
+    with pytest.raises(GitError):
+        push_task_branch(worktree, "task/other")
+    assert git(remote, "for-each-ref", "refs/heads/task") == ""
+
+
+def test_push_failure_raises(worktree: Path, repo: Path) -> None:
+    git(repo, "remote", "set-url", "origin", "/nonexistent/remote.git")
+    with pytest.raises(GitError):
+        push_task_branch(worktree, BRANCH)
+
+
+# Reset
+
+
+def test_reset_to_restores_the_commit_and_keeps_ignored_files(worktree: Path) -> None:
+    test_commit = add_commit(worktree, "tests.txt")
+    add_commit(worktree, "later.txt")
+    write(worktree / "base.txt", "modified\n")
+    write(worktree / "staged.txt")
+    git(worktree, "add", "staged.txt")
+    write(worktree / "untracked" / "file.txt")
+    write(worktree / ".venv" / "kept.txt")
+    write(worktree / ".orch-result.json", "{}")
+
+    reset_to(worktree, test_commit)
+
+    assert git(worktree, "rev-parse", "HEAD") == test_commit
+    assert git(worktree, "status", "--porcelain") == ""
+    assert (worktree / "base.txt").read_text(encoding="utf-8") == "x\n"
+    assert not (worktree / "later.txt").exists()
+    assert not (worktree / "untracked").exists()
+    assert not (worktree / ".orch-result.json").exists()
+    assert (worktree / ".venv" / "kept.txt").exists()
+
+
+def test_reset_to_works_without_a_result_file(worktree: Path) -> None:
+    head = git(worktree, "rev-parse", "HEAD")
+    reset_to(worktree, head)
+    assert git(worktree, "rev-parse", "HEAD") == head
+
+
+def test_reset_to_refuses_the_main_working_tree(repo: Path) -> None:
+    head = git(repo, "rev-parse", "HEAD")
+    write(repo / "precious.txt", "keep\n")
+    write(repo / "base.txt", "user edit\n")
+    with pytest.raises(GitError):
+        reset_to(repo, "HEAD~1")
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert (repo / "precious.txt").exists()
+    assert (repo / "base.txt").read_text(encoding="utf-8") == "user edit\n"
+
+
+def test_reset_to_unknown_commit_changes_nothing(worktree: Path) -> None:
+    write(worktree / "untracked.txt")
+    with pytest.raises(GitError):
+        reset_to(worktree, "0" * 40)
+    assert (worktree / "untracked.txt").exists()
+
+
+@pytest.mark.parametrize("value", ["--hard", "-x", ""])
+def test_reset_to_refuses_option_shaped_values(worktree: Path, value: str) -> None:
+    write(worktree / "untracked.txt")
+    with pytest.raises(GitError):
+        reset_to(worktree, value)
+    assert (worktree / "untracked.txt").exists()
+
+
+# Process rules
+
+
+def test_git_environment_variables_do_not_redirect_commands(
+    repo: Path, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = git(worktree, "rev-parse", "HEAD")
+    other = tmp_path / "other"
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    add_commit(other, "o.txt")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
+    assert rev_parse(worktree, "HEAD") == expected
+
+
+def test_missing_directory_raises_git_error(tmp_path: Path) -> None:
+    with pytest.raises(GitError):
+        rev_parse(tmp_path / "missing", "HEAD")
+
+
+def test_timeout_kills_the_whole_process_group(
+    worktree: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    write(hook, "#!/bin/sh\nsleep 30\n")
+    hook.chmod(0o755)
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT_SEC", 0.5)
+    write(worktree / "a.txt")
+    started = time.monotonic()
+    with pytest.raises(GitError):
+        commit(worktree, "Add", paths=["a.txt"], **REDACT)
+    assert time.monotonic() - started < 10
+
+
+def test_module_imports_redact_but_not_config() -> None:
+    tree = ast.parse(Path(gitops.__file__).read_text(encoding="utf-8"))
+    orch_imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.split(".")[0] == "orch"
+    }
+    assert orch_imports == {"orch.redact"}
