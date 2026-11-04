@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake codex CLI for tests. See fake_agent.py.
+exec "${ORCH_FAKE_PYTHON:-python3}" "$(dirname "$0")/fake_agent.py" "$@"
