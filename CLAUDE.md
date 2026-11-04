@@ -67,9 +67,17 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 - Run `run-sub.sh` and `gate.sh` from the hub clone, not the worktree. A sub-agent can change the worktree's copy.
 - **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
   G1 fails if a file under `tests/` changes.
-- A P0 or P1 finding whose `path` starts with `tests/` cannot be fixed by a sub-agent,
-  because tests are frozen. Do not use the retry. Discard the task, fix the tests
-  yourself and dispatch the work again as a new task with a new id.
+- Review judgments can vary between runs. Before a P0 or P1 finding leads to a retry
+  or a discard, check it against the spec and the code. Reject a wrong finding and
+  record the reason in `R/reviews/<id>.triage.md` and the pull request body.
+- A confirmed finding whose `path` starts with `tests/` does not use the retry,
+  because tests are frozen and a sub-agent cannot fix them. Sort it into one of two
+  kinds:
+  - **Wrong tests** expect incorrect behavior. Discard the task, fix the tests
+    yourself and dispatch the work again as a new task with a new id.
+  - **Insufficient tests** miss a check. Continue with the pull request and create a
+    follow-up task that adds the tests. Record this in the triage file and the pull
+    request body, since the review verdict stays `BLOCK`.
 - For concurrency tests in an L3 task only, you may check before dispatch that the
   tests are stable by running them repeatedly against a reference implementation.
   Never commit it, delete it right after the check, and state that you used it in
@@ -83,4 +91,6 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
   sub-agents read them without a permission prompt because the user settings
   (`~/.claude/settings.json`) set `permissions.additionalDirectories` to
   `["~/.orch/orchestrator"]`. No per-clone setup is needed.
+- Never put secrets or tokens under `~/.orch/orchestrator`. Those settings let every
+  Claude session on this machine read that directory.
 - If the procedure proves awkward, fix the harness through a pull request.
