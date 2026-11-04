@@ -63,4 +63,5 @@ background.
 
 Before you finish, write `.orch-result.json` in the worktree root, conforming to
 `schemas/result.json`, with `task_id` set to this task's `id` and `log_path` set to
-`~/.orch/orchestrator/logs/<task-id>.log`. Leave your changes uncommitted.
+`~/.orch/orchestrator/logs/<task-id>.log`; the runner replaces it with this run's log.
+Leave your changes uncommitted.

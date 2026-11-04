@@ -7,8 +7,9 @@
 # Prints one line of JSON. Exit codes follow the status: 0 DONE, 10 PARTIAL,
 # 20 FAILED, 30 BLOCKED, 40 BLOCKED_QUOTA, 64 bad usage or task setup.
 #
-# A missing or invalid result becomes BLOCKED_QUOTA if the end of the log shows a
-# usage limit message, and FAILED/report_missing otherwise.
+# Each run writes its own log, logs/<id>.<n>.log. A missing or invalid result becomes
+# BLOCKED_QUOTA if the end of this run's log shows a usage limit message, and
+# FAILED/report_missing otherwise. A valid report's log_path is set to that log.
 #
 # ORCH_RUNTIME overrides the runtime directory (default ~/.orch/orchestrator).
 # ORCH_CODEX overrides the Codex binary, for tests only.
@@ -237,6 +238,21 @@ def write_atomic(path: Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
+def new_log(logs: Path, task_id: str) -> Path:
+    """Create this run's log, numbered after the task's earlier runs."""
+    pattern = re.compile(re.escape(task_id) + r"\.(\d+)\.log")
+    numbers = [int(m[1]) for p in logs.iterdir() if (m := pattern.fullmatch(p.name))]
+    number = max(numbers, default=0) + 1
+    while True:
+        path = logs / f"{task_id}.{number}.log"
+        try:
+            path.touch(exist_ok=False)
+        except FileExistsError:
+            number += 1
+        else:
+            return path
+
+
 def main() -> None:
     if len(sys.argv) != 2 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", sys.argv[1]):
         usage_error("usage", "사용법: scripts/run-sub.sh <task-id>")
@@ -252,7 +268,7 @@ def main() -> None:
     results = runtime / "results"
     logs.mkdir(parents=True, exist_ok=True)
     results.mkdir(parents=True, exist_ok=True)
-    log_path = logs / f"{task_id}.log"
+    log_path = new_log(logs, task_id)
     result_path = results / f"{task_id}.json"
     worktree_result = worktree / RESULT_FILE
     worktree_result.unlink(missing_ok=True)  # A leftover must not count as this run's report.
@@ -270,10 +286,12 @@ def main() -> None:
     failure = {"timeout": "timeout", "signal": "killed"}.get(reason)
     summary = f"실행이 {reason}로 끝났습니다."
     status = "FAILED"
+    report: Any = None
     report_valid = False
     if failure is None:
         try:
-            error = result_error(json.loads(worktree_result.read_text(encoding="utf-8")), task_id)
+            report = json.loads(worktree_result.read_text(encoding="utf-8"))
+            error = result_error(report, task_id)
         except (OSError, ValueError) as exc:
             error = f"결과 파일을 읽지 못했습니다: {type(exc).__name__}"
         if error is None:
@@ -284,7 +302,8 @@ def main() -> None:
             failure, summary = "report_missing", f"결과 보고가 없거나 형식이 틀립니다: {error}"
 
     if report_valid:
-        os.replace(worktree_result, result_path)
+        write_atomic(result_path, {**report, "log_path": str(log_path)})
+        worktree_result.unlink()
     else:
         if worktree_result.exists():
             os.replace(worktree_result, logs / f"{task_id}.rejected-result.json")
