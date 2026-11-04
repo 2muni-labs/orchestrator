@@ -1410,6 +1410,69 @@ def test_status_human_prints_tasks_and_blocked_chains(
         json.loads(out)
 
 
+def fake_status(
+    tasks: list[str], chains: list[tuple[str, list[str]]], secret: str | None
+) -> Callable[[object, list[str]], tuple[int, dict[str, object]]]:
+    """Replace _execute: status issues no token, so this is the only way to get one."""
+
+    def execute(_args: object, secrets: list[str]) -> tuple[int, dict[str, object]]:
+        if secret is not None:
+            secrets.append(secret)
+        return 0, {
+            "tasks": [{"id": item, "state": "ready"} for item in tasks],
+            "blocked_chains": [
+                {"task_id": item, "state": "blocked", "causes": causes}
+                for item, causes in chains
+            ],
+        }
+
+    return execute
+
+
+@pytest.mark.parametrize("secret", [TOKEN, 'ab"cd\\ef'], ids=["plain", "quoted"])
+@pytest.mark.parametrize("escape", [False, True], ids=["raw", "json-escaped"])
+def test_status_human_removes_an_issued_token_from_every_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    secret: str,
+    escape: bool,
+) -> None:
+    shown = json.dumps(secret, ensure_ascii=False)[1:-1] if escape else secret
+    monkeypatch.setattr(
+        "orch.cli._execute",
+        fake_status(
+            [f"task-{shown}"], [(f"chain-{shown}", [f"cause-{shown}", "other"])], secret
+        ),
+    )
+    assert main(["status", "--human"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "task-[REDACTED] ready\nchain-[REDACTED] blocked: cause-[REDACTED], other\n"
+    )
+    assert captured.err == ""
+
+
+def test_status_human_keeps_its_format_without_a_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "orch.cli._execute",
+        fake_status(["one", "two"], [("three", ["four", "five"])], None),
+    )
+    assert main(["status", "--human"]) == 0
+    assert (
+        capsys.readouterr().out == "one ready\ntwo ready\nthree blocked: four, five\n"
+    )
+
+
+def test_status_human_prints_nothing_for_no_tasks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("orch.cli._execute", fake_status([], [], TOKEN))
+    assert main(["status", "--human"]) == 0
+    assert capsys.readouterr().out == ""
+
+
 # Token removal from all output
 
 
