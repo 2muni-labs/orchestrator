@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from orch.redact import redact
 
 GH_TIMEOUT_SEC = 120
 _GITHUB_PATTERN = r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._][A-Za-z0-9._-]*"
+_LABEL_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _URL_PATTERN = rf"https://github\.com/{_GITHUB_PATTERN}/pull/[0-9]+"
 
 
@@ -84,6 +86,42 @@ def _gh(token: str, *args: str, input_text: str | None = None) -> str:
     return stdout
 
 
+def label_exists(*, github: str, name: str, token: str) -> bool:
+    """Return whether a repository has a label. The label is never created here."""
+    _validate_token(token)
+    if re.fullmatch(_GITHUB_PATTERN, github) is None:
+        raise GitHubError("Invalid repository")
+    _validate_label(name)
+    stdout = _gh(
+        token,
+        "label",
+        "list",
+        "--repo",
+        github,
+        "--search",
+        name,
+        "--json",
+        "name",
+        "--limit",
+        "100",
+    )
+    try:
+        answer = json.loads(stdout)
+    except ValueError as exc:
+        raise GitHubError("label list: Invalid response") from exc
+    if not isinstance(answer, list) or any(
+        not isinstance(item, dict) or not isinstance(item.get("name"), str)
+        for item in answer
+    ):
+        raise GitHubError("label list: Invalid response")
+    return any(item["name"].casefold() == name.casefold() for item in answer)
+
+
+def _validate_label(name: str) -> None:
+    if not isinstance(name, str) or re.fullmatch(_LABEL_PATTERN, name) is None:
+        raise GitHubError("Invalid label name")
+
+
 def create_pull_request(
     *,
     github: str,
@@ -94,6 +132,7 @@ def create_pull_request(
     token: str,
     home: Path,
     orch_home: Path,
+    labels: Iterable[str] = (),
 ) -> str:
     """Create a pull request from redacted text and return its URL."""
     _validate_token(token)
@@ -105,6 +144,10 @@ def create_pull_request(
         raise GitHubError("Invalid base branch")
     if not title.strip() or not body.strip():
         raise GitHubError("Title and body must not be empty")
+    label_args = []
+    for label in labels:
+        _validate_label(label)
+        label_args.extend(("--label", label))
     title = redact(title, home=home, orch_home=orch_home, secrets=(token,))
     body = redact(body, home=home, orch_home=orch_home, secrets=(token,))
     stdout = _gh(
@@ -119,6 +162,7 @@ def create_pull_request(
         base,
         "--title",
         title,
+        *label_args,
         "--body-file",
         "-",
         input_text=body,

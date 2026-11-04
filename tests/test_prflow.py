@@ -248,11 +248,18 @@ class FakeGitHub:
         self.comments: list[dict[str, object]] = []
         self.status_calls: list[dict[str, object]] = []
         self.merged = True
+        self.label_present = True
+        self.label_calls: list[dict[str, object]] = []
         self.create_error: Exception | None = None
         self.comment_error: Exception | None = None
         monkeypatch.setattr(github, "create_pull_request", self.create)
         monkeypatch.setattr(github, "comment_on_pull_request", self.comment)
         monkeypatch.setattr(github, "pull_request_status", self.status)
+        monkeypatch.setattr(github, "label_exists", self.label_exists)
+
+    def label_exists(self, **options: object) -> bool:
+        self.label_calls.append(options)
+        return self.label_present
 
     def create(self, **options: object) -> str:
         self.created.append(options)
@@ -296,6 +303,7 @@ def open_pr(
         token=TOKEN,
         log_path=tmp_path / "logs" / "feat-x.pr.log",
         review_path=tmp_path / "reviews" / "feat-x.json",
+        triage_path=tmp_path / "reviews" / "feat-x.triage.md",
         resolution=resolution,
         **REDACT,
     )
@@ -785,7 +793,44 @@ def test_the_body_reports_a_saved_review(
     assert "PASS" in str(hub.created[0]["body"])
 
 
-def test_a_kept_block_verdict_is_reported_in_the_body(
+TRIAGE = """+++
+follow_up = "feat-x-tests"
+
+[[decisions]]
+severity = "P1"
+path = "tests/test_x.py"
+verdict = "insufficient_tests"
+decision = "The code is right; only a check is missing."
++++
+"""
+
+
+def save_block(conn: sqlite3.Connection, tmp_path: Path, triage: str | None) -> None:
+    write_review(tmp_path / "reviews" / "feat-x.json", make_review(Verdict.BLOCK))
+    if triage is not None:
+        write(tmp_path / "reviews" / "feat-x.triage.md", triage)
+    add_follow_up(conn)
+
+
+def add_follow_up(conn: sqlite3.Connection) -> None:
+    insert_task(
+        conn,
+        Task(
+            id="feat-x-tests",
+            target="sample",
+            title="Add the missing check",
+            grade=Grade.L2,
+            lane=Lane.B,
+            model="m",
+            state=TaskState.PREPARED,
+            timeout_sec=60,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+
+
+def test_an_overridden_block_is_marked_at_the_top_and_labeled(
     conn: sqlite3.Connection,
     repo: Path,
     worktree: Path,
@@ -795,10 +840,205 @@ def test_a_kept_block_verdict_is_reported_in_the_body(
     hub: FakeGitHub,
 ) -> None:
     add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
-    write_review(tmp_path / "reviews" / "feat-x.json", make_review(Verdict.BLOCK))
+    save_block(conn, tmp_path, TRIAGE)
     report = open_pr(conn, repo, tmp_path)
     assert report.state is TaskState.PR_OPEN
-    assert "BLOCK" in str(hub.created[0]["body"])
+    created = hub.created[0]
+    body = str(created["body"])
+    assert body.startswith("## Review BLOCK overridden\n")
+    assert body.index("## Review BLOCK overridden") < body.index("## Summary")
+    assert "Follow-up task: `feat-x-tests`" in body
+    assert "(insufficient_tests): The code is right" in body
+    assert "Verdict: BLOCK" in body
+    assert list(created["labels"]) == ["review-overridden"]
+    assert hub.label_calls == [
+        {"github": "owner/sample", "name": "review-overridden", "token": TOKEN}
+    ]
+
+
+def assert_nothing_happened(
+    conn: sqlite3.Connection, remote: Path, worktree: Path, tip: str, hub: FakeGitHub
+) -> None:
+    assert task_of(conn).state is TaskState.READY
+    assert remote_tip(remote) is None
+    assert hub.created == []
+    assert git(worktree, "rev-parse", "HEAD") == tip
+
+
+def test_a_missing_label_stops_before_rebase_and_push(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo)
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, TRIAGE)
+    hub.label_present = False
+    with pytest.raises(PullRequestFlowError, match="review-overridden"):
+        open_pr(conn, repo, tmp_path)
+    assert_nothing_happened(conn, remote, worktree, implemented, hub)
+
+
+def test_a_failed_label_check_stops_before_rebase_and_push(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed(**options: object) -> bool:
+        raise GitHubError("label list: failed")
+
+    monkeypatch.setattr(github, "label_exists", failed)
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, TRIAGE)
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path)
+    assert_nothing_happened(conn, remote, worktree, implemented, hub)
+
+
+def test_a_block_without_a_triage_cannot_open_a_pull_request(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, None)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path)
+    assert_nothing_happened(conn, remote, worktree, implemented, hub)
+
+
+@pytest.mark.parametrize(
+    "triage",
+    [
+        "not a triage\n",
+        TRIAGE.replace("tests/test_x.py", "tests/other.py"),
+        TRIAGE.replace("feat-x-tests", "feat-unregistered"),
+    ],
+)
+def test_a_block_with_a_bad_triage_cannot_open_a_pull_request(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    triage: str,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, triage)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path)
+    assert_nothing_happened(conn, remote, worktree, implemented, hub)
+
+
+def test_a_pass_needs_no_label_and_gets_none(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    write_review(tmp_path / "reviews" / "feat-x.json", make_review())
+    hub.label_present = False
+    assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
+    assert hub.label_calls == []
+    assert list(hub.created[0].get("labels", ())) == []
+    assert str(hub.created[0]["body"]).startswith("## Summary")
+
+
+def test_a_stale_triage_is_ignored_when_the_review_passes(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    write_review(tmp_path / "reviews" / "feat-x.json", make_review())
+    write(tmp_path / "reviews" / "feat-x.triage.md", TRIAGE)
+    open_pr(conn, repo, tmp_path)
+    assert "overridden" not in str(hub.created[0]["body"])
+
+
+def test_reopening_after_a_conflict_needs_no_label_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    """The open pull request already has its label and its section."""
+    git(worktree, "push", "-q", "-u", "origin", BRANCH)
+    add_ready_task(
+        conn,
+        worktree,
+        test_sha,
+        state=TaskState.CONFLICT,
+        grade=Grade.L3,
+        pushed_sha=implemented,
+        pr_url=URL,
+    )
+    save_block(conn, tmp_path, TRIAGE)
+    hub.label_present = False
+    assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
+    assert hub.created == []
+    assert hub.label_calls == []
+
+
+def test_the_review_flag_requires_a_saved_review(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    """An L2 task with review = true must not reach a pull request unreviewed."""
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L2)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path, spec=make_spec(review=True))
+    assert_nothing_happened(conn, remote, worktree, implemented, hub)
+
+
+def test_an_l2_task_without_the_flag_needs_no_review(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L2)
+    assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
 
 
 @pytest.mark.parametrize("grade", [Grade.L3, Grade.L3R])
