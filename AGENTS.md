@@ -59,6 +59,7 @@ scripts/run-sub.sh manual sub-agent runner, until M6
   reviews/<id>.json     review reports
   reviews/<id>.diff     diff handed to the reviewer
   reviews/<id>.triage.md  reasons for rejecting or deferring review findings
+  pushes/<id>           commit id of the last push, the lease for a branch update
   logs/<id>.log         execution logs
   worktrees/<id>/       git worktree on branch task/<id>
 ```

@@ -138,10 +138,20 @@ def load_task(runtime: Path, task_id: str) -> dict[str, Any]:
     return task
 
 
+def task_tip(worktree: Path) -> str:
+    """Return the task's last commit, looking through a temporary merge of origin/main."""
+    parents = git(worktree, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    main = git(worktree, "rev-parse", "origin/main").strip()
+    if len(parents) == 3 and parents[2] == main:
+        return parents[1]
+    return "HEAD"
+
+
 def check_scope(worktree: Path, task: dict[str, Any]) -> None:
     """G1: compare everything since the test commit with the allowed paths."""
-    base = git(worktree, "merge-base", "origin/main", "HEAD").strip()
-    commits = git(worktree, "rev-list", "--reverse", f"{base}..HEAD").split()
+    tip = task_tip(worktree)
+    base = git(worktree, "merge-base", "origin/main", tip).strip()
+    commits = git(worktree, "rev-list", "--reverse", f"{base}..{tip}").split()
     if task.get("tests") == "none":
         compare = base
     elif commits:
@@ -149,7 +159,14 @@ def check_scope(worktree: Path, task: dict[str, Any]) -> None:
     else:
         gate_failure("G1", "테스트 커밋이 없습니다.")
 
-    changed = z_paths(git(worktree, "diff", "--name-only", "--no-renames", "-z", compare))
+    # A temporary merge brings in main's files, which are not the task's changes.
+    if tip == "HEAD":
+        changed = z_paths(git(worktree, "diff", "--name-only", "--no-renames", "-z", compare))
+    else:
+        changed = z_paths(
+            git(worktree, "diff", "--name-only", "--no-renames", "-z", compare, tip)
+        )
+        changed |= z_paths(git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD"))
     changed |= z_paths(git(worktree, "ls-files", "--others", "--exclude-standard", "-z"))
     changed.discard(RESULT_FILE)
 
