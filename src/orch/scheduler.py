@@ -24,6 +24,24 @@ class Decision:
     waiting_for: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BlockedChain:
+    """A task that cannot proceed because of tasks that are blocked or discarded."""
+
+    task_id: str
+    state: TaskState
+    causes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NextReport:
+    """What one pass over the queued tasks found."""
+
+    reserved: tuple[str, ...] = ()
+    newly_blocked: tuple[str, ...] = ()
+    chains: tuple[BlockedChain, ...] = ()
+
+
 def globs_overlap(first: str, second: str) -> bool:
     """Return whether two path globs could reach the same file."""
     first = first.casefold().rstrip("/")
@@ -291,6 +309,13 @@ def dispatch(
             ttl_min=ttl_min,
             now=now,
         )
+
+
+def blocked_chains(
+    conn: sqlite3.Connection, *, target: str | None = None
+) -> tuple[BlockedChain, ...]:
+    """Return queued and blocked tasks held up by a blocked or discarded task."""
+    raise NotImplementedError
 
 
 def next_reservations(
