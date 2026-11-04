@@ -67,6 +67,23 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
   worktree, run `.venv/bin/python -m pytest`, `.venv/bin/python -m ruff check .` and
   `.venv/bin/python -m ruff format --check .` on the final commit. This covers every
   push to that branch. Put the results in the pull request body.
+- When two pull requests go up together, finish the step 8a check before the user
+  merges and report it: full tests and ruff on the combined state. Do not defer it to
+  a later task's worktree. Watch for semantic conflicts, especially when both change
+  the same test file.
+- When you discard a task and dispatch it again under a new id, state that and its
+  cause in your report. A commit message alone is not enough.
+- Before committing tests, run them against the stubs and confirm each fails for the
+  expected reason, not implemented. If one fails for another reason, such as a data
+  format error, fix the test first. A test that passes with stubs alone still needs
+  its reason in the commit message.
+- Pass test inputs through the real parser once, because `NotImplementedError` can
+  hide an input error.
+- Before naming a function in a spec, read its code and confirm its behavior matches
+  the spec's intent.
+- When a test expects a result from an existing module, such as a classification or
+  an exit code, confirm the actual behavior from that module's code or tests before
+  committing. Stubs fail first, so they cannot reveal a wrong expectation.
 - Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
   not overlap.
 - `<test_sha>` is the first commit after the branch point from `origin/main`, which is why step 2 allows exactly one commit.
