@@ -125,6 +125,7 @@ class Task:
     depends_on: tuple[str, ...] = ()
     worktree: str | None = None
     pr_url: str | None = None
+    pushed_sha: str | None = None
     slot_expires_at: str | None = None
 
 
@@ -166,6 +167,27 @@ class Review:
     findings: tuple[Finding, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Lock:
+    """One row of the locks table."""
+
+    target: str
+    path_glob: str
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GateResult:
+    """One row of the gate_results table."""
+
+    task_id: str
+    attempt: int
+    gate: Gate
+    passed: bool
+    at: str
+    detail: str | None = None
+
+
 # The single definition of allowed state transitions.
 TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
     {
@@ -196,7 +218,9 @@ TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
         TaskState.CONFLICT: frozenset(
             {TaskState.PR_OPEN, TaskState.DISCARDED, TaskState.JUDGING}
         ),
-        TaskState.PR_OPEN: frozenset({TaskState.CLOSED, TaskState.DISCARDED}),
+        TaskState.PR_OPEN: frozenset(
+            {TaskState.CONFLICT, TaskState.CLOSED, TaskState.DISCARDED}
+        ),
         TaskState.CLOSED: frozenset(),
         TaskState.BLOCKED: frozenset(
             {TaskState.RESERVED, TaskState.QUEUED, TaskState.DISCARDED}

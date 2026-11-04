@@ -1,4 +1,5 @@
 import ast
+import dataclasses
 import inspect
 import sqlite3
 import sys
@@ -11,18 +12,42 @@ from types import MappingProxyType
 import pytest
 
 from orch import models, store
-from orch.models import Effort, Grade, Lane, Task, TaskState
+from orch.models import (
+    Effort,
+    FailureReason,
+    Gate,
+    GateResult,
+    Grade,
+    Lane,
+    Lock,
+    Outcome,
+    Run,
+    Task,
+    TaskState,
+)
 from orch.store import (
     IllegalTransitionError,
+    RunNotFoundError,
     SchemaTooNewError,
     StateMismatchError,
+    StoreError,
     TaskNotFoundError,
+    add_locks,
     connect,
+    finish_run,
+    gate_results,
     get_task,
+    insert_run,
     insert_task,
+    latest_run,
+    list_locks,
+    list_tasks,
     migrate,
+    record_gate_result,
+    set_run_process,
     transaction,
     transition,
+    update_task,
 )
 
 THREADS = 8
@@ -44,6 +69,7 @@ EXPECTED_COLUMNS = {
         "depends_on",
         "worktree",
         "pr_url",
+        "pushed_sha",
         "slot_expires_at",
         "created_at",
         "updated_at",
@@ -173,7 +199,7 @@ def test_connection_leaves_transactions_to_the_store(conn: sqlite3.Connection) -
 # Schema and migrations
 
 
-def test_schema_v1_matches_the_design(conn: sqlite3.Connection) -> None:
+def test_schema_matches_the_design(conn: sqlite3.Connection) -> None:
     assert table_names(conn) == set(EXPECTED_COLUMNS)
     for table, columns in EXPECTED_COLUMNS.items():
         actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -192,17 +218,17 @@ def test_primary_keys_match_the_design(conn: sqlite3.Connection) -> None:
 
 
 def test_version_is_the_number_of_migrations(conn: sqlite3.Connection) -> None:
-    assert len(store.MIGRATIONS) == 1
-    assert user_version(conn) == 1
+    assert len(store.MIGRATIONS) == 2
+    assert user_version(conn) == 2
 
 
 def test_migrate_is_idempotent(db_path: Path) -> None:
     conn = connect(db_path)
     insert_task(conn, make_task())
-    assert migrate(conn) == 1
+    assert migrate(conn) == 2
     conn.close()
     reopened = connect(db_path)
-    assert user_version(reopened) == 1
+    assert user_version(reopened) == 2
     assert get_task(reopened, "feat-x") is not None
 
 
@@ -213,8 +239,8 @@ def test_new_migration_applies_once_and_keeps_data(
     insert_task(conn, make_task())
     added = ("CREATE TABLE extra (id INTEGER PRIMARY KEY)",)
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, added))
-    assert migrate(conn) == 2
-    assert migrate(conn) == 2
+    assert migrate(conn) == 3
+    assert migrate(conn) == 3
     assert "extra" in table_names(conn)
     assert get_task(conn, "feat-x") is not None
 
@@ -227,7 +253,7 @@ def test_failed_migration_rolls_back_entirely(
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, broken))
     with pytest.raises(sqlite3.Error):
         migrate(conn)
-    assert user_version(conn) == 1
+    assert user_version(conn) == 2
     assert "half_done" not in table_names(conn)
     assert conn.in_transaction is False
 
@@ -246,7 +272,7 @@ def test_concurrent_first_connections_migrate_once(db_path: Path) -> None:
 
     assert run_in_threads(work) == []
     conn = connect(db_path)
-    assert user_version(conn) == 1
+    assert user_version(conn) == 2
     assert table_names(conn) == set(EXPECTED_COLUMNS)
 
 
@@ -308,6 +334,7 @@ def test_task_round_trip_with_all_fields(conn: sqlite3.Connection) -> None:
         depends_on=("a", "b"),
         worktree="/tmp/w",
         pr_url="https://example.com/1",
+        pushed_sha="a" * 40,
         slot_expires_at="2026-11-03T01:00:00+00:00",
         created_at="2026-11-03T00:00:00+00:00",
         updated_at="2026-11-03T00:30:00+00:00",
@@ -521,6 +548,448 @@ def test_concurrent_writers_on_different_tasks_all_succeed(
 
     assert run_in_threads(work) == []
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == THREADS
+
+
+# Migration to schema v2
+
+
+def test_v1_database_gains_pushed_sha_and_keeps_its_rows(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statement in store.MIGRATIONS[0]:
+        old.execute(statement)
+    old.execute("PRAGMA user_version = 1")
+    old.execute(
+        """INSERT INTO tasks (
+            id, target, title, grade, lane, model, state, timeout_sec, depends_on,
+            created_at, updated_at
+        ) VALUES ('old', 't', 'Old', 'L2', 'B', 'm', 'prepared', 60, '[]', 'c', 'u')"""
+    )
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == 2
+    loaded = get_task(conn, "old")
+    assert loaded is not None
+    assert loaded.title == "Old"
+    assert loaded.pushed_sha is None
+
+
+def test_pr_open_can_move_to_conflict(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task(state=TaskState.PR_OPEN))
+    transition(conn, "feat-x", TaskState.PR_OPEN, TaskState.CONFLICT, actor="orch")
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert loaded.state is TaskState.CONFLICT
+
+
+# Retrying a busy database while opening it
+
+
+class FlakyConnection:
+    """Wraps a connection and fails PRAGMA journal_mode with the given errors."""
+
+    def __init__(self, real: sqlite3.Connection, errors: list[Exception]) -> None:
+        self.real = real
+        self.errors = errors
+        self.journal_attempts = 0
+
+    def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+        if sql.startswith("PRAGMA journal_mode"):
+            self.journal_attempts += 1
+            if self.errors:
+                raise self.errors.pop(0)
+        return self.real.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.real, name)
+
+
+def sqlite_error(code: int, message: str = "database is locked") -> sqlite3.Error:
+    error = sqlite3.OperationalError(message)
+    error.sqlite_errorcode = code  # type: ignore[attr-defined]
+    return error
+
+
+def flaky_connect(
+    monkeypatch: pytest.MonkeyPatch, errors: list[Exception]
+) -> list[FlakyConnection]:
+    made: list[FlakyConnection] = []
+    real_connect = sqlite3.connect
+
+    def fake(*args: object, **kwargs: object) -> FlakyConnection:
+        wrapper = FlakyConnection(real_connect(*args, **kwargs), errors)
+        made.append(wrapper)
+        return wrapper
+
+    monkeypatch.setattr(store.sqlite3, "connect", fake)
+    return made
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_BUSY | (1 << 8),  # An extended code: SQLITE_BUSY_RECOVERY.
+        sqlite3.SQLITE_LOCKED
+        | (1 << 8),  # An extended code: SQLITE_LOCKED_SHAREDCACHE.
+    ],
+)
+def test_connect_retries_busy_and_locked_by_error_code(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    made = flaky_connect(monkeypatch, [sqlite_error(code, "some other wording")])
+    connect(db_path)
+    assert made[0].journal_attempts == 2
+
+
+@pytest.mark.parametrize(
+    "code", [sqlite3.SQLITE_READONLY, sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR]
+)
+def test_connect_raises_other_errors_without_retry(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    # The wording matches the old text comparison, so only the code can tell them apart.
+    error = sqlite_error(code)
+    made = flaky_connect(monkeypatch, [error])
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        connect(db_path)
+    assert caught.value is error
+    assert made[0].journal_attempts == 1
+
+
+def test_connect_stops_retrying_at_the_deadline(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Clock:
+        now = 100.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds + 1
+
+    errors = [sqlite_error(sqlite3.SQLITE_BUSY) for _ in range(100)]
+    made = flaky_connect(monkeypatch, errors)
+    monkeypatch.setattr(store, "time", Clock())
+    with pytest.raises(sqlite3.OperationalError):
+        connect(db_path)
+    # Five seconds at one second per attempt, whatever the exact boundary.
+    assert 2 <= made[0].journal_attempts <= 8
+
+
+# Updating task fields
+
+
+def test_update_task_sets_fields_and_updated_at(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    update_task(
+        conn,
+        "feat-x",
+        at="2026-11-04T00:00:00+00:00",
+        attempt=2,
+        base_sha="b" * 40,
+        test_sha="c" * 40,
+        worktree="w",
+        pr_url="https://example.com/1",
+        pushed_sha="d" * 40,
+        slot_expires_at="2026-11-04T00:10:00+00:00",
+    )
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert loaded.attempt == 2
+    assert loaded.base_sha == "b" * 40
+    assert loaded.test_sha == "c" * 40
+    assert loaded.worktree == "w"
+    assert loaded.pr_url == "https://example.com/1"
+    assert loaded.pushed_sha == "d" * 40
+    assert loaded.slot_expires_at == "2026-11-04T00:10:00+00:00"
+    assert loaded.updated_at == "2026-11-04T00:00:00+00:00"
+    assert loaded.state is TaskState.PREPARED
+
+
+def test_update_task_can_clear_a_field(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    update_task(conn, "feat-x", slot_expires_at="soon")
+    update_task(conn, "feat-x", slot_expires_at=None)
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert loaded.slot_expires_at is None
+
+
+def test_update_task_defaults_to_the_current_utc_time(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    update_task(conn, "feat-x", attempt=1)
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert datetime.fromisoformat(loaded.updated_at).utcoffset() is not None
+    assert loaded.updated_at != make_task().updated_at
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["state", "id", "target", "created_at", "updated_at", "attempt = 9; --", "nope"],
+)
+def test_update_task_refuses_other_fields_without_changes(
+    conn: sqlite3.Connection, field: str
+) -> None:
+    insert_task(conn, make_task())
+    before = get_task(conn, "feat-x")
+    with pytest.raises(StoreError):
+        update_task(conn, "feat-x", **{field: "x"})
+    assert get_task(conn, "feat-x") == before
+
+
+def test_update_task_without_fields_is_refused(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    with pytest.raises(StoreError):
+        update_task(conn, "feat-x")
+
+
+def test_update_missing_task_is_reported(conn: sqlite3.Connection) -> None:
+    with pytest.raises(TaskNotFoundError):
+        update_task(conn, "nope", attempt=1)
+
+
+def test_update_task_rolls_back_with_a_callers_transaction(
+    conn: sqlite3.Connection,
+) -> None:
+    insert_task(conn, make_task())
+    with pytest.raises(LookupError):
+        with transaction(conn):
+            update_task(conn, "feat-x", attempt=2)
+            raise LookupError("stop")
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert loaded.attempt == 0
+
+
+# Listing tasks
+
+
+def add_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: TaskState = TaskState.QUEUED,
+    created_at: str = "2026-11-03T00:00:00+00:00",
+    target: str = "orchestrator",
+) -> None:
+    task = dataclasses.replace(
+        make_task(task_id, state), created_at=created_at, target=target
+    )
+    insert_task(conn, task)
+
+
+def test_list_tasks_orders_by_creation_then_id(conn: sqlite3.Connection) -> None:
+    add_task(conn, "c", created_at="2026-11-03T00:00:01+00:00")
+    add_task(conn, "b", created_at="2026-11-03T00:00:00+00:00")
+    add_task(conn, "a", created_at="2026-11-03T00:00:00+00:00")
+    assert [task.id for task in list_tasks(conn)] == ["a", "b", "c"]
+
+
+def test_list_tasks_filters_by_state_and_target(conn: sqlite3.Connection) -> None:
+    add_task(conn, "queued", TaskState.QUEUED)
+    add_task(conn, "running", TaskState.RUNNING)
+    add_task(conn, "closed", TaskState.CLOSED)
+    add_task(conn, "elsewhere", TaskState.RUNNING, target="other")
+    active = list_tasks(conn, states=[TaskState.QUEUED, TaskState.RUNNING])
+    assert {task.id for task in active} == {"queued", "running", "elsewhere"}
+    here = list_tasks(conn, states=[TaskState.RUNNING], target="orchestrator")
+    assert [task.id for task in here] == ["running"]
+    assert isinstance(active, tuple)
+    assert isinstance(active[0], Task)
+
+
+def test_list_tasks_with_no_states_returns_nothing(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    assert list_tasks(conn, states=[]) == ()
+
+
+# Locks
+
+
+def test_locks_are_listed_per_target(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    add_task(conn, "b", target="other")
+    add_locks(conn, "orchestrator", "a", ["src/b/**", "src/a/**"])
+    add_locks(conn, "other", "b", ["src/**"])
+    assert list_locks(conn, "orchestrator") == (
+        Lock(target="orchestrator", path_glob="src/a/**", task_id="a"),
+        Lock(target="orchestrator", path_glob="src/b/**", task_id="a"),
+    )
+
+
+def test_add_locks_is_idempotent(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    add_locks(conn, "orchestrator", "a", ["src/**"])
+    add_locks(conn, "orchestrator", "a", ["src/**"])
+    assert len(list_locks(conn, "orchestrator")) == 1
+
+
+def test_add_locks_for_a_missing_task_adds_none(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    with pytest.raises(sqlite3.IntegrityError):
+        add_locks(conn, "orchestrator", "nope", ["src/**", "docs/**"])
+    assert list_locks(conn, "orchestrator") == ()
+
+
+def test_add_locks_is_all_or_nothing_in_its_own_transaction(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a")
+    with pytest.raises(sqlite3.Error):
+        add_locks(conn, "orchestrator", "a", ["src/**", None])  # type: ignore[list-item]
+    assert list_locks(conn, "orchestrator") == ()
+
+
+def test_terminal_transition_clears_locks_from_add_locks(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.PR_OPEN)
+    add_locks(conn, "orchestrator", "a", ["src/**"])
+    transition(conn, "a", TaskState.PR_OPEN, TaskState.CLOSED, actor="orch")
+    assert list_locks(conn, "orchestrator") == ()
+
+
+# Runs
+
+
+def make_run(task_id: str = "a", attempt: int = 1) -> Run:
+    return Run(
+        task_id=task_id,
+        attempt=attempt,
+        lane=Lane.B,
+        model="gpt-6.1-sol",
+        effort=Effort.HIGH,
+        started_at="2026-11-04T00:00:00+00:00",
+    )
+
+
+def test_run_round_trip(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    run_id = insert_run(conn, make_run())
+    set_run_process(conn, run_id, pid=123, pid_started_at="Wed Nov  4 00:00:00 2026")
+    finish_run(
+        conn,
+        run_id,
+        ended_at="2026-11-04T00:10:00+00:00",
+        exit_code=-9,
+        outcome=Outcome.FAILED,
+        failure_reason=FailureReason.KILLED,
+    )
+    run = latest_run(conn, "a")
+    assert run == Run(
+        run_id=run_id,
+        task_id="a",
+        attempt=1,
+        lane=Lane.B,
+        model="gpt-6.1-sol",
+        effort=Effort.HIGH,
+        pid=123,
+        pid_started_at="Wed Nov  4 00:00:00 2026",
+        started_at="2026-11-04T00:00:00+00:00",
+        ended_at="2026-11-04T00:10:00+00:00",
+        exit_code=-9,
+        outcome=Outcome.FAILED,
+        failure_reason=FailureReason.KILLED,
+    )
+    assert isinstance(run.lane, Lane)
+    assert isinstance(run.effort, Effort)
+    assert isinstance(run.outcome, Outcome)
+    assert isinstance(run.failure_reason, FailureReason)
+
+
+def test_unfinished_run_has_empty_result_fields(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    insert_run(conn, dataclasses.replace(make_run(), effort=None))
+    run = latest_run(conn, "a")
+    assert run is not None
+    assert run.effort is None
+    assert run.outcome is None
+    assert run.failure_reason is None
+    assert run.ended_at is None
+
+
+def test_latest_run_is_the_newest_of_that_task(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    add_task(conn, "b")
+    insert_run(conn, make_run("a", 1))
+    newest = insert_run(conn, make_run("a", 2))
+    insert_run(conn, make_run("b", 1))
+    run = latest_run(conn, "a")
+    assert run is not None
+    assert (run.run_id, run.attempt) == (newest, 2)
+    add_task(conn, "c")
+    assert latest_run(conn, "c") is None
+
+
+def test_run_of_a_missing_task_is_refused(conn: sqlite3.Connection) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_run(conn, make_run("nope"))
+
+
+def test_finishing_a_run_twice_is_refused_and_keeps_the_first(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a")
+    run_id = insert_run(conn, make_run())
+    finish_run(conn, run_id, ended_at="t1", exit_code=0, outcome=Outcome.DONE)
+    with pytest.raises(StateMismatchError):
+        finish_run(conn, run_id, ended_at="t2", exit_code=1, outcome=Outcome.FAILED)
+    run = latest_run(conn, "a")
+    assert run is not None
+    assert (run.ended_at, run.outcome) == ("t1", Outcome.DONE)
+
+
+def test_missing_run_is_reported(conn: sqlite3.Connection) -> None:
+    with pytest.raises(RunNotFoundError):
+        set_run_process(conn, 99, pid=1, pid_started_at="x")
+    with pytest.raises(RunNotFoundError):
+        finish_run(conn, 99, ended_at="t", exit_code=0, outcome=Outcome.DONE)
+    assert issubclass(RunNotFoundError, StoreError)
+
+
+def test_run_changes_join_a_callers_transaction(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    with pytest.raises(LookupError):
+        with transaction(conn):
+            insert_run(conn, make_run())
+            raise LookupError("stop")
+    assert latest_run(conn, "a") is None
+
+
+# Gate results
+
+
+def test_gate_results_keep_recording_order_and_types(conn: sqlite3.Connection) -> None:
+    record_gate_result(conn, "a", 1, Gate.G1, passed=True, at="t1")
+    record_gate_result(conn, "a", 1, Gate.G2, passed=False, detail="요약", at="t2")
+    record_gate_result(conn, "a", 2, Gate.G1, passed=True, at="t3")
+    record_gate_result(conn, "b", 1, Gate.G1, passed=True, at="t4")
+    assert gate_results(conn, "a", 1) == (
+        GateResult(task_id="a", attempt=1, gate=Gate.G1, passed=True, at="t1"),
+        GateResult(
+            task_id="a", attempt=1, gate=Gate.G2, passed=False, detail="요약", at="t2"
+        ),
+    )
+    first = gate_results(conn, "a", 1)[0]
+    assert first.passed is True
+    assert isinstance(first.gate, Gate)
+    assert gate_results(conn, "a", 3) == ()
+
+
+def test_rerunning_a_gate_replaces_its_result(conn: sqlite3.Connection) -> None:
+    record_gate_result(conn, "a", 1, Gate.G2_PRE_PR, passed=False, detail="x", at="t1")
+    record_gate_result(conn, "a", 1, Gate.G2_PRE_PR, passed=True, at="t2")
+    assert gate_results(conn, "a", 1) == (
+        GateResult(task_id="a", attempt=1, gate=Gate.G2_PRE_PR, passed=True, at="t2"),
+    )
+
+
+def test_gate_result_defaults_to_the_current_utc_time(conn: sqlite3.Connection) -> None:
+    record_gate_result(conn, "a", 1, Gate.G1, passed=True)
+    at = gate_results(conn, "a", 1)[0].at
+    assert datetime.fromisoformat(at).utcoffset() is not None
 
 
 # Conventions

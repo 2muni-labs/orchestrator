@@ -15,8 +15,10 @@ from orch.models import (
     FailureReason,
     Finding,
     Gate,
+    GateResult,
     Grade,
     Lane,
+    Lock,
     Outcome,
     Review,
     Reviewer,
@@ -39,7 +41,7 @@ EXPECTED_TRANSITIONS = {
     "reviewing": {"ready", "judging"},
     "ready": {"pr_open", "conflict", "judging"},
     "conflict": {"pr_open", "discarded", "judging"},
-    "pr_open": {"closed", "discarded"},
+    "pr_open": {"conflict", "closed", "discarded"},
     "closed": set(),
     "blocked": {"reserved", "queued", "discarded"},
     "discarded": set(),
@@ -161,6 +163,7 @@ def test_task_fields_match_the_tasks_table() -> None:
         "depends_on",
         "worktree",
         "pr_url",
+        "pushed_sha",
         "slot_expires_at",
         "created_at",
         "updated_at",
@@ -177,6 +180,7 @@ def test_task_defaults() -> None:
         "test_sha",
         "worktree",
         "pr_url",
+        "pushed_sha",
         "slot_expires_at",
     ):
         assert getattr(task, name) is None
@@ -233,7 +237,7 @@ def test_review_findings_default_to_empty() -> None:
     assert review.findings == ()
 
 
-@pytest.mark.parametrize("cls", [Task, Run, Finding, Review])
+@pytest.mark.parametrize("cls", [Task, Run, Finding, Review, Lock, GateResult])
 def test_data_classes_are_frozen_keyword_only_with_slots(cls: type) -> None:
     assert dataclasses.is_dataclass(cls)
     assert cls.__dataclass_params__.frozen is True  # type: ignore[attr-defined]
