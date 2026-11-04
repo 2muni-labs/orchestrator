@@ -5,13 +5,14 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from orch import gate, results, runner, store
+from orch import gate, lanes, results, runner, store
 from orch.config import Config, Target, TargetPaths, target_paths
 from orch.gate import ScopeViolations
 from orch.gitops import GitError, create_worktree, fetch
@@ -30,6 +31,7 @@ from orch.runner import (
     RunError,
     descendants,
     log_label,
+    next_log_path,
     process_started_at,
     run_task,
     stop_process,
@@ -461,7 +463,7 @@ def test_the_output_goes_to_the_log(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
 ) -> None:
     run(conn, repo, paths, home, "report_with_limit_message")
-    text = (paths.logs / f"{TASK}.log").read_text(encoding="utf-8")
+    text = (paths.logs / f"{TASK}.1.log").read_text(encoding="utf-8")
     assert "You hit your usage limit" in text
 
 
@@ -611,7 +613,7 @@ def test_a_substitute_report_names_the_log(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
 ) -> None:
     result = run(conn, repo, paths, home, "immediate_exit")
-    assert result.log_path == f"~/.orch/sample/logs/{TASK}.log"
+    assert result.log_path == f"~/.orch/sample/logs/{TASK}.1.log"
     assert result.verification_command == "true"
     assert result.verification_passed is False
 
@@ -620,11 +622,11 @@ def test_a_limit_message_from_an_earlier_attempt_does_not_count(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
 ) -> None:
     old = "You hit your usage limit. Try again later.\n"
-    write(paths.logs / f"{TASK}.log", old)
+    write(paths.logs / f"{TASK}.1.log", old)
     result = run(conn, repo, paths, home, "immediate_exit")
     assert result.failure_reason is FailureReason.REPORT_MISSING
-    assert (paths.logs / f"{TASK}.prev.log").read_text(encoding="utf-8") == old
-    assert old not in (paths.logs / f"{TASK}.log").read_text(encoding="utf-8")
+    assert (paths.logs / f"{TASK}.1.log").read_text(encoding="utf-8") == old
+    assert old not in (paths.logs / f"{TASK}.2.log").read_text(encoding="utf-8")
 
 
 def test_a_failing_classification_does_not_strand_the_task(
@@ -698,7 +700,381 @@ def test_run_and_state_change_together(
     assert task_of(conn).state is TaskState.RUNNING
 
 
+# Numbered logs
+
+
+def test_next_log_path_starts_at_one_without_a_directory(tmp_path: Path) -> None:
+    logs = tmp_path / "missing"
+    assert next_log_path(logs, TASK) == logs / f"{TASK}.1.log"
+    assert not logs.exists()
+
+
+def test_next_log_path_follows_the_highest_number_of_this_task(tmp_path: Path) -> None:
+    for name in (
+        f"{TASK}.2.log",
+        f"{TASK}.10.log",
+        f"{TASK}-other.99.log",
+        f"{TASK}.abc.log",
+        f"{TASK}.log",
+        f"{TASK}.prev.log",
+        f"{TASK}.gate.log",
+        f"{TASK}.3.log.bak",
+    ):
+        write(tmp_path / name)
+    assert next_log_path(tmp_path, TASK) == tmp_path / f"{TASK}.11.log"
+    assert not (tmp_path / f"{TASK}.11.log").exists()
+
+
+def test_next_log_path_treats_the_task_id_literally(tmp_path: Path) -> None:
+    write(tmp_path / "featxy.5.log")
+    assert next_log_path(tmp_path, "feat.y") == tmp_path / "feat.y.1.log"
+
+
+def test_each_run_writes_its_own_log(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+) -> None:
+    run(conn, repo, paths, home, "usage_limit")
+    first = (paths.logs / f"{TASK}.1.log").read_text(encoding="utf-8")
+    store.transition(conn, TASK, TaskState.JUDGING, TaskState.RESERVED, actor="test")
+    result = run(conn, repo, paths, home, "immediate_exit")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert result.log_path == f"~/.orch/sample/logs/{TASK}.2.log"
+    assert (paths.logs / f"{TASK}.1.log").read_text(encoding="utf-8") == first
+    assert (paths.logs / f"{TASK}.2.log").exists()
+    assert not (paths.logs / f"{TASK}.prev.log").exists()
+    assert not (paths.logs / f"{TASK}.log").exists()
+
+
+def test_an_old_unnumbered_log_stays_and_does_not_count(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+) -> None:
+    old = "You hit your usage limit. Try again later.\n"
+    write(paths.logs / f"{TASK}.log", old)
+    result = run(conn, repo, paths, home, "immediate_exit")
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert (paths.logs / f"{TASK}.log").read_text(encoding="utf-8") == old
+    assert (paths.logs / f"{TASK}.1.log").exists()
+
+
+def test_the_agent_is_told_this_runs_log(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labels: list[str] = []
+    real = lanes.build_command
+
+    def spy(**options: object) -> object:
+        labels.append(str(options["log_label"]))
+        return real(**options)
+
+    monkeypatch.setattr(lanes, "build_command", spy)
+    write(paths.logs / f"{TASK}.4.log")
+    run(conn, repo, paths, home, "success")
+    assert labels == [f"~/.orch/sample/logs/{TASK}.5.log"]
+
+
+def test_a_logs_path_that_cannot_be_read_leaves_the_task_reserved(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+) -> None:
+    write(paths.logs, "not a directory\n")
+    with pytest.raises(RunError):
+        run(conn, repo, paths, home, "success")
+    assert task_of(conn).state is TaskState.RESERVED
+    assert latest_run(conn, TASK) is None
+
+
+# The result file
+
+
+@pytest.mark.parametrize("scenario", ["success", "immediate_exit"])
+def test_a_new_result_replaces_an_earlier_one(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    scenario: str,
+) -> None:
+    write(paths.results / f"{TASK}.json", "old result\n")
+    result = run(conn, repo, paths, home, scenario)
+    assert load_result(paths.results / f"{TASK}.json", TASK) == result
+
+
+@pytest.mark.parametrize("scenario", ["success", "immediate_exit"])
+def test_a_failed_result_write_does_not_strand_the_task(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    def fail(*args: object) -> None:
+        raise OSError("disk full")
+
+    write(paths.results / f"{TASK}.json", "old result\n")
+    monkeypatch.setattr(results, "write_result", fail)
+    result = run(conn, repo, paths, home, scenario)
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert result.verification_passed is False
+    assert task_of(conn).state is TaskState.JUDGING
+    row = run_of(conn)
+    assert row.outcome is Outcome.FAILED
+    assert row.failure_reason is FailureReason.REPORT_MISSING
+    assert row.ended_at is not None
+    assert not (paths.results / f"{TASK}.json").exists()
+
+
+def test_a_results_path_that_cannot_be_written_does_not_strand_the_task(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+) -> None:
+    write(paths.results, "not a directory\n")
+    result = run(conn, repo, paths, home, "success")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).outcome is Outcome.FAILED
+
+
+# Interrupts and failures around the process start
+
+
+class ExitFails:
+    """A context manager for a real file whose exit raises after closing it."""
+
+    def __init__(self, stream: object, error: BaseException) -> None:
+        self.stream = stream
+        self.error = error
+
+    def __enter__(self) -> object:
+        return self.stream
+
+    def __exit__(self, *details: object) -> None:
+        self.stream.close()
+        raise self.error
+
+
+def fail_after_start(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> list[int]:
+    """Let the agent start, then raise while the start block closes its files."""
+    pids: list[int] = []
+    real_file = tempfile.TemporaryFile
+    real_popen = subprocess.Popen
+
+    def popen(*args: object, **options: object) -> subprocess.Popen[bytes]:
+        process = real_popen(*args, **options)
+        pids.append(process.pid)
+        return process
+
+    monkeypatch.setattr(
+        tempfile,
+        "TemporaryFile",
+        lambda **options: ExitFails(real_file(**options), error),
+    )
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return pids
+
+
+def test_an_interrupt_before_the_process_starts_records_an_abort(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **options: object) -> subprocess.Popen[bytes]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    with pytest.raises(KeyboardInterrupt):
+        run(conn, repo, paths, home, "success")
+    assert task_of(conn).state is TaskState.JUDGING
+    row = run_of(conn)
+    assert row.outcome is Outcome.FAILED
+    assert row.failure_reason is FailureReason.ABORTED
+    assert row.pid is None
+    assert row.exit_code is None
+    result = load_result(paths.results / f"{TASK}.json", TASK)
+    assert result.failure_reason is FailureReason.ABORTED
+
+
+def test_any_error_starting_the_process_does_not_strand_the_task(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **options: object) -> subprocess.Popen[bytes]:
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    result = run(conn, repo, paths, home, "success")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert task_of(conn).state is TaskState.JUDGING
+
+
+def test_an_interrupt_right_after_the_start_stops_the_agent(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "TERM_GRACE_SEC", 2)
+    pids = fail_after_start(monkeypatch, KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run(conn, repo, paths, home, "timeout")
+    assert pids
+    assert wait_until_dead(pids[0])
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+
+
+def test_an_error_right_after_the_start_stops_the_agent(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "TERM_GRACE_SEC", 2)
+    pids = fail_after_start(monkeypatch, OSError("close failed"))
+    result = run(conn, repo, paths, home, "timeout")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert pids
+    assert wait_until_dead(pids[0])
+    assert task_of(conn).state is TaskState.JUDGING
+
+
+def test_an_interrupt_while_recording_the_process_stops_the_agent(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "TERM_GRACE_SEC", 2)
+    pids: list[int] = []
+
+    def fail(*args: object, **options: object) -> None:
+        pids.append(int(options["pid"]))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "set_run_process", fail)
+    with pytest.raises(KeyboardInterrupt):
+        run(conn, repo, paths, home, "timeout")
+    assert wait_until_dead(pids[0])
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+
+
+def test_an_interrupt_during_classification_records_an_abort(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object) -> results.TaskResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(results, "collect_result", fail)
+    with pytest.raises(KeyboardInterrupt):
+        run(conn, repo, paths, home, "success")
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+
+
+# An error while recording an abort
+
+
+def test_an_error_recording_an_abort_does_not_hide_the_interrupt(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupt(*args: object) -> results.TaskResult:
+        raise KeyboardInterrupt
+
+    def fail(*args: object, **options: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(results, "collect_result", interrupt)
+    monkeypatch.setattr(store, "finish_run", fail)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        run(conn, repo, paths, home, "success")
+    assert "disk I/O error" in "\n".join(caught.value.__notes__)
+    assert task_of(conn).state is TaskState.RUNNING
+
+
+@pytest.mark.parametrize("helper", ["stop_process", "_reject_report"])
+def test_a_failing_cleanup_step_still_records_the_abort(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    helper: str,
+) -> None:
+    monkeypatch.setattr(runner, "TERM_GRACE_SEC", 2)
+    real = getattr(runner, helper)
+    pids: list[int] = []
+
+    def interrupt(*args: object, **options: object) -> None:
+        pids.append(int(options["pid"]))
+        raise KeyboardInterrupt
+
+    def fail(*args: object) -> None:
+        real(*args)
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(store, "set_run_process", interrupt)
+    monkeypatch.setattr(runner, helper, fail)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        run(conn, repo, paths, home, "timeout")
+    assert wait_until_dead(pids[0])
+    assert "cleanup failed" in "\n".join(caught.value.__notes__)
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+
+
 # Time limit and stopping
+
+
+def test_a_limit_message_does_not_save_a_run_past_its_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    add_task(conn, repo, paths, tmp_path / "worktrees", timeout_sec=1)
+    result = run(conn, repo, paths, home, "limit_then_hang")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.TIMEOUT
+    text = (paths.logs / f"{TASK}.1.log").read_text(encoding="utf-8")
+    assert "usage limit" in text
 
 
 def test_a_run_past_its_limit_is_stopped(
