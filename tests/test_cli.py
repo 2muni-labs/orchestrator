@@ -1408,3 +1408,190 @@ def test_status_human_prints_tasks_and_blocked_chains(
     assert "mine-cause" in out
     with pytest.raises(json.JSONDecodeError):
         json.loads(out)
+
+
+# Token removal from all output
+
+
+def main_without_escape(args: list[str]) -> int:
+    """Fail one test, instead of letting an interrupt stop the pytest session."""
+    try:
+        return main(args)
+    except BaseException as exc:
+        pytest.fail(f"main let {type(exc).__name__} escape", pytrace=False)
+
+
+def fake_pull_request(
+    monkeypatch: pytest.MonkeyPatch, report: PullRequestReport
+) -> None:
+    def fake(conn: object, spec: object, target: object, **kwargs: object) -> object:
+        return report
+
+    monkeypatch.setattr(prflow, "open_pull_request", fake)
+
+
+@pytest.mark.usefixtures("target")
+def test_a_token_in_success_fields_is_removed(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    fake_pull_request(
+        monkeypatch,
+        PullRequestReport(
+            state=TaskState.PR_OPEN, pr_url=f"{URL}?t={TOKEN}", detail=f"used {TOKEN}"
+        ),
+    )
+    code, data = orch("pr", TASK)
+    assert code == 0, data
+    assert TOKEN not in json.dumps(data)
+    assert data["pr_url"] == f"{URL}?t=[REDACTED]"
+    assert data["detail"] == "used [REDACTED]"
+
+
+@pytest.mark.usefixtures("target")
+def test_a_token_in_nested_fields_is_removed(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepare(orch, env)
+    add_token_script(env)
+    report = UpdateReport(
+        state=TaskState.PR_OPEN,
+        conflicts=(f"src/{TOKEN}.py",),
+        gates=GateReport(
+            passed=False,
+            gates={"G1": GateStatus.FAILED},
+            failed_gate="G1",
+            detail=f"scope {TOKEN}",
+            log_path="log",
+        ),
+    )
+
+    def fake(conn: object, spec: object, target: object, **kwargs: object) -> object:
+        return report
+
+    monkeypatch.setattr(prflow, "update_pull_request", fake)
+    code, data = orch("update", TASK)
+    assert code == 20
+    assert TOKEN not in json.dumps(data)
+    assert data["conflicts"] == ["src/[REDACTED].py"]
+    assert data["gates"]["detail"] == "scope [REDACTED]"
+
+
+@pytest.mark.usefixtures("target")
+def test_a_token_needing_json_escapes_is_removed(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    make_ready(orch, env)
+    secret = 'ab"cd'
+    add_token_script(env, output=secret)
+    fake_pull_request(
+        monkeypatch,
+        PullRequestReport(state=TaskState.PR_OPEN, pr_url=URL, detail=f"used {secret}"),
+    )
+    assert main(["pr", TASK]) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out)["detail"] == "used [REDACTED]"
+    assert 'ab\\"cd' not in out
+
+
+def interrupted() -> BaseException:
+    return KeyboardInterrupt(f"bad {TOKEN} here")
+
+
+def exit_with_token() -> BaseException:
+    return SystemExit(f"bad {TOKEN} here")
+
+
+def interrupted_after_error() -> BaseException:
+    error = KeyboardInterrupt("stopped")
+    error.__cause__ = RuntimeError(f"bad {TOKEN} here")
+    return error
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    "make_error", [interrupted, exit_with_token, interrupted_after_error]
+)
+def test_a_token_in_a_traceback_is_removed(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make_error: Callable[[], BaseException],
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+
+    def failed(*args: object, **kwargs: object) -> None:
+        raise make_error()
+
+    monkeypatch.setattr(prflow, "open_pull_request", failed)
+    capsys.readouterr()
+    assert main_without_escape(["pr", TASK]) == INTERNAL
+    captured = capsys.readouterr()
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out)["error"] == "internal"
+    assert TOKEN not in captured.out
+    assert "Traceback" in captured.err
+    assert "[REDACTED]" in captured.err
+    assert TOKEN not in captured.err
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failure_while_writing_the_output_hides_the_token(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    fake_pull_request(
+        monkeypatch, PullRequestReport(state=TaskState.PR_OPEN, pr_url=URL)
+    )
+    dumps = json.dumps
+    calls = []
+
+    def failing_once(*args: object, **kwargs: object) -> str:
+        calls.append(args)
+        if len(calls) == 1:
+            raise ValueError(f"bad {TOKEN} here")
+        return dumps(*args, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", failing_once)
+    capsys.readouterr()
+    code = main(["pr", TASK])
+    monkeypatch.setattr(json, "dumps", dumps)
+    captured = capsys.readouterr()
+    assert code == INTERNAL
+    assert json.loads(captured.out)["error"] == "internal"
+    assert TOKEN not in captured.out
+    assert TOKEN not in captured.err
+
+
+def test_an_interrupt_without_a_token_is_also_one_json_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failed(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "list_tasks", failed)
+    assert main_without_escape(["status"]) == INTERNAL
+    captured = capsys.readouterr()
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out)["error"] == "internal"
+    assert "KeyboardInterrupt" in captured.err
+
+
+@pytest.mark.usefixtures("target")
+def test_output_without_a_token_is_unchanged(orch: Call, env: Env) -> None:
+    worktree = prepare(orch, env)
+    code, data = orch("status")
+    assert code == 0
+    assert data["tasks"][0]["title"] == TITLE
+    assert "REDACTED" not in json.dumps(data)
+    assert worktree.is_dir()
