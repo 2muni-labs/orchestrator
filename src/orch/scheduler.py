@@ -24,6 +24,24 @@ class Decision:
     waiting_for: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BlockedChain:
+    """A task that cannot proceed because of tasks that are blocked or discarded."""
+
+    task_id: str
+    state: TaskState
+    causes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NextReport:
+    """What one pass over the queued tasks found."""
+
+    reserved: tuple[str, ...] = ()
+    newly_blocked: tuple[str, ...] = ()
+    chains: tuple[BlockedChain, ...] = ()
+
+
 def globs_overlap(first: str, second: str) -> bool:
     """Return whether two path globs could reach the same file."""
     first = first.casefold().rstrip("/")
@@ -293,6 +311,38 @@ def dispatch(
         )
 
 
+def blocked_chains(
+    conn: sqlite3.Connection, *, target: str | None = None
+) -> tuple[BlockedChain, ...]:
+    """Return queued and blocked tasks held up by a blocked or discarded task."""
+    chains: list[BlockedChain] = []
+    for task in store.list_tasks(
+        conn, states=[TaskState.QUEUED, TaskState.BLOCKED], target=target
+    ):
+        pending = list(task.depends_on)
+        visited: set[str] = set()
+        causes: set[str] = set()
+        while pending:
+            task_id = pending.pop()
+            if task_id in visited:
+                continue
+            visited.add(task_id)
+            dependency = store.get_task(conn, task_id)
+            if dependency is None:
+                continue
+            if dependency.state in (TaskState.BLOCKED, TaskState.DISCARDED):
+                causes.add(task_id)
+            else:
+                pending.extend(dependency.depends_on)
+        if causes:
+            chains.append(
+                BlockedChain(
+                    task_id=task.id, state=task.state, causes=tuple(sorted(causes))
+                )
+            )
+    return tuple(chains)
+
+
 def next_reservations(
     conn: sqlite3.Connection,
     *,
@@ -300,11 +350,12 @@ def next_reservations(
     limits: Limits,
     ttl_min: int,
     now: datetime | None = None,
-) -> tuple[str, ...]:
-    """Judge all queued tasks, oldest first, and return the newly reserved ids."""
+) -> NextReport:
+    """Judge queued tasks oldest first and report reservations and blocked chains."""
     if now is None:
         now = datetime.now(UTC)
     reserved: list[str] = []
+    newly_blocked: list[str] = []
     with store.transaction(conn):
         expire_reservations(conn, now=now)
         for task in store.list_tasks(conn, states=[TaskState.QUEUED]):
@@ -318,4 +369,9 @@ def next_reservations(
             )
             if decision.state == TaskState.RESERVED:
                 reserved.append(task.id)
-    return tuple(reserved)
+            elif decision.state == TaskState.BLOCKED:
+                newly_blocked.append(task.id)
+        chains = blocked_chains(conn)
+    return NextReport(
+        reserved=tuple(reserved), newly_blocked=tuple(newly_blocked), chains=chains
+    )

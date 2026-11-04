@@ -16,12 +16,14 @@ from orch import scheduler
 from orch.config import Limits
 from orch.models import Grade, Lane, Task, TaskState
 from orch.scheduler import (
+    BlockedChain,
     Decision,
     DispatchError,
+    NextReport,
+    blocked_chains,
     dispatch,
     expire_reservations,
     globs_overlap,
-    next_reservations,
     try_reserve,
 )
 from orch.store import (
@@ -40,6 +42,11 @@ LIMITS = Limits(total=3, lane_b=2)
 TTL = 10
 TARGET = "sample"
 THREADS = 8
+
+
+def next_reservations(conn: sqlite3.Connection, **kwargs: object) -> tuple[str, ...]:
+    """Return the reserved ids, which is all that most tests look at."""
+    return scheduler.next_reservations(conn, **kwargs).reserved  # type: ignore[arg-type]
 
 
 @pytest.fixture
@@ -1007,3 +1014,247 @@ def test_module_imports_only_the_standard_library_and_orch() -> None:
             imported.add(node.module.split(".")[0])
     assert imported - {"orch"} <= sys.stdlib_module_names
     assert "subprocess" not in imported
+
+
+# Blocked chains and the next report
+
+
+def judge_all(conn: sqlite3.Connection) -> NextReport:
+    return scheduler.next_reservations(
+        conn,
+        modify_of=lambda task: (f"{task.id}/**",),
+        limits=LIMITS,
+        ttl_min=TTL,
+        now=NOW,
+    )
+
+
+def test_blocked_chains_is_empty_without_tasks(conn: sqlite3.Connection) -> None:
+    assert blocked_chains(conn) == ()
+
+
+def test_a_task_on_a_discarded_dependency_names_it(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.BLOCKED, depends_on=("a",))
+    assert blocked_chains(conn) == (
+        BlockedChain(task_id="b", state=TaskState.BLOCKED, causes=("a",)),
+    )
+
+
+def test_a_queued_task_on_a_blocked_dependency_names_it(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.BLOCKED)
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    assert blocked_chains(conn) == (
+        BlockedChain(task_id="b", state=TaskState.QUEUED, causes=("a",)),
+    )
+
+
+def test_a_long_chain_names_the_nearest_stopped_task(conn: sqlite3.Connection) -> None:
+    """C waits for B, B for A, and A is blocked by the discarded Z."""
+    add_task(conn, "z", TaskState.DISCARDED, created_at="2026-11-04T00:00:00+00:00")
+    add_task(
+        conn,
+        "a",
+        TaskState.BLOCKED,
+        depends_on=("z",),
+        created_at="2026-11-04T00:00:01+00:00",
+    )
+    add_task(
+        conn,
+        "b",
+        TaskState.QUEUED,
+        depends_on=("a",),
+        created_at="2026-11-04T00:00:02+00:00",
+    )
+    add_task(
+        conn,
+        "c",
+        TaskState.QUEUED,
+        depends_on=("b",),
+        created_at="2026-11-04T00:00:03+00:00",
+    )
+    assert blocked_chains(conn) == (
+        BlockedChain(task_id="a", state=TaskState.BLOCKED, causes=("z",)),
+        BlockedChain(task_id="b", state=TaskState.QUEUED, causes=("a",)),
+        BlockedChain(task_id="c", state=TaskState.QUEUED, causes=("a",)),
+    )
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        TaskState.PREPARED,
+        TaskState.QUEUED,
+        TaskState.RESERVED,
+        TaskState.RUNNING,
+        TaskState.JUDGING,
+        TaskState.READY,
+        TaskState.PR_OPEN,
+    ],
+)
+def test_a_chain_passes_through_any_unfinished_task(
+    conn: sqlite3.Connection, middle: TaskState
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", middle, depends_on=("a",))
+    add_task(conn, "c", TaskState.QUEUED, depends_on=("b",))
+    assert BlockedChain(
+        task_id="c", state=TaskState.QUEUED, causes=("a",)
+    ) in blocked_chains(conn)
+
+
+def test_causes_are_sorted_and_unique_across_a_diamond(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "x", TaskState.BLOCKED)
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "l", TaskState.QUEUED, depends_on=("x", "a"))
+    add_task(conn, "r", TaskState.PREPARED, depends_on=("x",))
+    add_task(conn, "top", TaskState.QUEUED, depends_on=("l", "r"))
+    chains = {chain.task_id: chain for chain in blocked_chains(conn)}
+    assert chains["top"].causes == ("a", "x")
+
+
+@pytest.mark.parametrize(
+    "state", [TaskState.CLOSED, TaskState.RUNNING, TaskState.PR_OPEN]
+)
+def test_a_healthy_dependency_is_not_a_cause(
+    conn: sqlite3.Connection, state: TaskState
+) -> None:
+    add_task(conn, "a", state)
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    assert blocked_chains(conn) == ()
+
+
+def test_a_task_blocked_by_its_own_run_is_not_listed(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.BLOCKED)
+    assert blocked_chains(conn) == ()
+
+
+def test_a_missing_dependency_is_not_a_cause(conn: sqlite3.Connection) -> None:
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("gone",))
+    assert blocked_chains(conn) == ()
+
+
+@pytest.mark.parametrize(
+    "state", [TaskState.PREPARED, TaskState.RESERVED, TaskState.JUDGING]
+)
+def test_only_queued_and_blocked_tasks_are_listed(
+    conn: sqlite3.Connection, state: TaskState
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", state, depends_on=("a",))
+    assert blocked_chains(conn) == ()
+
+
+def test_a_dependency_cycle_ends(conn: sqlite3.Connection) -> None:
+    """orch prepare prevents cycles, but a damaged database must not hang status."""
+    add_task(conn, "a", TaskState.QUEUED, depends_on=("b",))
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    assert blocked_chains(conn) == ()
+
+
+def test_a_cycle_still_finds_a_cause(conn: sqlite3.Connection) -> None:
+    add_task(conn, "z", TaskState.BLOCKED)
+    add_task(conn, "a", TaskState.QUEUED, depends_on=("b",))
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a", "z"))
+    chains = {chain.task_id: chain.causes for chain in blocked_chains(conn)}
+    assert chains == {"a": ("z",), "b": ("z",)}
+
+
+def test_blocked_chains_filters_by_target(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED, target="one")
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",), target="one")
+    add_task(conn, "c", TaskState.DISCARDED, target="two")
+    add_task(conn, "d", TaskState.QUEUED, depends_on=("c",), target="two")
+    assert [chain.task_id for chain in blocked_chains(conn, target="one")] == ["b"]
+    assert [chain.task_id for chain in blocked_chains(conn, target="two")] == ["d"]
+    assert [chain.task_id for chain in blocked_chains(conn)] == ["b", "d"]
+
+
+def test_blocked_chains_uses_created_at_order(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.BLOCKED)
+    add_task(
+        conn,
+        "later",
+        TaskState.QUEUED,
+        depends_on=("a",),
+        created_at="2026-11-04T00:00:02+00:00",
+    )
+    add_task(
+        conn,
+        "earlier",
+        TaskState.QUEUED,
+        depends_on=("a",),
+        created_at="2026-11-04T00:00:01+00:00",
+    )
+    assert [chain.task_id for chain in blocked_chains(conn)] == ["earlier", "later"]
+
+
+def test_blocked_chains_changes_nothing(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    before = event_count(conn, "b")
+    blocked_chains(conn)
+    assert state_of(conn, "b") is TaskState.QUEUED
+    assert event_count(conn, "b") == before
+
+
+def test_next_report_is_empty_without_queued_tasks(conn: sqlite3.Connection) -> None:
+    assert judge_all(conn) == NextReport()
+
+
+def test_next_reports_the_newly_reserved(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    assert judge_all(conn) == NextReport(reserved=("a",))
+
+
+def test_next_reports_the_newly_blocked_and_the_chain_behind_them(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.DISCARDED, created_at="2026-11-04T00:00:00+00:00")
+    add_task(
+        conn,
+        "b",
+        TaskState.QUEUED,
+        depends_on=("a",),
+        created_at="2026-11-04T00:00:01+00:00",
+    )
+    add_task(
+        conn,
+        "c",
+        TaskState.QUEUED,
+        depends_on=("b",),
+        created_at="2026-11-04T00:00:02+00:00",
+    )
+    add_task(conn, "d", TaskState.QUEUED, created_at="2026-11-04T00:00:03+00:00")
+    assert judge_all(conn) == NextReport(
+        reserved=("d",),
+        newly_blocked=("b",),
+        chains=(
+            BlockedChain(task_id="b", state=TaskState.BLOCKED, causes=("a",)),
+            BlockedChain(task_id="c", state=TaskState.QUEUED, causes=("b",)),
+        ),
+    )
+    assert state_of(conn, "c") is TaskState.QUEUED
+
+
+def test_next_does_not_report_an_old_block_as_new(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.DISCARDED)
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    assert judge_all(conn).newly_blocked == ("b",)
+    report = judge_all(conn)
+    assert report.newly_blocked == ()
+    assert report.chains == (
+        BlockedChain(task_id="b", state=TaskState.BLOCKED, causes=("a",)),
+    )
+
+
+def test_next_chains_cover_every_target(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.BLOCKED, target="one")
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",), target="one")
+    add_task(conn, "c", TaskState.BLOCKED, target="two")
+    add_task(conn, "d", TaskState.QUEUED, depends_on=("c",), target="two")
+    assert [chain.task_id for chain in judge_all(conn).chains] == ["b", "d"]
