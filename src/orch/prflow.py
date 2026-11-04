@@ -12,6 +12,8 @@ from orch.gate import GateReport
 from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
 from orch.taskfile import TaskSpec
 
+INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
+
 
 class PullRequestFlowError(Exception):
     """A pull request step cannot proceed."""
@@ -147,7 +149,7 @@ def open_pull_request(
         store.transition(conn, spec.id, task.state, TaskState.JUDGING, actor="orch")
         return PullRequestReport(state=TaskState.JUDGING, detail=detail)
 
-    if task.state == TaskState.CONFLICT and task.pushed_sha:
+    if task.pushed_sha:
         gitops.update_task_branch(worktree, spec.id, task.pushed_sha)
     else:
         gitops.push_task_branch(worktree, branch)
@@ -196,7 +198,10 @@ def update_pull_request(
     spec: TaskSpec,
     target: Target,
     *,
+    token: str,
     log_path: Path,
+    home: Path,
+    orch_home: Path,
 ) -> UpdateReport:
     """Check an open pull request against the moved default branch, without pushing."""
     task = store.get_task(conn, spec.id)
@@ -204,9 +209,9 @@ def update_pull_request(
         raise PullRequestFlowError(f"Task not found: {spec.id}")
     if task.state != TaskState.PR_OPEN:
         raise PullRequestFlowError(f"Task must be pr_open: {spec.id}")
-    if not task.worktree or not task.test_sha or not task.pushed_sha:
+    if not task.worktree or not task.test_sha or not task.pushed_sha or not task.pr_url:
         raise PullRequestFlowError(
-            f"Task needs a worktree, test commit and pushed commit: {spec.id}"
+            f"Task needs a worktree, test commit, pushed commit and PR URL: {spec.id}"
         )
 
     worktree = Path(task.worktree)
@@ -230,6 +235,14 @@ def update_pull_request(
         )
     finally:
         gitops.reset_to(worktree, task.pushed_sha)
+    if not report.passed:
+        github.comment_on_pull_request(
+            url=task.pr_url,
+            body=INTEGRATION_FAILED,
+            token=token,
+            home=home,
+            orch_home=orch_home,
+        )
     return UpdateReport(state=TaskState.PR_OPEN, gates=report)
 
 

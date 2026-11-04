@@ -51,6 +51,7 @@ FAKE_HOME = Path("/", "Users", "tester")
 REDACT = {"home": FAKE_HOME, "orch_home": FAKE_HOME / ".orch"}
 # Assembled at run time so that no token of this shape is in the repository.
 TOKEN = "gh" + "s_" + "t0ken" * 8
+INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -309,7 +310,9 @@ def update_pr(
         conn,
         make_spec(),
         target if target is not None else make_target(repo),
+        token=TOKEN,
         log_path=tmp_path / "logs" / "feat-x.update.log",
+        **REDACT,
     )
 
 
@@ -979,6 +982,92 @@ def test_a_failed_comment_keeps_the_conflict_state_and_can_be_retried(
     assert task_of(conn).pushed_sha == head
 
 
+# A pushed branch that returns through ready
+
+
+def return_to_ready(
+    conn: sqlite3.Connection, repo: Path, worktree: Path, tmp_path: Path
+) -> None:
+    """Take an open pull request through a failed pre-PR gate and back to ready."""
+    move_main(repo, "src/app.py")
+    assert update_pr(conn, repo, tmp_path).state is TaskState.CONFLICT
+    resolve_by_rebase(worktree)
+    failing = make_target(repo, test_command="exit 1")
+    assert open_pr(conn, repo, tmp_path, target=failing).state is TaskState.JUDGING
+    store.transition(conn, TASK, TaskState.JUDGING, TaskState.GATING, actor="orch")
+    store.transition(conn, TASK, TaskState.GATING, TaskState.READY, actor="orch")
+
+
+def test_a_pushed_branch_back_in_ready_updates_with_a_lease(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    return_to_ready(conn, repo, worktree, tmp_path)
+    assert task_of(conn).pushed_sha == opened
+    report = open_pr(conn, repo, tmp_path)
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != opened
+    assert report.state is TaskState.PR_OPEN
+    assert report.pr_url == URL
+    assert remote_tip(remote) == head
+    assert task_of(conn).pushed_sha == head
+    assert len(hub.created) == 1
+    assert len(hub.comments) == 1
+    assert events_of(conn)[-1] == ("ready", "pr_open")
+
+
+def test_a_moved_remote_branch_rejects_the_lease_from_ready(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    return_to_ready(conn, repo, worktree, tmp_path)
+    other = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-qf", "origin", f"{other}:refs/heads/{BRANCH}")
+    with pytest.raises(GitError):
+        open_pr(conn, repo, tmp_path)
+    assert remote_tip(remote) == other
+    task = task_of(conn)
+    assert task.state is TaskState.READY
+    assert task.pushed_sha == opened
+    assert hub.comments == []
+
+
+def test_a_failed_create_can_be_retried_after_main_moves(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    hub.create_error = GitHubError("boom")
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path)
+    hub.create_error = None
+    move_main(repo)
+    report = open_pr(conn, repo, tmp_path)
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != implemented
+    assert report.state is TaskState.PR_OPEN
+    assert remote_tip(remote) == head
+    assert task_of(conn).pushed_sha == head
+    assert len(hub.created) == 2
+    assert hub.comments == []
+
+
 # orch update
 
 
@@ -1129,6 +1218,121 @@ def test_update_refuses_a_task_with_no_pushed_commit(
         update_pr(conn, repo, tmp_path)
 
 
+# The comment after a failed integration check
+
+
+@pytest.mark.parametrize(
+    ("overrides", "failed_gate"),
+    [
+        ({"test_command": "echo x > outside.py"}, "G1"),
+        ({"test_command": "exit 1"}, "G2"),
+        ({"lint_command": "exit 1"}, "G3"),
+    ],
+)
+def test_a_failing_update_gate_comments_on_the_pull_request(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    overrides: dict[str, str],
+    failed_gate: str,
+) -> None:
+    move_main(repo)
+    report = update_pr(conn, repo, tmp_path, target=make_target(repo, **overrides))
+    assert report.gates is not None
+    assert report.gates.failed_gate == failed_gate
+    assert hub.comments == [
+        {"url": URL, "body": INTEGRATION_FAILED, "token": TOKEN, **REDACT}
+    ]
+    assert report.state is TaskState.PR_OPEN
+    assert task_of(conn).state is TaskState.PR_OPEN
+    assert task_of(conn).pushed_sha == opened
+    assert git(worktree, "rev-parse", "HEAD") == opened
+    assert remote_tip(remote) == opened
+
+
+def test_a_passing_update_gate_leaves_no_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo)
+    report = update_pr(conn, repo, tmp_path)
+    assert report.gates is not None
+    assert report.gates.passed is True
+    assert hub.comments == []
+
+
+def test_an_update_conflict_leaves_no_integration_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo, "src/app.py")
+    assert update_pr(conn, repo, tmp_path).state is TaskState.CONFLICT
+    assert hub.comments == []
+
+
+def test_an_error_during_update_leaves_no_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **options: object) -> GateReport:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(gate, "run_gates", fail)
+    move_main(repo)
+    with pytest.raises(RuntimeError):
+        update_pr(conn, repo, tmp_path)
+    assert hub.comments == []
+
+
+def test_a_failed_integration_comment_raises_and_still_discards_the_merge(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo)
+    hub.comment_error = GitHubError("boom")
+    with pytest.raises(GitHubError):
+        update_pr(conn, repo, tmp_path, target=make_target(repo, test_command="exit 1"))
+    assert git(worktree, "rev-parse", "HEAD") == opened
+    assert task_of(conn).state is TaskState.PR_OPEN
+
+
+def test_update_refuses_a_task_with_no_pull_request_url(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(
+        conn, worktree, test_sha, state=TaskState.PR_OPEN, pushed_sha=implemented
+    )
+    move_main(repo)
+    with pytest.raises(PullRequestFlowError):
+        update_pr(conn, repo, tmp_path, target=make_target(repo, test_command="exit 1"))
+    assert hub.comments == []
+    assert git(worktree, "rev-parse", "HEAD") == implemented
+
+
 # orch close
 
 
@@ -1238,6 +1442,158 @@ def test_close_removes_a_worktree_with_stray_files(
     write(worktree / "stray.py")
     close(conn, repo)
     assert not worktree.exists()
+
+
+def test_close_leaves_another_task_alone(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    other_tree = tmp_path / "other-wt"
+    create_worktree(repo, other_tree, "task/other", MAIN)
+    insert_task(
+        conn,
+        Task(
+            id="other",
+            target="sample",
+            title="Other",
+            grade=Grade.L2,
+            lane=Lane.B,
+            model="m",
+            state=TaskState.PR_OPEN,
+            attempt=1,
+            timeout_sec=60,
+            test_sha=opened,
+            worktree=str(other_tree),
+            pushed_sha=opened,
+            pr_url="https://github.com/owner/sample/pull/8",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    add_locks(conn, "sample", TASK, ("src/**",))
+    add_locks(conn, "sample", "other", ("docs/**",))
+    close(conn, repo)
+    other = get_task(conn, "other")
+    assert other is not None
+    assert other.state is TaskState.PR_OPEN
+    assert other_tree.exists()
+    assert git(repo, "branch", "--list", "task/other").strip()
+    assert [(lock.task_id, lock.path_glob) for lock in list_locks(conn, "sample")] == [
+        ("other", "docs/**")
+    ]
+    assert task_of(conn).state is TaskState.CLOSED
+
+
+# The token in exception messages
+
+
+def failing_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a gh on PATH that fails and writes the token and arguments to stderr."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "gh"
+    script.write_text(
+        """#!/bin/sh
+cat > /dev/null
+echo "denied $GH_TOKEN $*" >&2
+exit 1
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def assert_no_token(error: BaseException) -> None:
+    seen: BaseException | None = error
+    while seen is not None:
+        assert TOKEN not in str(seen)
+        assert TOKEN not in repr(seen)
+        seen = seen.__cause__ or seen.__context__
+
+
+def test_the_token_stays_out_of_a_failed_create(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_gh(tmp_path, monkeypatch)
+    add_ready_task(conn, worktree, test_sha)
+    with pytest.raises(GitHubError) as caught:
+        open_pr(conn, repo, tmp_path)
+    assert_no_token(caught.value)
+
+
+def test_the_token_stays_out_of_a_failed_conflict_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_gh(tmp_path, monkeypatch)
+    add_ready_task(conn, worktree, test_sha, state=TaskState.CONFLICT, pr_url=URL)
+    with pytest.raises(GitHubError) as caught:
+        open_pr(conn, repo, tmp_path)
+    assert_no_token(caught.value)
+
+
+def test_the_token_stays_out_of_a_failed_integration_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_gh(tmp_path, monkeypatch)
+    add_ready_task(
+        conn,
+        worktree,
+        test_sha,
+        state=TaskState.PR_OPEN,
+        pushed_sha=implemented,
+        pr_url=URL,
+    )
+    move_main(repo)
+    with pytest.raises(GitHubError) as caught:
+        update_pr(conn, repo, tmp_path, target=make_target(repo, test_command="exit 1"))
+    assert_no_token(caught.value)
+
+
+def test_the_token_stays_out_of_a_failed_status_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_gh(tmp_path, monkeypatch)
+    add_ready_task(
+        conn,
+        worktree,
+        test_sha,
+        state=TaskState.PR_OPEN,
+        pushed_sha=implemented,
+        pr_url=URL,
+    )
+    with pytest.raises(GitHubError) as caught:
+        close(conn, repo)
+    assert_no_token(caught.value)
+    assert task_of(conn).state is TaskState.PR_OPEN
 
 
 # Conventions
