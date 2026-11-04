@@ -14,6 +14,7 @@ from orch.github import (
     PullRequestStatus,
     comment_on_pull_request,
     create_pull_request,
+    label_exists,
     pull_request_status,
 )
 from orch.redact import ResidualPathError, SecretFoundError
@@ -478,3 +479,122 @@ def test_commands_have_no_merge_subcommand() -> None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     assert "merge" not in constants
+
+
+# Labels
+
+
+def test_create_passes_each_label(gh: FakeGh) -> None:
+    create(labels=("review-overridden", "other"))
+    assert gh.calls() == [
+        [
+            "pr",
+            "create",
+            "--repo",
+            "owner/sample",
+            "--head",
+            "task/feat-x",
+            "--base",
+            "main",
+            "--title",
+            "Add feature",
+            "--label",
+            "review-overridden",
+            "--label",
+            "other",
+            "--body-file",
+            "-",
+        ]
+    ]
+
+
+@pytest.mark.parametrize("label", ["", "-x", "a b", "a,b", "--repo"])
+def test_create_refuses_a_bad_label_without_running_gh(gh: FakeGh, label: str) -> None:
+    with pytest.raises(GitHubError):
+        create(labels=(label,))
+    assert gh.calls() == []
+
+
+def set_answer(gh: FakeGh, answer: object) -> None:
+    gh.stdout = json.dumps(answer) if not isinstance(answer, str) else answer
+    gh.write()
+
+
+def exists(name: str = "review-overridden") -> bool:
+    return label_exists(github="owner/sample", name=name, token=TOKEN)
+
+
+def test_label_check_runs_the_exact_read_only_command(gh: FakeGh) -> None:
+    set_answer(gh, [{"name": "review-overridden"}])
+    assert exists() is True
+    assert gh.calls() == [
+        [
+            "label",
+            "list",
+            "--repo",
+            "owner/sample",
+            "--search",
+            "review-overridden",
+            "--json",
+            "name",
+            "--limit",
+            "100",
+        ]
+    ]
+
+
+def test_label_check_never_creates_a_label(gh: FakeGh) -> None:
+    set_answer(gh, [])
+    assert exists() is False
+    assert all("create" not in call for call in gh.calls())
+
+
+def test_label_check_needs_the_exact_name(gh: FakeGh) -> None:
+    """gh's search also returns partial matches."""
+    set_answer(
+        gh, [{"name": "review-overridden-old"}, {"name": "not-review-overridden"}]
+    )
+    assert exists() is False
+
+
+def test_label_check_ignores_case_as_github_does(gh: FakeGh) -> None:
+    set_answer(gh, [{"name": "Review-Overridden"}])
+    assert exists() is True
+
+
+@pytest.mark.parametrize(
+    "answer", ["not json", "{}", '[{"title": "x"}]', "[1]", '[{"name": 1}]']
+)
+def test_label_check_refuses_an_unexpected_answer(gh: FakeGh, answer: str) -> None:
+    set_answer(gh, answer)
+    with pytest.raises(GitHubError):
+        exists()
+
+
+def test_label_check_raises_when_gh_fails(gh: FakeGh) -> None:
+    """A failure is not the same as a missing label."""
+    gh.code = 1
+    gh.stderr = "HTTP 500"
+    gh.write()
+    with pytest.raises(GitHubError):
+        exists()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"name": ""},
+        {"name": "-x"},
+        {"name": "a b"},
+        {"github": "not a repo"},
+        {"token": ""},
+    ],
+)
+def test_label_check_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    values = {"github": "owner/sample", "name": "review-overridden", "token": TOKEN}
+    values.update(options)
+    with pytest.raises(GitHubError):
+        label_exists(**values)
+    assert gh.calls() == []

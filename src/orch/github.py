@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,6 +85,11 @@ def _gh(token: str, *args: str, input_text: str | None = None) -> str:
     return stdout
 
 
+def label_exists(*, github: str, name: str, token: str) -> bool:
+    """Return whether a repository has a label. The label is never created here."""
+    raise NotImplementedError
+
+
 def create_pull_request(
     *,
     github: str,
@@ -94,6 +100,7 @@ def create_pull_request(
     token: str,
     home: Path,
     orch_home: Path,
+    labels: Iterable[str] = (),
 ) -> str:
     """Create a pull request from redacted text and return its URL."""
     _validate_token(token)

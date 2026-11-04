@@ -10,6 +10,7 @@ from orch import gate, github, gitops, results, store
 from orch.config import Target
 from orch.gate import GateReport
 from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
+from orch.review import Triage
 from orch.taskfile import TaskSpec
 
 INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
@@ -44,6 +45,7 @@ def build_body(
     changed: Iterable[str],
     gates: Iterable[GateResult],
     review: Review | None,
+    triage: Triage | None = None,
 ) -> str:
     """Return the minimal English pull request body."""
     review_summary = "Not required"
@@ -87,6 +89,7 @@ def open_pull_request(
     token: str,
     log_path: Path,
     review_path: Path,
+    triage_path: Path,
     home: Path,
     orch_home: Path,
     resolution: str | None = None,
