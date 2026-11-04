@@ -9,8 +9,15 @@ from pathlib import Path
 from orch import gate, github, gitops, results, store
 from orch.config import Target
 from orch.gate import GateReport
-from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
-from orch.review import Triage
+from orch.models import Gate, GateResult, Review, Severity, Task, TaskState, Verdict
+from orch.review import (
+    OVERRIDE_LABEL,
+    ReviewFlowError,
+    Triage,
+    check_triage,
+    load_triage,
+    override_section,
+)
 from orch.taskfile import TaskSpec
 
 INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
@@ -56,7 +63,7 @@ def build_body(
             if counts[severity]:
                 review_summary += f", {severity}: {counts[severity]}"
 
-    return "\n".join(
+    body = "\n".join(
         [
             "## Summary",
             "",
@@ -79,6 +86,9 @@ def build_body(
             "",
         ]
     )
+    if triage is not None:
+        body = override_section(triage) + "\n\n" + body
+    return body
 
 
 def open_pull_request(
@@ -109,8 +119,20 @@ def open_pull_request(
             review = results.load_review(review_path, spec.id)
         except results.ReportError:
             raise PullRequestFlowError(f"Invalid review: {spec.id}") from None
-    elif gate.review_required(task.grade):
+    elif gate.review_required(task.grade, flag=spec.review):
         raise PullRequestFlowError(f"Task needs a saved review: {spec.id}")
+
+    triage = None
+    if review is not None and review.verdict is Verdict.BLOCK:
+        try:
+            triage = load_triage(triage_path)
+            check_triage(conn, triage, review, task)
+        except ReviewFlowError as exc:
+            raise PullRequestFlowError(f"Invalid triage: {spec.id}") from exc
+        if not task.pr_url and not github.label_exists(
+            github=target.github, name=OVERRIDE_LABEL, token=token
+        ):
+            raise PullRequestFlowError(f"Repository needs label: {OVERRIDE_LABEL}")
 
     worktree = Path(task.worktree)
     main_ref = f"origin/{target.default_branch}"
@@ -178,6 +200,7 @@ def open_pull_request(
             changed=gitops.changed_paths(worktree, main_ref),
             gates=store.gate_results(conn, spec.id, task.attempt),
             review=review,
+            triage=triage,
         )
         url = github.create_pull_request(
             github=target.github,
@@ -188,6 +211,7 @@ def open_pull_request(
             token=token,
             home=home,
             orch_home=orch_home,
+            labels=(OVERRIDE_LABEL,) if triage is not None else (),
         )
 
     with store.transaction(conn):
