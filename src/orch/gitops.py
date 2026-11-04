@@ -201,6 +201,36 @@ def push_task_branch(worktree: Path, branch: str, remote: str = "origin") -> Non
     _git(worktree, "push", "-u", remote, f"{branch}:refs/heads/{branch}")
 
 
+def update_task_branch(
+    worktree: Path, task_id: str, expected_remote_sha: str, remote: str = "origin"
+) -> str:
+    """Replace task/<task_id> on the remote, leased on the last pushed commit."""
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", task_id) is None
+        or ".." in task_id
+        or task_id.endswith((".", ".lock"))
+    ):
+        raise GitError(f"Invalid task id: {task_id!r}")
+    branch = f"task/{task_id}"
+    if re.fullmatch(r"[0-9a-f]{40}", expected_remote_sha) is None:
+        raise GitError(f"Invalid expected remote commit id: {expected_remote_sha!r}")
+    _validate_value(remote)
+    current = _git(worktree, "symbolic-ref", "--short", "HEAD").strip()
+    if current != branch:
+        raise GitError(f"Current branch {current!r} differs from {branch!r}")
+    head = rev_parse(worktree, "HEAD")
+    if head == expected_remote_sha:
+        return head
+    _git(
+        worktree,
+        "push",
+        f"--force-with-lease={branch}:{expected_remote_sha}",
+        remote,
+        f"{branch}:refs/heads/{branch}",
+    )
+    return rev_parse(worktree, "HEAD")
+
+
 def reset_to(worktree: Path, sha: str) -> None:
     """Return a linked worktree to a commit and remove untracked files."""
     _validate_value(sha)
