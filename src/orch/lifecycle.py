@@ -41,6 +41,21 @@ def _write_text(path: Path, text: str) -> None:
         raise
 
 
+def _create_text(path: Path, text: str) -> None:
+    """Publish a complete text file without replacing an existing entry."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise LifecycleError(f"Task spec already exists: {path}") from exc
+    finally:
+        os.unlink(temporary)
+
+
 def _get_task(conn: sqlite3.Connection, task_id: str) -> Task:
     task = store.get_task(conn, task_id)
     if task is None:
@@ -124,6 +139,11 @@ def prepare_task(
     if missing:
         raise LifecycleError(f"Dependency not registered: {', '.join(missing)}")
 
+    saved_path = paths.tasks / f"{spec.id}.md"
+    save_spec = spec_path.resolve() != saved_path.resolve()
+    if save_spec and os.path.lexists(saved_path):
+        raise LifecycleError(f"Task spec already exists: {saved_path}")
+
     worktree = paths.worktrees / spec.id
     branch = f"task/{spec.id}"
     try:
@@ -133,11 +153,10 @@ def prepare_task(
     except gitops.GitError as exc:
         raise LifecycleError(str(exc)) from exc
 
-    saved_path = paths.tasks / f"{spec.id}.md"
     saved = False
     try:
-        if spec_path.resolve() != saved_path.resolve():
-            _write_text(saved_path, text)
+        if save_spec:
+            _create_text(saved_path, text)
             saved = True
         exit_code = gate.run_command(
             target.setup_command, worktree, paths.logs / f"{spec.id}.setup.log"
@@ -166,14 +185,24 @@ def prepare_task(
             store.insert_task(conn, task)
         return task
     except BaseException:
-        # Each cleanup is independent, and none may obscure the original error.
-        with suppress(BaseException):
-            gitops.remove_worktree(target.path, worktree, force=True)
-        with suppress(BaseException):
-            gitops.delete_branch(target.path, branch)
+        # Finish every cleanup before propagating the first cleanup interrupt.
+        cleanups = [
+            lambda: gitops.remove_worktree(target.path, worktree, force=True),
+            lambda: gitops.delete_branch(target.path, branch),
+        ]
         if saved:
-            with suppress(BaseException):
-                saved_path.unlink()
+            cleanups.append(saved_path.unlink)
+        interrupted: BaseException | None = None
+        for cleanup in cleanups:
+            try:
+                cleanup()
+            except Exception:
+                pass
+            except BaseException as exc:
+                if interrupted is None:
+                    interrupted = exc
+        if interrupted is not None:
+            raise interrupted from None
         raise
 
 
@@ -212,6 +241,8 @@ def retry_task(
         Outcome.DONE,
     ):
         raise LifecycleError(f"No failed run to retry: {task_id}")
+    if run.attempt != task.attempt:
+        raise LifecycleError(f"Run attempt does not match task attempt: {task_id}")
     failed_gates = tuple(
         item
         for item in store.gate_results(conn, task_id, task.attempt)

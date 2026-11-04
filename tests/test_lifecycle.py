@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import gate, github, results, scheduler, store
+from orch import gate, github, gitops, results, scheduler, store
 from orch.config import Limits, Target, TargetPaths, ensure_target
 from orch.github import PullRequestStatus
 from orch.gitops import create_worktree, fetch
@@ -556,6 +556,124 @@ def test_prepare_keeps_an_existing_spec_when_setup_fails(
     assert not (paths.worktrees / TASK).exists()
 
 
+def test_prepare_refuses_a_draft_when_the_tasks_directory_has_that_spec(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    spec_file: Path,
+) -> None:
+    spec_file.write_text("older spec\n", encoding="utf-8")
+    with pytest.raises(LifecycleError):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert spec_file.read_text(encoding="utf-8") == "older spec\n"
+    assert get_task(conn, TASK) is None
+    assert not (paths.worktrees / TASK).exists()
+    assert not branch_exists(repo)
+
+
+def test_prepare_does_not_lose_an_existing_spec_when_setup_would_fail(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    spec_file: Path,
+) -> None:
+    spec_file.write_text("older spec\n", encoding="utf-8")
+    target = make_target(repo, setup_command="exit 3")
+    with pytest.raises(LifecycleError):
+        prepare_task(conn, draft, target, paths)
+    assert spec_file.read_text(encoding="utf-8") == "older spec\n"
+
+
+def test_prepare_refuses_a_dangling_link_at_the_spec_path(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    tmp_path: Path,
+) -> None:
+    saved = paths.tasks / f"{TASK}.md"
+    missing = tmp_path / "missing.md"
+    saved.symlink_to(missing)
+    with pytest.raises(LifecycleError):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert saved.is_symlink()
+    assert not missing.exists()
+    assert get_task(conn, TASK) is None
+
+
+def test_prepare_keeps_a_spec_that_appears_during_the_call(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The file was not this call's, so it is neither overwritten nor cleaned up."""
+    saved = paths.tasks / f"{TASK}.md"
+    create = gitops.create_worktree
+
+    def create_then_appear(*args: object) -> None:
+        create(*args)
+        saved.write_text("another writer\n", encoding="utf-8")
+
+    monkeypatch.setattr(gitops, "create_worktree", create_then_appear)
+    with pytest.raises(LifecycleError):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert saved.read_text(encoding="utf-8") == "another writer\n"
+    assert get_task(conn, TASK) is None
+    assert not (paths.worktrees / TASK).exists()
+    assert not branch_exists(repo)
+
+
+def test_prepare_can_run_again_after_cleaning_up_its_own_spec(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, draft: Path
+) -> None:
+    with pytest.raises(LifecycleError):
+        prepare_task(conn, draft, make_target(repo, setup_command="exit 3"), paths)
+    task = prepare_task(conn, draft, make_target(repo), paths)
+    assert task.state is TaskState.PREPARED
+    assert (paths.tasks / f"{TASK}.md").read_text(encoding="utf-8") == spec_text()
+
+
+def test_prepare_cleanup_continues_after_an_interrupt_and_raises_it(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remove = gitops.remove_worktree
+
+    def remove_then_interrupt(*args: object, **kwargs: object) -> None:
+        remove(*args, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gitops, "remove_worktree", remove_then_interrupt)
+    target = make_target(repo, setup_command="exit 3")
+    with pytest.raises(KeyboardInterrupt):
+        prepare_task(conn, draft, target, paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+
+
+def test_prepare_cleanup_failure_does_not_hide_the_original_error(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed(*args: object, **kwargs: object) -> None:
+        raise gitops.GitError("cannot remove")
+
+    monkeypatch.setattr(gitops, "remove_worktree", failed)
+    target = make_target(repo, setup_command="exit 3")
+    with pytest.raises(LifecycleError, match="Setup failed"):
+        prepare_task(conn, draft, target, paths)
+    assert not (paths.tasks / f"{TASK}.md").exists()
+
+
 # settle_run
 
 
@@ -910,6 +1028,25 @@ def test_retry_can_run_again_after_the_reservation_fails(
     assert "치명적 지적" in text
 
 
+def test_retry_refuses_a_last_run_from_another_attempt(
+    conn: sqlite3.Connection,
+    paths: TargetPaths,
+    worktree: Path,
+    test_sha: str,
+    spec_file: Path,
+) -> None:
+    add_task(conn, worktree=worktree, test_sha=test_sha, attempt=1)
+    add_run(conn, Outcome.FAILED, FailureReason.REPORT_MISSING, attempt=2)
+    write(worktree / "src" / "dirty.py")
+    with pytest.raises(LifecycleError):
+        retry(conn, paths)
+    task = task_of(conn)
+    assert task.state is TaskState.JUDGING
+    assert task.attempt == 1
+    assert (worktree / "src" / "dirty.py").exists()
+    assert SECTION not in spec_file.read_text(encoding="utf-8")
+
+
 # resume
 
 
@@ -1060,6 +1197,38 @@ def test_resume_needs_a_stopped_task(
     assert (worktree / "src" / "app.py").read_text(encoding="utf-8") == "kept\n"
 
 
+@pytest.mark.parametrize("keep", [False, True])
+def test_resume_can_run_again_after_the_reservation_fails(
+    conn: sqlite3.Connection,
+    paths: TargetPaths,
+    worktree: Path,
+    test_sha: str,
+    spec_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    keep: bool,
+) -> None:
+    add_task(
+        conn, state=TaskState.BLOCKED, worktree=worktree, test_sha=test_sha, attempt=1
+    )
+    before = spec_file.read_text(encoding="utf-8")
+
+    def failed(*args: object, **kwargs: object) -> Decision:
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scheduler, "try_reserve", failed)
+        with pytest.raises(sqlite3.OperationalError):
+            resume(conn, paths, keep=keep)
+    task = task_of(conn)
+    assert task.state is TaskState.BLOCKED
+    assert task.attempt == 1
+    assert list_locks(conn, TARGET) == ()
+    assert spec_file.read_text(encoding="utf-8") == before
+
+    assert resume(conn, paths, keep=keep).state is TaskState.RESERVED
+    assert task_of(conn).attempt == 1
+
+
 def test_resume_needs_a_task(conn: sqlite3.Connection, paths: TargetPaths) -> None:
     with pytest.raises(LifecycleError):
         resume(conn, paths)
@@ -1167,6 +1336,33 @@ def test_discard_tolerates_a_missing_worktree_and_branch(
     add_task(conn, state=TaskState.BLOCKED, worktree=tmp_path / "gone")
     discard_task(conn, TASK, make_target(repo))
     assert state_of(conn) is TaskState.DISCARDED
+
+
+def test_discard_can_run_again_after_the_branch_delete_fails(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_task(conn, state=TaskState.BLOCKED, worktree=worktree)
+    add_locks(conn, TARGET, TASK, ("src/**",))
+
+    def failed(*args: object) -> None:
+        raise gitops.GitError("cannot delete")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gitops, "delete_branch", failed)
+        with pytest.raises(LifecycleError):
+            discard_task(conn, TASK, make_target(repo))
+    assert state_of(conn) is TaskState.BLOCKED
+    assert not worktree.exists()
+    assert branch_exists(repo)
+    assert len(list_locks(conn, TARGET)) == 1
+
+    discard_task(conn, TASK, make_target(repo))
+    assert state_of(conn) is TaskState.DISCARDED
+    assert not branch_exists(repo)
+    assert list_locks(conn, TARGET) == ()
 
 
 def test_discard_without_a_recorded_worktree(
