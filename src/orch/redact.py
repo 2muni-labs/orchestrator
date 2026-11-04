@@ -23,6 +23,7 @@ _RESIDUAL_PATHS = (
     "/home/",
     "C:\\Users\\",
     "/private/tmp/",
+    "/tmp/claude-",
     "/var/folders/",
 )
 
@@ -83,4 +84,6 @@ def redact(
             raise ResidualPathError(blocked_path)
     if re.search(r"/root" + _END, text):
         raise ResidualPathError("/root")
+    if str(home).replace("/", "-") in text:
+        raise ResidualPathError("encoded home path")
     return text
