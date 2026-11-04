@@ -1,5 +1,6 @@
 """ORCH_HOME paths, target registration and the ~/.orch/config file."""
 
+import json
 import os
 import re
 import tempfile
@@ -7,6 +8,8 @@ import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from orch.redact import RedactionError, redact
 
 RESERVED_TARGET_NAMES = frozenset({"bin", "secrets", "config", "state.db"})
 MARKER_FILE = ".orch-target.toml"
@@ -34,11 +37,19 @@ class TargetPaths:
 
     def review_path(self, task_id: str, attempt: int | None = None) -> Path:
         """Return the current review, or the one archived for an attempt."""
-        raise NotImplementedError
+        validate_task_id(task_id)
+        if attempt is None:
+            return self.reviews / f"{task_id}.json"
+        _positive_integer(attempt)
+        return self.reviews / "attempts" / f"{task_id}.{attempt}.json"
 
     def triage_path(self, task_id: str, attempt: int | None = None) -> Path:
         """Return the current triage file, or the one archived for an attempt."""
-        raise NotImplementedError
+        validate_task_id(task_id)
+        if attempt is None:
+            return self.reviews / f"{task_id}.triage.md"
+        _positive_integer(attempt)
+        return self.reviews / "attempts" / f"{task_id}.{attempt}.triage.md"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -115,6 +126,17 @@ def validate_target_name(name: str) -> None:
         raise TargetNameError("Invalid target name")
     if name.casefold() in RESERVED_TARGET_NAMES:
         raise TargetNameError("Reserved target name")
+
+
+def validate_task_id(value: object) -> None:
+    """Raise ConfigError if the task id is unsafe for filenames or branches."""
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value)
+        or ".." in value
+        or value.endswith((".", ".lock"))
+    ):
+        raise ConfigError("Invalid task id")
 
 
 def target_paths(home: Path, name: str) -> TargetPaths:
@@ -220,6 +242,19 @@ def load_targets(path: Path) -> dict[str, Target]:
     entries = data.get("targets", {})
     if not isinstance(entries, dict):
         raise ConfigError("targets must be a table")
+    targets = {}
+    seen = set()
+    for name, entry in entries.items():
+        validate_target_name(name)
+        if name.casefold() in seen:
+            raise TargetNameError("Target names differ only by case")
+        seen.add(name.casefold())
+        targets[name] = _target_from_entry(name, entry)
+    return targets
+
+
+def _target_from_entry(name: str, entry: object) -> Target:
+    """Validate a target entry using the same rules for loading and registration."""
     required = {
         "path",
         "github",
@@ -228,50 +263,50 @@ def load_targets(path: Path) -> dict[str, Target]:
         "test_command",
         "lint_command",
     }
-    targets = {}
-    seen = set()
-    for name, entry in entries.items():
-        validate_target_name(name)
-        if name.casefold() in seen:
-            raise TargetNameError("Target names differ only by case")
-        seen.add(name.casefold())
-        entry = _table(entry, required | {"shared_paths"})
-        if not required <= entry.keys() or any(
-            not _nonempty_string(entry[key]) for key in required
+    entry = _table(entry, required | {"shared_paths"})
+    if not required <= entry.keys() or any(
+        not _nonempty_string(entry[key]) for key in required
+    ):
+        raise ConfigError("Missing or invalid target field")
+    target_path = _absolute_path(entry["path"])
+    _validate_github(entry["github"])
+    shared = entry.get("shared_paths", [])
+    if not isinstance(shared, list):
+        raise ConfigError("shared_paths must be a list")
+    for value in shared:
+        if not _nonempty_string(value):
+            raise ConfigError("Invalid shared path")
+        plain = value[:-3] if value.endswith("/**") else value
+        if (
+            value.startswith("/")
+            or ".." in value.split("/")
+            or "*" in plain
+            or "?" in plain
         ):
-            raise ConfigError("Missing or invalid target field")
-        target_path = _absolute_path(entry["path"])
-        _validate_github(entry["github"])
-        shared = entry.get("shared_paths", [])
-        if not isinstance(shared, list):
-            raise ConfigError("shared_paths must be a list")
-        for value in shared:
-            if not _nonempty_string(value):
-                raise ConfigError("Invalid shared path")
-            plain = value[:-3] if value.endswith("/**") else value
-            if (
-                value.startswith("/")
-                or ".." in value.split("/")
-                or "*" in plain
-                or "?" in plain
-            ):
-                raise ConfigError("Invalid shared path")
-        targets[name] = Target(
-            name=name,
-            path=target_path,
-            github=entry["github"],
-            default_branch=entry["default_branch"],
-            setup_command=entry["setup_command"],
-            test_command=entry["test_command"],
-            lint_command=entry["lint_command"],
-            shared_paths=tuple(shared),
-        )
-    return targets
+            raise ConfigError("Invalid shared path")
+    return Target(
+        name=name,
+        path=target_path,
+        github=entry["github"],
+        default_branch=entry["default_branch"],
+        setup_command=entry["setup_command"],
+        test_command=entry["test_command"],
+        lint_command=entry["lint_command"],
+        shared_paths=tuple(shared),
+    )
 
 
 def home_relative(path: Path, home: Path) -> str:
     """Return an existing directory under home in the form ~/relative."""
-    raise NotImplementedError
+    try:
+        resolved_path = path.resolve()
+        resolved_home = home.resolve()
+        if not resolved_path.is_dir() or resolved_path == resolved_home:
+            raise ConfigError("Target path must be a directory below home")
+        relative = resolved_path.relative_to(resolved_home)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ConfigError("Cannot resolve target path below home") from exc
+    return "~/" + relative.as_posix()
 
 
 def add_target(
@@ -289,7 +324,74 @@ def add_target(
     orch_home: Path,
 ) -> Target:
     """Register a target in targets.toml and create its runtime directories."""
-    raise NotImplementedError
+    validate_target_name(name)
+    targets = load_targets(targets_file)
+    if any(existing.casefold() == name.casefold() for existing in targets):
+        raise TargetNameError("Target is already registered")
+    stored_path = home_relative(path, home)
+    if isinstance(shared_paths, (str, bytes)):
+        raise ConfigError("shared_paths must be an iterable of paths")
+    entry = {
+        "path": stored_path,
+        "github": github,
+        "default_branch": default_branch,
+        "setup_command": setup_command,
+        "test_command": test_command,
+        "lint_command": lint_command,
+        "shared_paths": list(shared_paths),
+    }
+    target = _target_from_entry(name, entry)
+    for value in (
+        target.github,
+        target.default_branch,
+        target.setup_command,
+        target.test_command,
+        target.lint_command,
+        *target.shared_paths,
+    ):
+        try:
+            redacted = redact(value, home=home, orch_home=orch_home)
+        except RedactionError as exc:
+            raise ConfigError("Target field contains private information") from exc
+        if redacted != value:
+            raise ConfigError("Target field contains a personal path")
+    ensure_target(orch_home, name, github)
+
+    temporary = None
+    try:
+        try:
+            original = targets_file.read_bytes()
+        except FileNotFoundError:
+            original = b""
+        newline = "\r\n" if b"\r\n" in original else "\n"
+        prefix = original.decode("utf-8")
+        if prefix and not prefix.endswith("\n"):
+            prefix += newline
+        lines = [f'[targets."{name}"]']
+        lines.extend(
+            f"{key} = {json.dumps(value, ensure_ascii=False)}"
+            for key, value in entry.items()
+        )
+        text = prefix + newline.join(lines) + newline
+        try:
+            tomllib.loads(text)
+        except ValueError as exc:
+            raise ConfigError("Cannot serialize target configuration") from exc
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=targets_file.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(text.encode("utf-8"))
+        os.replace(temporary, targets_file)
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError("Cannot write targets file") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as exc:
+                raise ConfigError("Cannot remove temporary targets file") from exc
+    return target
 
 
 def _positive_integer(value: object) -> int:
