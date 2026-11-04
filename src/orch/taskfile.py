@@ -85,8 +85,12 @@ def parse_task(text: str) -> TaskSpec:
         "verify",
         "depends_on",
     }
-    if not required <= data.keys() or data.keys() - (required | {"effort", "tests"}):
+    optional = {"effort", "tests", "review"}
+    if not required <= data.keys() or data.keys() - (required | optional):
         raise TaskFileError("Missing or unknown task field")
+    review = data.get("review", False)
+    if type(review) is not bool:
+        raise TaskFileError("review must be a boolean")
     _validate_id(data["id"])
     try:
         validate_target_name(data["target"])
@@ -149,6 +153,7 @@ def parse_task(text: str) -> TaskSpec:
         depends_on=tuple(dependencies),
         body="".join(lines[end + 1 :]),
         tests=data.get("tests"),
+        review=review,
     )
 
 

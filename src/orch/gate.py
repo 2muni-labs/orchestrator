@@ -244,7 +244,7 @@ def run_gates(
 
 def review_required(grade: Grade, *, flag: bool = False) -> bool:
     """Return whether a passing task of this grade goes to cross-review."""
-    return grade in (Grade.L3, Grade.L3R)
+    return grade in (Grade.L3, Grade.L3R) or flag
 
 
 def gate_task(
@@ -271,6 +271,9 @@ def gate_task(
 
     store.transition(conn, spec.id, TaskState.JUDGING, TaskState.GATING, actor="orch")
     try:
+        store.clear_gate_results(
+            conn, spec.id, task.attempt, (Gate.G1, Gate.G2, Gate.G3)
+        )
         worktree = Path(task.worktree)
         report = run_gates(
             spec,
@@ -309,12 +312,17 @@ def gate_task(
                 worktree, task.title, paths=paths, home=home, orch_home=orch_home
             )
         next_state = (
-            TaskState.REVIEWING if review_required(task.grade) else TaskState.READY
+            TaskState.REVIEWING
+            if review_required(task.grade, flag=spec.review)
+            else TaskState.READY
         )
         store.transition(conn, spec.id, TaskState.GATING, next_state, actor="orch")
         return report
-    except Exception:
-        store.transition(
-            conn, spec.id, TaskState.GATING, TaskState.JUDGING, actor="orch"
-        )
+    except BaseException as exc:
+        try:
+            store.transition(
+                conn, spec.id, TaskState.GATING, TaskState.JUDGING, actor="orch"
+            )
+        except Exception as recovery_exc:
+            exc.add_note(f"Failed to recover gating -> judging: {recovery_exc}")
         raise
