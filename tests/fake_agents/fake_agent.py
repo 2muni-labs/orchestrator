@@ -130,6 +130,9 @@ def main():
         print(USAGE_LIMIT_MESSAGE, flush=True)
         touch(worktree, CHANGED_FILE)
         report(worktree, task_id, changed=[CHANGED_FILE])
+    elif scenario == "limit_then_hang":
+        print(USAGE_LIMIT_MESSAGE, flush=True)
+        sleep_forever()
     elif scenario == "report_then_hang":
         report(worktree, task_id)
         sleep_forever()

@@ -23,6 +23,11 @@ class RunError(Exception):
     """A task cannot start. Its state has not changed."""
 
 
+def next_log_path(logs: Path, task_id: str) -> Path:
+    """Return the path for a task's next numbered log, without creating it."""
+    raise NotImplementedError
+
+
 def log_label(log_path: Path, environ: Mapping[str, str]) -> str:
     """Return the log path as a sub-agent reports it, with the home as a tilde."""
     if home := environ.get("HOME"):
