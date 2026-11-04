@@ -172,10 +172,25 @@ def _judge(
 ) -> Decision:
     """Apply dependency, lock and slot rules inside the caller's transaction."""
     dependencies = []
+    discarded = []
     for task_id in task.depends_on:
         dependency = store.get_task(conn, task_id)
+        if dependency is not None and dependency.state == TaskState.DISCARDED:
+            discarded.append(f"dep:{task_id}")
         if dependency is None or dependency.state != TaskState.CLOSED:
             dependencies.append(f"dep:{task_id}")
+    if discarded:
+        waiting_for = tuple(sorted(discarded))
+        _queue(conn, task, waiting_for, now=now)
+        store.transition(
+            conn,
+            task.id,
+            TaskState.QUEUED,
+            TaskState.BLOCKED,
+            actor="orch",
+            at=now.isoformat(),
+        )
+        return Decision(state=TaskState.BLOCKED, waiting_for=waiting_for)
     if dependencies:
         return _queue(conn, task, tuple(sorted(dependencies)), now=now)
 
