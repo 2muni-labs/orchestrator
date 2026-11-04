@@ -5,6 +5,9 @@ description = "Global orchestrator CLI for Claude Code and Codex sub-agents"
 requires-python = ">=3.14"
 dependencies = []
 
+[project.scripts]
+orch = "orch.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.13,<0.14"]
 build-backend = "uv_build"
