@@ -34,6 +34,28 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
 - At the start of a session, confirm that the main model is Opus 5.5
   (`claude-opus-5-5`). If it is not, report that to the user and wait.
 
+## Merge policy
+
+- You and the sub-agents never merge, whatever the ruleset would allow.
+- A separate verification session on another device (claude.ai) may merge with the
+  user's account when all of these hold: the user explicitly told it to, full tests
+  and ruff pass on the combined state, and it leaves an approving review first, then
+  merges with a merge commit.
+- The user personally checks pull requests with the `review-overridden` label and
+  those that change a safety mechanism: `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`,
+  `scripts/`, `redact`, and code handling tokens or gates. Mark them in the table.
+- The `main` ruleset requires one approval and the bot cannot approve its own pull
+  request, so the bot cannot merge one without an approval. This does not stop a
+  merge after an approval, so the rule above still applies.
+- After opening pull requests, report every pull request waiting for merge in this
+  table, so the user can hand it to the verification session as it is:
+
+  | PR | Head commit | `main` commit | Combined tests | Ruff | Gates | Review | Merge by |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+
+  `Merge by` is `verification session` or `user check`. The results hold only for
+  those two commits: if either one moves, run the step 8a check again.
+
 ## GitHub authentication
 
 Use the GitHub App bot only. `git push` goes through the configured credential
@@ -58,9 +80,9 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | 5 | Judge | On the completion notice, read `R/results/<id>.json`, which `run-sub.sh` has moved there or written as a failure. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>` from the hub clone. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
 | 7 | Review | For L3 and above, or risk areas: run `git diff <merge-base>..HEAD > R/reviews/<id>.diff` so that the diff holds the tests and the implementation, then start `orch-reviewer` in the background with the paths of that diff, the spec and the worktree. Save its JSON as `R/reviews/<id>.json`. |
-| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, write the pushed commit id to `R/pushes/<id>`, create the pull request in English, and report to the user. Before copying review findings into the pull request body, confirm that they contain no personal paths such as `/Users/`. |
+| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, write the pushed commit id to `R/pushes/<id>`, create the pull request in English, and report to the user with the merge table below. Before copying review findings into the pull request body, confirm that they contain no personal paths such as `/Users/`. |
 | 8a | Main moved | While a pull request is open and `origin/main` moves, do not push if there is no conflict. In the worktree, run `git merge --no-ff --no-edit origin/main`, run `scripts/gate.sh <id>` from the hub clone, then discard the merge with `git reset --hard $(cat R/pushes/<id>)`. If the merge conflicts: `git merge --abort`, rebase on `origin/main` and resolve; run `scripts/gate.sh <id>`; if the resolution changed logic and the task is L3 or above, repeat step 7; `git push --force-with-lease=task/<id>:$(cat R/pushes/<id>) origin task/<id>`; update `R/pushes/<id>`; and describe the resolution in a pull request comment. |
-| 9 | After merge | The user merges on GitHub. Return to the hub clone, then remove the worktree, the local branch and `R/pushes/<id>`. |
+| 9 | After merge | The pull request is merged under the merge policy below. Return to the hub clone, then remove the worktree, the local branch and `R/pushes/<id>`. |
 | 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
 
 - A harness pull request you write yourself must also pass before you push: in its

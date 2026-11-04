@@ -7,8 +7,9 @@ automatically; Claude Code imports it through `CLAUDE.md`.
 
 `orch` is a global CLI that lets one main agent (Claude Code) split a user
 prompt into tasks, run them through Claude and Codex sub-agents in isolated git
-worktrees, verify the results with mechanical gates, and open pull requests. A
-human merges every pull request.
+worktrees, verify the results with mechanical gates, and open pull requests. No
+agent in this project merges: the user does, or a separate verification session
+acting on the user's explicit instruction.
 
 This repository is the hub. It is **public**.
 
