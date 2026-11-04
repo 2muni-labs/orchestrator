@@ -3,13 +3,25 @@
 import json
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from orch import models
-from orch.models import Effort, Grade, Lane, Task, TaskState
+from orch.models import (
+    Effort,
+    FailureReason,
+    Gate,
+    GateResult,
+    Grade,
+    Lane,
+    Lock,
+    Outcome,
+    Run,
+    Task,
+    TaskState,
+)
 
 # MIGRATIONS[n] upgrades the schema from user_version n to n + 1.
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -87,6 +99,10 @@ class IllegalTransitionError(StoreError):
 
 class StateMismatchError(StoreError):
     """The task is not in the state the caller expected."""
+
+
+class RunNotFoundError(StoreError):
+    """No run has the given id."""
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -230,3 +246,87 @@ def transition(
         )
         if new in models.TERMINAL_STATES:
             conn.execute("DELETE FROM locks WHERE task_id = ?", (task_id,))
+
+
+def update_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    at: str | None = None,
+    **fields: object,
+) -> None:
+    """Set non-state fields of a task and its updated_at."""
+    raise NotImplementedError
+
+
+def list_tasks(
+    conn: sqlite3.Connection,
+    *,
+    states: Iterable[TaskState] | None = None,
+    target: str | None = None,
+) -> tuple[Task, ...]:
+    """Return tasks ordered by created_at, then id."""
+    raise NotImplementedError
+
+
+def add_locks(
+    conn: sqlite3.Connection, target: str, task_id: str, globs: Iterable[str]
+) -> None:
+    """Register a task's locks, all or none. Existing ones are kept."""
+    raise NotImplementedError
+
+
+def list_locks(conn: sqlite3.Connection, target: str) -> tuple[Lock, ...]:
+    """Return a target's locks ordered by task_id, then path_glob."""
+    raise NotImplementedError
+
+
+def insert_run(conn: sqlite3.Connection, run: Run) -> int:
+    """Insert a run and return its run_id. The run's own run_id is ignored."""
+    raise NotImplementedError
+
+
+def set_run_process(
+    conn: sqlite3.Connection, run_id: int, *, pid: int, pid_started_at: str
+) -> None:
+    """Record the process of a run."""
+    raise NotImplementedError
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    ended_at: str,
+    exit_code: int | None,
+    outcome: Outcome,
+    failure_reason: FailureReason | None = None,
+) -> None:
+    """Record how a run ended. A run ends only once."""
+    raise NotImplementedError
+
+
+def latest_run(conn: sqlite3.Connection, task_id: str) -> Run | None:
+    """Return the task's run with the highest run_id, or None."""
+    raise NotImplementedError
+
+
+def record_gate_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    attempt: int,
+    gate: Gate,
+    *,
+    passed: bool,
+    detail: str | None = None,
+    at: str | None = None,
+) -> None:
+    """Record a gate result, replacing an earlier one for the same key."""
+    raise NotImplementedError
+
+
+def gate_results(
+    conn: sqlite3.Connection, task_id: str, attempt: int
+) -> tuple[GateResult, ...]:
+    """Return an attempt's gate results in recording order."""
+    raise NotImplementedError
