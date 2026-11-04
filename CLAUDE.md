@@ -53,7 +53,7 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 | 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
 | 1 | Prepare | `git fetch origin`, update the hub clone's `main` to `origin/main`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
 | 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. |
-| 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
+| 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. Before dispatch, check that the fields, functions and state names the spec mentions match the tests. |
 | 4 | Run | In a background shell, run `scripts/run-sub.sh <id>` from the hub clone. Report the dispatch and end the turn. Do not poll. |
 | 5 | Judge | On the completion notice, read `R/results/<id>.json`, which `run-sub.sh` has moved there or written as a failure. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>` from the hub clone. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
 | 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
@@ -76,13 +76,25 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
   or a discard, check it against the spec and the code. Reject a wrong finding and
   record the reason in `R/reviews/<id>.triage.md` and the pull request body.
 - A confirmed finding whose `path` starts with `tests/` does not use the retry,
-  because tests are frozen and a sub-agent cannot fix them. Sort it into one of two
+  because tests are frozen and a sub-agent cannot fix them. Sort it into one of three
   kinds:
   - **Wrong tests** expect incorrect behavior. Discard the task, fix the tests
     yourself and dispatch the work again as a new task with a new id.
-  - **Insufficient tests** miss a check. Continue with the pull request and create a
-    follow-up task that adds the tests. Record this in the triage file and the pull
-    request body, since the review verdict stays `BLOCK`.
+  - **Insufficient tests, correct implementation:** only a check is missing. Continue
+    with the pull request and create a follow-up task that adds the tests. Record this
+    in the triage file and the pull request body, since the review verdict stays
+    `BLOCK`.
+  - **Insufficient tests, implementation defect:** review confirmed a defect that no
+    test catches. Discard the task and dispatch it under a new id with stronger tests.
+- When you dispatch under a new id with stronger tests, run them against the
+  discarded implementation, confirm that only the tests for the defect fail, and
+  state the result in the test commit message.
+- **Retry exemption.** It applies only when a sub-agent reports `spec_mismatch`, the
+  cause is your spec error, and the tests do not change. Fix the spec, return to the
+  test commit, remove uncommitted changes and untracked files, and run again from the
+  start. This does not count against the retry. Record the fix and the reason at the
+  end of the spec and in the pull request body. If the tests must change, the
+  exemption does not apply: dispatch under a new id.
 - For concurrency tests in an L3 task only, you may check before dispatch that the
   tests are stable by running them repeatedly against a reference implementation.
   Never commit it, delete it right after the check, and state that you used it in
