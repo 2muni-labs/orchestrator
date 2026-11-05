@@ -34,7 +34,7 @@ task, stop and report `BLOCKED`.
 - Python 3.14. The runtime uses the standard library only.
 - Type hints on all function signatures.
 - `pytest` and `ruff` are development-only dependencies.
-- The main agent runs `uv sync --frozen` in each new worktree, outside the
+- `orch prepare` runs `uv sync --frozen` in each new worktree, outside the
   sandbox. Sub-agents run tools from that environment, for example
   `.venv/bin/python -m pytest`. `uv run` does not work inside the sandbox.
 - Code, identifiers and file names are in English.
@@ -46,12 +46,13 @@ task, stop and report `BLOCKED`.
 
 ```
 docs/design/       design documents
-src/orch/          orch package (skeleton until Phase 2)
+src/orch/          orch package
 tests/             tests, owned by the main agent
 templates/task.md  task spec template
 schemas/           result and review JSON schemas
-scripts/gate.sh    manual gates G1 to G3
-scripts/run-sub.sh manual sub-agent runner, until M6
+scripts/gate.sh    manual gates G1 to G3, a fallback until M16
+scripts/run-sub.sh manual sub-agent runner, a fallback until M16
+targets.toml       registered targets, with home-relative paths only
 .claude/agents/    read-only sub-agent definitions
 
 ~/.orch/orchestrator/   runtime data, never committed
@@ -60,7 +61,6 @@ scripts/run-sub.sh manual sub-agent runner, until M6
   reviews/<id>.json     review reports
   reviews/<id>.diff     diff handed to the reviewer
   reviews/<id>.triage.md  reasons for rejecting or deferring review findings
-  pushes/<id>           commit id of the last push, the lease for a branch update
   logs/<id>.<n>.log     execution log of the task's nth run
   worktrees/<id>/       git worktree on branch task/<id>
 ```
@@ -90,7 +90,7 @@ design.
 
 **Do not commit**
 
-- Leave your changes uncommitted in the worktree. The main agent commits them
+- Leave your changes uncommitted in the worktree. `orch gate` commits them
   after the gates pass.
 
 **Verification**
@@ -101,8 +101,8 @@ design.
 **Result report (mandatory)**
 
 Before you finish, write `.orch-result.json` in the worktree root. It must conform
-to `schemas/result.json`. It is ignored by git and excluded from gate G1. The main
-agent moves it to `~/.orch/orchestrator/results/<id>.json`.
+to `schemas/result.json`. It is ignored by git and excluded from gate G1. `orch run`
+moves it to `~/.orch/orchestrator/results/<id>.json`.
 
 - A missing or malformed file makes the task `FAILED` with reason `report_missing`.
 - `summary` and `unresolved` together stay within 700 characters. Never include

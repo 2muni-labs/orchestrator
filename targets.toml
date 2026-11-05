@@ -1,0 +1,8 @@
+[targets."orchestrator"]
+path = "~/Repositories/orchestrator"
+github = "2muni-labs/orchestrator"
+default_branch = "main"
+setup_command = "uv sync --frozen"
+test_command = ".venv/bin/python -m pytest"
+lint_command = ".venv/bin/python -m ruff check . && .venv/bin/python -m ruff format --check ."
+shared_paths = ["pyproject.toml", "uv.lock", ".gitignore", "AGENTS.md", "CLAUDE.md", "targets.toml", ".claude/**", ".github/**", "docs/**", "schemas/**", "scripts/**", "templates/**"]
