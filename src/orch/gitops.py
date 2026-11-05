@@ -51,7 +51,7 @@ def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
         "GIT_PREFIX",
     ):
         env.pop(name, None)
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_EDITOR="true")
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_EDITOR="true", LC_ALL="C")
     try:
         process = subprocess.Popen(
             command,

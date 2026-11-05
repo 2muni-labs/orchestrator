@@ -1,3 +1,4 @@
+import importlib.metadata
 import io
 import json
 import os
@@ -1689,3 +1690,52 @@ def test_output_without_a_token_is_unchanged(orch: Call, env: Env) -> None:
     assert data["tasks"][0]["title"] == TITLE
     assert "REDACTED" not in json.dumps(data)
     assert worktree.is_dir()
+
+
+INSTALLED_ORCH = Path(sys.executable).parent / "orch"
+
+
+def test_version_prints_the_package_metadata_version() -> None:
+    done = subprocess.run(
+        [str(INSTALLED_ORCH), "--version"], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == f"orch {importlib.metadata.version('orch')}\n"
+    assert done.stderr == ""
+
+
+def test_help_lists_the_version_option() -> None:
+    done = subprocess.run(
+        [str(INSTALLED_ORCH), "--help"], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert "--version" in done.stdout
+
+
+def test_the_declared_versions_agree() -> None:
+    project = tomllib.loads((HUB_SOURCE / "pyproject.toml").read_text("utf-8"))
+    lock = tomllib.loads((HUB_SOURCE / "uv.lock").read_text("utf-8"))
+    locked = [p["version"] for p in lock["package"] if p["name"] == "orch"]
+    assert locked == [project["project"]["version"]]
+    assert importlib.metadata.version("orch") == project["project"]["version"]
+
+
+def missing_metadata(name: str) -> str:
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
+@pytest.mark.usefixtures("env")
+def test_other_commands_do_not_need_the_package_metadata(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(importlib.metadata, "version", missing_metadata)
+    code, data = orch("status")
+    assert code == 0, data
+
+
+@pytest.mark.usefixtures("env")
+def test_version_without_metadata_is_an_internal_error(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(importlib.metadata, "version", missing_metadata)
+    assert_error(orch("--version"), INTERNAL, "internal")

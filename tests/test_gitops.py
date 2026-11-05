@@ -547,6 +547,48 @@ def test_update_refuses_when_someone_else_pushed(
     assert git(worktree, "rev-parse", "HEAD") == head
 
 
+def test_git_always_runs_in_the_c_locale(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    log = tmp_path / "locale.log"
+    directory = tmp_path / "locale-shim"
+    write(
+        directory / "git",
+        f"""#!/bin/sh
+printf '%s\\n' "$LC_ALL" >> '{log}'
+exec '{real_git}' "$@"
+""",
+    )
+    (directory / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LC_ALL", "ko_KR.UTF-8")
+    monkeypatch.setenv("LANG", "ko_KR.UTF-8")
+    rev_parse(repo, "HEAD")
+    assert log.read_text(encoding="utf-8").splitlines() == ["C"]
+
+
+def test_a_lease_rejection_is_recognized_under_a_korean_locale(
+    worktree: Path,
+    remote: Path,
+    tmp_path: Path,
+    pushed: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", "-b", BRANCH, str(remote), str(other)], check=True
+    )
+    add_commit(other, "theirs.txt")
+    git(other, "push", "-q", "origin", BRANCH)
+    for name in ("LC_ALL", "LANG", "LC_MESSAGES"):
+        monkeypatch.setenv(name, "ko_KR.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "ko")
+    with pytest.raises(LeaseRejectedError):
+        update_task_branch(worktree, "m1", pushed)
+
+
 def test_a_lease_rejection_is_still_a_git_error() -> None:
     assert issubclass(LeaseRejectedError, GitError)
 
