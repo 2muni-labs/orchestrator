@@ -10,6 +10,7 @@ import sys
 import traceback
 from contextlib import closing
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orch import (
@@ -18,14 +19,31 @@ from orch import (
     gitops,
     lifecycle,
     prflow,
+    render,
     review,
     runner,
     scheduler,
     store,
     taskfile,
     waiter,
+    watch,
 )
 from orch.models import Task, TaskState
+
+_REFRESH_COMMANDS = {
+    "prepare",
+    "dispatch",
+    "run",
+    "gate",
+    "review",
+    "pr",
+    "update",
+    "close",
+    "discard",
+    "retry",
+    "resume",
+    "next",
+}
 
 
 class _UsageError(Exception):
@@ -184,6 +202,34 @@ def _token(orch_home: Path, secrets: list[str]) -> str:
     return token
 
 
+def _refresh_todos(
+    conn: sqlite3.Connection, orch_home: Path, secrets: list[str]
+) -> None:
+    def warn(exc: Exception) -> None:
+        try:
+            message = _redact(f"TODO.md 갱신 실패: {exc}", secrets)
+            print(" ".join(message.splitlines()), file=sys.stderr)
+        except Exception:
+            pass
+
+    try:
+        tasks_by_target: dict[str, list[Task]] = {}
+        for task in store.list_tasks(conn):
+            tasks_by_target.setdefault(task.target, []).append(task)
+        now = datetime.now(UTC)
+    except Exception as exc:
+        warn(exc)
+        return
+    for target, tasks in tasks_by_target.items():
+        try:
+            text = render.todo_text(
+                tasks, scheduler.blocked_chains(conn, target=target), now
+            )
+            render.write_todo(config.target_paths(orch_home, target).todo, text)
+        except Exception as exc:
+            warn(exc)
+
+
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
@@ -206,7 +252,11 @@ def _execute(
         )
         return 0, {"target": target.name}
     with closing(store.connect(config.state_db_path(orch_home))) as conn:
-        return _command(conn, args, orch_home, hub, home, secrets)
+        try:
+            return _command(conn, args, orch_home, hub, home, secrets)
+        finally:
+            if args.command in _REFRESH_COMMANDS:
+                _refresh_todos(conn, orch_home, secrets)
 
 
 def _command(
@@ -239,27 +289,24 @@ def _command(
             "base_sha": task.base_sha,
         }
     if command == "watch":
-        raise NotImplementedError
+
+        def frame() -> str:
+            now = datetime.now(UTC)
+            return render.todo_text(
+                store.list_tasks(conn, target=session_target),
+                scheduler.blocked_chains(conn, target=session_target),
+                now,
+            )
+
+        return watch.watch(frame, interval_sec=args.interval, once=args.once), {}
     if command == "status":
         tasks = store.list_tasks(conn, target=session_target)
         chains = scheduler.blocked_chains(conn, target=session_target)
+        now = datetime.now(UTC)
+        if args.human:
+            return 0, {"lines": render.status_lines(tasks, chains, now)}
         return 0, {
-            "tasks": [
-                {
-                    key: getattr(task, key)
-                    for key in (
-                        "id",
-                        "target",
-                        "title",
-                        "state",
-                        "grade",
-                        "lane",
-                        "attempt",
-                        "pr_url",
-                    )
-                }
-                for task in tasks
-            ],
+            "tasks": [render.status_row(task, now) for task in tasks],
             "blocked_chains": [asdict(chain) for chain in chains],
         }
 
@@ -326,6 +373,7 @@ def _command(
             config=settings,
             paths=paths,
             environ=os.environ,
+            on_started=lambda: _refresh_todos(conn, orch_home, secrets),
         )
         state = lifecycle.settle_run(conn, task_id)
         code = {
@@ -392,6 +440,7 @@ def _command(
         return (0 if report.state == TaskState.PR_OPEN else 20), {
             "task_id": task_id,
             **asdict(report),
+            "head_sha": _get_task(conn, task_id).pushed_sha,
         }
     if command == "update":
         report = prflow.update_pull_request(
@@ -431,14 +480,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             args = _parser().parse_args(argv)
             code, data = _execute(args, secrets)
+            if args.command == "watch":
+                return code
             if args.command == "status" and args.human:
-                for task in data["tasks"]:
-                    print(_redact(f"{task['id']} {task['state']}", secrets))
-                for chain in data["blocked_chains"]:
-                    line = (
-                        f"{chain['task_id']} {chain['state']}: "
-                        f"{', '.join(chain['causes'])}"
-                    )
+                for line in data["lines"]:
                     print(_redact(line, secrets))
                 return code
             output = {"ok": True, **data}

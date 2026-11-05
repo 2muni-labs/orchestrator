@@ -245,6 +245,11 @@ def run_task(
         )
     process = None
     try:
+        if on_started is not None:
+            try:
+                on_started()
+            except Exception:
+                pass
         try:
             paths.logs.mkdir(parents=True, exist_ok=True)
             source.unlink(missing_ok=True)
