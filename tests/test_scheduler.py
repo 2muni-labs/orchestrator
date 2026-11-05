@@ -832,28 +832,99 @@ def run_dispatch(conn: sqlite3.Connection, spec: TaskSpec) -> Decision:
     return dispatch(conn, spec, limits=LIMITS, ttl_min=TTL, now=NOW)
 
 
-def test_dispatch_records_the_first_commit_as_the_test_commit(
+def assert_refused_untouched(conn: sqlite3.Connection, spec: TaskSpec) -> None:
+    with pytest.raises(DispatchError, match="exactly one test commit"):
+        run_dispatch(conn, spec)
+    assert state_of(conn, "a") is TaskState.PREPARED
+    task = get_task(conn, "a")
+    assert task is not None
+    assert task.test_sha is None
+    assert holders(conn) == set()
+
+
+def test_dispatch_records_the_one_commit_as_the_test_commit(
     conn: sqlite3.Connection, repo: Path
 ) -> None:
     base = git(repo, "rev-parse", "HEAD")
-    first = commit(repo, "test.txt")
-    commit(repo, "later.txt")
+    only = commit(repo, "test.txt")
     add_task(conn, "a", worktree=str(repo), base_sha=base)
     assert run_dispatch(conn, make_spec()) == Decision(state=TaskState.RESERVED)
     task = get_task(conn, "a")
     assert task is not None
-    assert task.test_sha == first
+    assert task.test_sha == only
     assert holders(conn) == {"a"}
+
+
+def test_dispatch_with_two_commits_is_refused(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    commit(repo, "test.txt")
+    commit(repo, "later.txt")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    assert_refused_untouched(conn, make_spec())
+
+
+def test_dispatch_with_a_merge_in_the_range_is_refused(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "side")
+    commit(repo, "test.txt")
+    git(repo, "checkout", "-q", "side")
+    commit(repo, "side.txt")
+    git(repo, "checkout", "-q", "-")
+    git(repo, "merge", "-q", "--no-ff", "--no-edit", "side")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    assert_refused_untouched(conn, make_spec())
+
+
+def test_dispatch_after_merging_a_moved_main_is_refused(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    """The test commit is one of the commits, but not the first one listed."""
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "moved-main")
+    commit(repo, "main-change.txt")
+    git(repo, "checkout", "-q", "-")
+    commit(repo, "test.txt")
+    git(repo, "merge", "-q", "--no-ff", "--no-edit", "moved-main")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    assert_refused_untouched(conn, make_spec())
+
+
+def test_dispatch_after_rebasing_onto_a_moved_main_is_refused(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    commit(repo, "main-change.txt")
+    commit(repo, "test.txt")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    assert_refused_untouched(conn, make_spec())
+
+
+def test_a_refused_dispatch_can_run_after_the_commits_are_squashed(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    commit(repo, "test.txt")
+    commit(repo, "later.txt")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    assert_refused_untouched(conn, make_spec())
+    git(repo, "reset", "-q", "--soft", base)
+    git(repo, "commit", "-qm", "tests")
+    squashed = git(repo, "rev-parse", "HEAD")
+    assert run_dispatch(conn, make_spec()) == Decision(state=TaskState.RESERVED)
+    task = get_task(conn, "a")
+    assert task is not None
+    assert task.test_sha == squashed
 
 
 def test_dispatch_without_a_test_commit_is_refused(
     conn: sqlite3.Connection, repo: Path
 ) -> None:
     add_task(conn, "a", worktree=str(repo), base_sha=git(repo, "rev-parse", "HEAD"))
-    with pytest.raises(DispatchError):
-        run_dispatch(conn, make_spec())
-    assert state_of(conn, "a") is TaskState.PREPARED
-    assert holders(conn) == set()
+    assert_refused_untouched(conn, make_spec())
 
 
 def test_dispatch_with_tests_none_uses_the_base_commit(
