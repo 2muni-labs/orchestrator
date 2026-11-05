@@ -158,6 +158,9 @@ def pr_view(state: dict, options: dict[str, list[str]], url: str) -> str:
     if set(fields) - VIEW_FIELDS:
         raise Refused(f"unknown fields: {sorted(set(fields) - VIEW_FIELDS)}")
     item = find_pull_request(state, url)
+    # A test can change the pull request at an exact view, with no race with polling.
+    if item.get("view_states"):
+        item.update(item["view_states"].pop(0))
     values = {
         "state": item["state"],
         "mergedAt": item["mergedAt"],

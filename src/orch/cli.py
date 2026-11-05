@@ -89,6 +89,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     save.add_argument("id")
     save.add_argument("--triage", type=Path)
+    wait = commands.add_parser("wait")
+    wait.add_argument("id")
+    wait.add_argument("--merged", action="store_true")
+    wait.add_argument("--interval")
+    wait.add_argument("--max-wait")
     commands.add_parser("next")
     commands.add_parser("status").add_argument("--human", action="store_true")
     return parser
@@ -276,6 +281,8 @@ def _command(
             ],
         }
     task_id = args.id
+    if command == "wait":
+        raise NotImplementedError
     if command in {"dispatch", "retry", "resume"}:
         if command == "dispatch":
             decision = scheduler.dispatch(
