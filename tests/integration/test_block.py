@@ -66,8 +66,7 @@ def test_a_blocked_implementation_retries_and_reaches_a_pull_request(
 ) -> None:
     worktree = sandbox.reviewing(TASK)
     test_sha = sandbox.task_row(TASK)["test_sha"]
-    first_change = sandbox.head(worktree)
-    assert first_change != test_sha
+    assert sandbox.head(worktree) != test_sha
 
     # BLOCK without a triage goes back to judging, and the review is kept.
     result = sandbox.save_review(TASK, DEFECT)
@@ -101,15 +100,27 @@ def test_a_blocked_implementation_retries_and_reaches_a_pull_request(
     assert (second.code, second.data["state"]) == (0, "ready")
     data = sandbox.ok("pr", TASK)
     assert data["state"] == "pr_open"
-    assert sandbox.remote_sha(f"task/{TASK}") == sandbox.head(worktree)
-    assert sandbox.head(worktree) != first_change
+    # A retry can recreate the first commit exactly: the same parent, tree, message and
+    # second give the same id. So check what it guarantees, not a different id.
+    head = sandbox.head(worktree)
+    assert sandbox.remote_sha(f"task/{TASK}") == head
+    assert sandbox.task_row(TASK)["pushed_sha"] == head
+    assert sandbox.git(worktree, "rev-parse", "HEAD^") == test_sha
+    assert sandbox.git(worktree, "show", "--name-only", "--format=", "HEAD") == CHANGED
+    assert sandbox.status(TASK)["attempt"] == 2
+    runs = sandbox.query(
+        "SELECT attempt, outcome FROM runs WHERE task_id = ? ORDER BY run_id", TASK
+    )
+    assert [(run["attempt"], run["outcome"]) for run in runs] == [
+        (1, "DONE"),
+        (2, "DONE"),
+    ]
+    assert json.loads(archived.read_text())["verdict"] == "BLOCK"
+    assert json.loads(review_path(sandbox).read_text())["verdict"] == "PASS"
     pull_request = sandbox.pull_request(data["pr_url"])
     assert pull_request["labels"] == []
     assert "overridden" not in pull_request["body"]
     assert "Verdict: PASS" in pull_request["body"]
-    assert sandbox.query(
-        "SELECT attempt FROM runs WHERE task_id = ? ORDER BY run_id", TASK
-    )[1]["attempt"] == 2  # fmt: skip
 
 
 def test_a_second_block_refuses_retry_and_ends_in_discard(sandbox: Sandbox) -> None:
