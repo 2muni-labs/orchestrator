@@ -170,6 +170,7 @@ def run_task(
     config: Config,
     paths: TargetPaths,
     environ: Mapping[str, str],
+    on_started: Callable[[], None] | None = None,
 ) -> TaskResult:
     """Run a reserved task to its end, record the result, and move it to judging."""
     task = store.get_task(conn, task_id)
@@ -244,6 +245,11 @@ def run_task(
         )
     process = None
     try:
+        if on_started is not None:
+            try:
+                on_started()
+            except Exception:
+                pass
         try:
             paths.logs.mkdir(parents=True, exist_ok=True)
             source.unlink(missing_ok=True)

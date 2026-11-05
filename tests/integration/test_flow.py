@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 from conftest import (
     CHANGED,
     COMMIT_DATE,
@@ -91,7 +92,7 @@ def test_a_task_goes_from_target_add_to_close(sandbox: Sandbox) -> None:
     assert sandbox.git(worktree, "status", "--porcelain") == ""
 
     # pr: refused before a review is saved, with nothing pushed or created.
-    refused = sandbox.orch("pr", TASK)
+    refused = sandbox.orch("pr", TASK, unchecked=True)
     assert refused.code == 64 and refused.data["error"] == "refused"
     assert sandbox.remote_sha(f"task/{TASK}") is None
     assert sandbox.gh_calls() == []

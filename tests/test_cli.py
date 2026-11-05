@@ -15,13 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from orch import config, github, prflow, store, waiter
+from orch import config, github, prflow, render, store, waiter, watch
 from orch.cli import main
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
 from orch.gitops import GitError, LeaseRejectedError
 from orch.models import Effort, Grade, Lane, Task, TaskState
 from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
+from transitions import check_call
 
 HUB_SOURCE = Path(__file__).resolve().parents[1]
 TARGET = "sample"
@@ -154,7 +155,12 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
 
 @pytest.fixture
 def orch(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> Call:
-    def call(*args: str, stdin: str = "") -> tuple[int, dict[str, object]]:
+    def call(
+        *args: str, stdin: str = "", unchecked: bool = False
+    ) -> tuple[int, dict[str, object]]:
+        orch_home = Path(os.environ.get("ORCH_HOME", "relative"))
+        if orch_home.is_absolute():
+            check_call(config.state_db_path(orch_home), args, unchecked=unchecked)
         monkeypatch.setattr(sys, "stdin", io.StringIO(stdin))
         code = main(list(args))
         out = capsys.readouterr().out
@@ -711,7 +717,7 @@ def test_commands_refuse_a_task_of_another_session_target(
     add_token_script(env)
     commit_tests(prepare(orch, env))
     monkeypatch.setenv("ORCH_TARGET", "other")
-    assert_error(orch(*args), USAGE, "refused")
+    assert_error(orch(*args, unchecked=True), USAGE, "refused")
     assert state_of(env) is TaskState.PREPARED
     assert not env.token_calls.exists()
 
@@ -758,7 +764,7 @@ def test_run_exits_by_outcome_and_settles_a_blocked_run(
 @pytest.mark.usefixtures("target")
 def test_run_refuses_a_task_that_is_not_reserved(orch: Call, env: Env) -> None:
     prepare(orch, env)
-    assert_error(orch("run", TASK), USAGE, "refused")
+    assert_error(orch("run", TASK, unchecked=True), USAGE, "refused")
     assert state_of(env) is TaskState.PREPARED
 
 
@@ -803,7 +809,7 @@ def test_gate_failure_exits_20_and_returns_to_judging(orch: Call, env: Env) -> N
 @pytest.mark.usefixtures("target")
 def test_gate_refuses_a_task_with_the_wrong_state(orch: Call, env: Env) -> None:
     prepare(orch, env)
-    assert_error(orch("gate", TASK), USAGE, "refused")
+    assert_error(orch("gate", TASK, unchecked=True), USAGE, "refused")
 
 
 # review save
@@ -881,7 +887,11 @@ def test_review_save_refuses_bad_input(orch: Call, env: Env) -> None:
 @pytest.mark.usefixtures("target")
 def test_review_save_needs_a_reviewing_task(orch: Call, env: Env) -> None:
     prepare(orch, env)
-    assert_error(orch("review", "save", TASK, stdin=review_text()), USAGE, "refused")
+    assert_error(
+        orch("review", "save", TASK, stdin=review_text(), unchecked=True),
+        USAGE,
+        "refused",
+    )
 
 
 # retry and resume
@@ -988,6 +998,7 @@ def test_pr_passes_the_paths_and_the_token(
         "pr_url": URL,
         "conflicts": [],
         "detail": None,
+        "head_sha": None,
     }
     call = pr_calls[1]
     assert call["spec"].id == TASK
@@ -1233,7 +1244,7 @@ def test_update_reports_the_check_and_exits_by_it(
         return report
 
     monkeypatch.setattr(prflow, "update_pull_request", fake)
-    result = orch("update", TASK)
+    result = orch("update", TASK, unchecked=True)
     assert result[0] == code, result
     assert result[1] == {
         "ok": True,
@@ -1362,6 +1373,14 @@ def test_next_reports_blocked_tasks_with_their_causes(orch: Call, env: Env) -> N
     ]
 
 
+def set_pushed_sha(env: Env, sha: str, task_id: str = TASK) -> None:
+    conn = connect(env)
+    try:
+        store.update_task(conn, task_id, pushed_sha=sha, at="2026-01-02T00:00:00+00:00")
+    finally:
+        conn.close()
+
+
 def add_blocked_chain(env: Env, target: str, prefix: str) -> None:
     paths = config.ensure_target(env.orch_home, target, "owner/sample")
     cause, waiting = f"{prefix}-cause", f"{prefix}-waiting"
@@ -1414,6 +1433,8 @@ def test_status_lists_each_task(orch: Call, env: Env) -> None:
     insert(env, pr_url=URL)
     code, data = orch("status")
     assert code == 0
+    elapsed = data["tasks"][0]["elapsed_sec"]
+    assert isinstance(elapsed, int) and elapsed > 0
     assert data["tasks"] == [
         {
             "id": TASK,
@@ -1424,6 +1445,8 @@ def test_status_lists_each_task(orch: Call, env: Env) -> None:
             "lane": "B",
             "attempt": 0,
             "pr_url": URL,
+            "elapsed_sec": elapsed,
+            "head_sha": None,
         }
     ]
 
@@ -1443,6 +1466,24 @@ def test_status_human_prints_tasks_and_blocked_chains(
         json.loads(out)
 
 
+def test_status_human_shows_elapsed_and_head(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    set_pushed_sha(env, "318f3dd" + "0" * 33)
+    assert main(["status", "--human"]) == 0
+    assert re.fullmatch(
+        rf"{TASK} pr_open \d+h \d\dm 318f3dd\n", capsys.readouterr().out
+    )
+
+
+def test_status_gives_the_full_head(orch: Call, env: Env) -> None:
+    insert(env)
+    sha = "318f3dd" + "0" * 33
+    set_pushed_sha(env, sha)
+    assert orch("status")[1]["tasks"][0]["head_sha"] == sha
+
+
 def fake_status(
     tasks: list[str], chains: list[tuple[str, list[str]]], secret: str | None
 ) -> Callable[[object, list[str]], tuple[int, dict[str, object]]]:
@@ -1452,11 +1493,10 @@ def fake_status(
         if secret is not None:
             secrets.append(secret)
         return 0, {
-            "tasks": [{"id": item, "state": "ready"} for item in tasks],
-            "blocked_chains": [
-                {"task_id": item, "state": "blocked", "causes": causes}
-                for item, causes in chains
-            ],
+            "lines": [
+                *(f"{item} ready" for item in tasks),
+                *(f"{item} blocked: {', '.join(causes)}" for item, causes in chains),
+            ]
         }
 
     return execute
@@ -1567,7 +1607,7 @@ def test_a_token_in_nested_fields_is_removed(
         return report
 
     monkeypatch.setattr(prflow, "update_pull_request", fake)
-    code, data = orch("update", TASK)
+    code, data = orch("update", TASK, unchecked=True)
     assert code == 20
     assert TOKEN not in json.dumps(data)
     assert data["conflicts"] == ["src/[REDACTED].py"]
@@ -1998,3 +2038,276 @@ def test_wait_exits_70_after_ten_token_failures_without_the_script_output(
     assert TOKEN not in str(result[1])
     assert "stderr-secret" not in str(result[1])
     assert token_call_count(env) == 10
+
+
+# TODO.md
+
+
+def todo_of(env: Env, target: str = TARGET) -> str:
+    return config.target_paths(env.orch_home, target).todo.read_text(encoding="utf-8")
+
+
+def todo_state(env: Env, task_id: str = TASK) -> str | None:
+    """Return a task's state in TODO.md, or None before TODO.md shows it."""
+    if not env.paths.todo.exists():
+        return None
+    found = re.search(rf"\| {task_id} \| {TITLE} \| (\w+) \|", todo_of(env))
+    return None if found is None else found.group(1)
+
+
+# A flow makes every call before it asserts on new behavior, so that a stub
+# cannot hide a later call from the transition check in transitions.py.
+
+
+@pytest.mark.usefixtures("target")
+def test_each_state_change_rewrites_todo(orch: Call, env: Env) -> None:
+    worktree = prepare(orch, env)
+    seen = [todo_state(env)]
+    commit_tests(worktree)
+    codes = [orch("dispatch", TASK)[0]]
+    seen.append(todo_state(env))
+    codes.append(orch("run", TASK)[0])
+    seen.append(todo_state(env))
+    codes.append(orch("gate", TASK)[0])
+    seen.append(todo_state(env))
+    assert codes == [0, 0, 0]
+    assert seen == ["prepared", "reserved", "judging", "ready"]
+
+
+@pytest.mark.usefixtures("target")
+def test_discard_rewrites_todo(orch: Call, env: Env) -> None:
+    judge(orch, env)
+    code = orch("discard", TASK)[0]
+    assert code == 0
+    assert todo_state(env) == "discarded"
+
+
+@pytest.mark.usefixtures("target")
+def test_a_run_shows_running_while_the_agent_works(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reserve(orch, env)
+    states: list[str] = []
+    real = render.write_todo
+
+    def record(path: Path, text: str) -> None:
+        states.append(re.search(rf"\| {TASK} \| {TITLE} \| (\w+) \|", text).group(1))
+        real(path, text)
+
+    monkeypatch.setattr(render, "write_todo", record)
+    assert orch("run", TASK)[0] == 0
+    assert states == ["running", "judging"]
+
+
+@pytest.mark.usefixtures("target")
+def test_a_blocked_run_writes_the_settled_state(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reserve(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "blocked")
+    assert orch("run", TASK)[0] == 30
+    assert f"| {TASK} | {TITLE} | blocked |" in todo_of(env)
+
+
+def test_next_rewrites_each_target_with_its_own_tasks(orch: Call, env: Env) -> None:
+    add_blocked_chain(env, TARGET, "mine")
+    add_blocked_chain(env, "other", "theirs")
+    assert orch("next")[0] == 0
+    mine, theirs = todo_of(env), todo_of(env, "other")
+    assert "mine-waiting" in mine and "theirs-waiting" not in mine
+    assert "theirs-waiting" in theirs and "mine-waiting" not in theirs
+    assert "- mine-waiting blocked: mine-cause" in mine
+
+
+def test_a_refused_command_still_rewrites_and_keeps_its_answer(
+    orch: Call, env: Env
+) -> None:
+    insert(env)
+    assert_error(orch("dispatch", "missing"), USAGE, "refused")
+    assert f"| {TASK} | {TITLE} | pr_open |" in todo_of(env)
+
+
+def test_reading_commands_do_not_write_todo(orch: Call, env: Env) -> None:
+    insert(env)
+    assert orch("status")[0] == 0
+    assert_error(orch("wait", TASK), USAGE, "usage")
+    assert not env.paths.todo.exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_todo_stays_out_of_every_work_tree(orch: Call, env: Env, repo: Path) -> None:
+    worktree = judge(orch, env)
+    assert env.paths.todo.is_file()
+    for place in (repo, worktree, env.hub):
+        assert not list(place.rglob("TODO.md")), place
+    assert git(repo, "status", "--porcelain") == ""
+    assert git(worktree, "status", "--porcelain", "--", "TODO.md") == ""
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failed_rewrite_only_warns(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    reserve(orch, env)
+
+    def fail(path: Path, text: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(render, "write_todo", fail)
+    assert main(["run", TASK]) == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert captured.out.count("\n") == 1
+    assert (data["ok"], data["status"], data["state"]) == (True, "DONE", "judging")
+    assert state_of(env) is TaskState.JUDGING
+    assert "TODO.md 갱신 실패: disk full" in captured.err
+
+
+def test_one_failed_target_does_not_stop_the_others(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    insert(env, "mine", target=TARGET)
+    insert(env, "theirs", target="other")
+    bad = config.target_paths(env.orch_home, TARGET).todo
+    real = render.write_todo
+
+    def fail_one(path: Path, text: str) -> None:
+        if path == bad:
+            raise OSError("disk full")
+        real(path, text)
+
+    monkeypatch.setattr(render, "write_todo", fail_one)
+    assert main(["next"]) == 0
+    assert "disk full" in capsys.readouterr().err
+    assert "theirs" in todo_of(env, "other")
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failed_rewrite_does_not_show_the_token(
+    env: Env,
+    orch: Call,
+    pr_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+
+    def fail(path: Path, text: str) -> None:
+        raise OSError(f"bad {TOKEN}")
+
+    monkeypatch.setattr(render, "write_todo", fail)
+    assert main(["pr", TASK]) == 0
+    captured = capsys.readouterr()
+    assert TOKEN not in captured.out + captured.err
+    assert "[REDACTED]" in captured.err
+
+
+# orch pr head
+
+
+@pytest.mark.usefixtures("target")
+def test_pr_reports_the_pushed_commit(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    sha = "318f3dd" + "0" * 33
+
+    def fake(conn: sqlite3.Connection, spec: object, target: object, **kwargs: object):
+        store.update_task(conn, TASK, pushed_sha=sha, at="2026-01-02T00:00:00+00:00")
+        return PullRequestReport(state=TaskState.PR_OPEN, pr_url=URL)
+
+    monkeypatch.setattr(prflow, "open_pull_request", fake)
+    assert orch("pr", TASK)[1]["head_sha"] == sha
+
+
+# orch watch
+
+
+def test_watch_once_prints_the_table_and_touches_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    add_token_script(env)
+    monkeypatch.delenv("ORCH_HUB")
+    assert main(["watch", "--once"]) == 0
+    captured = capsys.readouterr()
+    assert f"| {TASK} | {TITLE} | pr_open |" in captured.out
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(captured.out)
+    assert captured.err == ""
+    assert not env.token_calls.exists()
+    assert not env.paths.todo.exists()
+    assert state_of(env) is TaskState.PR_OPEN
+
+
+def test_watch_shows_only_the_session_target(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_blocked_chain(env, TARGET, "mine")
+    add_blocked_chain(env, "other", "theirs")
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    assert main(["watch", "--once"]) == 0
+    out = capsys.readouterr().out
+    assert "mine-waiting" in out
+    assert "theirs-waiting" not in out
+
+
+@pytest.mark.parametrize(
+    ("args", "interval", "once"),
+    [((), 2, False), (("--interval", "7"), 7, False), (("--once",), 2, True)],
+)
+def test_watch_passes_its_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    args: tuple[str, ...],
+    interval: int,
+    once: bool,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(frame: object, *, interval_sec: int, once: bool) -> int:
+        seen.update(interval_sec=interval_sec, once=once)
+        return 0
+
+    monkeypatch.setattr(watch, "watch", fake)
+    assert main(["watch", *args]) == 0
+    assert seen == {"interval_sec": interval, "once": once}
+    assert capsys.readouterr().out == ""
+
+
+def test_watch_returns_the_loop_code_without_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(watch, "watch", lambda frame, **kwargs: 70)
+    assert main(["watch", "--once"]) == 70
+    assert capsys.readouterr().out == ""
+
+
+def test_each_frame_reads_the_current_state(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    texts: list[str] = []
+
+    def fake(frame, **kwargs: object) -> int:
+        texts.append(frame())
+        insert(env)
+        texts.append(frame())
+        return 0
+
+    monkeypatch.setattr(watch, "watch", fake)
+    assert main(["watch"]) == 0
+    assert TASK not in texts[0]
+    assert TASK in texts[1]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x"])
+def test_watch_refuses_a_bad_interval(orch: Call, value: str) -> None:
+    assert_error(orch("watch", "--interval", value), USAGE, "usage")
