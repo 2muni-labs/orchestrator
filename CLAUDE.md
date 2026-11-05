@@ -33,6 +33,12 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   starts, so a session cannot use one created or changed after it began.
 - At the start of a session, confirm that the main model is Opus 5.5
   (`claude-opus-5-5`). If it is not, report that to the user and wait.
+- At the start of a session, also confirm that this process started after the last
+  harness pull request merged. Instructions and subagent definitions load when a
+  process starts, so a long-running one, such as `claude rc`, keeps stale rules.
+  After `git fetch origin`, compare `ps -o lstart= -p <claude pid>` with
+  `git log -1 --first-parent --format=%cI origin/main -- CLAUDE.md AGENTS.md .claude/`.
+  If the process is older, report that to the user and wait.
 
 ## Merge policy
 
@@ -142,6 +148,12 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
   tests are stable by running them repeatedly against a reference implementation.
   Never commit it, delete it right after the check, and state that you used it in
   the test commit message.
+- Run integration tests in a sandbox with frozen commit dates. Before a push, repeat
+  each integration test file you changed or added at least 5 times. Repeats alone can
+  miss an intermittent failure, depending on machine speed:
+  one test that expected two commits to have different ids passed 20 of 20 runs on one
+  machine and failed on a faster one. Frozen dates make that kind of test fail every
+  time. Repeats are still needed for other kinds of intermittent failure.
 - Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network
   access and must not write outside the worktree.
 - Do not add `--add-dir`. Under `workspace-write`, a sub-agent cannot run
