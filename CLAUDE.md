@@ -148,8 +148,9 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
   tests are stable by running them repeatedly against a reference implementation.
   Never commit it, delete it right after the check, and state that you used it in
   the test commit message.
-- Run integration tests in a sandbox with frozen commit dates, and repeat them before
-  a push. Repeats alone can miss an intermittent failure, depending on machine speed:
+- Run integration tests in a sandbox with frozen commit dates. Before a push, repeat
+  each integration test file you changed or added at least 5 times. Repeats alone can
+  miss an intermittent failure, depending on machine speed:
   one test that expected two commits to have different ids passed 20 of 20 runs on one
   machine and failed on a faster one. Frozen dates make that kind of test fail every
   time. Repeats are still needed for other kinds of intermittent failure.
