@@ -293,8 +293,10 @@ def dispatch(
         test_sha = task.base_sha
     else:
         commits = gitops.commits_since(Path(task.worktree), task.base_sha)
-        if not commits:
-            raise DispatchError(f"Task {spec.id} needs a test commit")
+        if len(commits) != 1:
+            raise DispatchError(
+                f"Task {spec.id} needs exactly one test commit, found {len(commits)}"
+            )
         test_sha = commits[0]
     if now is None:
         now = datetime.now(UTC)
