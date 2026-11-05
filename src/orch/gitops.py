@@ -238,13 +238,20 @@ def update_task_branch(
     head = rev_parse(worktree, "HEAD")
     if head == expected_remote_sha:
         return head
-    _git(
-        worktree,
-        "push",
-        f"--force-with-lease={branch}:{expected_remote_sha}",
-        remote,
-        f"{branch}:refs/heads/{branch}",
-    )
+    try:
+        _git(
+            worktree,
+            "push",
+            f"--force-with-lease={branch}:{expected_remote_sha}",
+            remote,
+            f"{branch}:refs/heads/{branch}",
+        )
+    except GitError as exc:
+        if "stale info" in str(exc):
+            raise LeaseRejectedError(
+                f"Remote branch moved since the last push: {branch}"
+            ) from None
+        raise
     return rev_parse(worktree, "HEAD")
 
 
