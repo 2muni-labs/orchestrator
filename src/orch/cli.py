@@ -383,12 +383,13 @@ def main(argv: list[str] | None = None) -> int:
             code, data = _execute(args, secrets)
             if args.command == "status" and args.human:
                 for task in data["tasks"]:
-                    print(f"{task['id']} {task['state']}")
+                    print(_redact(f"{task['id']} {task['state']}", secrets))
                 for chain in data["blocked_chains"]:
-                    print(
+                    line = (
                         f"{chain['task_id']} {chain['state']}: "
                         f"{', '.join(chain['causes'])}"
                     )
+                    print(_redact(line, secrets))
                 return code
             output = {"ok": True, **data}
         except _UsageError as exc:
