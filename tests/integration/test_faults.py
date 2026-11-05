@@ -394,10 +394,11 @@ def test_a_lease_push_is_refused_when_the_remote_branch_moved(
     theirs = sandbox.head(other)
     assert theirs != pushed
 
-    # The exit code is not pinned: only that it fails and the remote is untouched.
     result = sandbox.orch("pr", TASK, "--resolution", "Should not land.")
-    assert result.code != 0, result
+    assert result.code == 64, result
     assert result.data["ok"] is False
+    assert result.data["error"] == "refused"
+    assert f"task/{TASK}" in result.data["message"]
     assert sandbox.remote_sha(f"task/{TASK}") == theirs
     assert sandbox.task_row(TASK)["pushed_sha"] == pushed
     assert sandbox.head(worktree) == resolved

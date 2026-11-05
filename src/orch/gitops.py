@@ -17,6 +17,10 @@ class GitError(Exception):
     """A git command failed, timed out or was refused by a safety check."""
 
 
+class LeaseRejectedError(GitError):
+    """The remote branch is no longer at the commit the lease expected."""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RebaseResult:
     """Outcome of a rebase. A conflict is an outcome, not an error."""
@@ -234,13 +238,20 @@ def update_task_branch(
     head = rev_parse(worktree, "HEAD")
     if head == expected_remote_sha:
         return head
-    _git(
-        worktree,
-        "push",
-        f"--force-with-lease={branch}:{expected_remote_sha}",
-        remote,
-        f"{branch}:refs/heads/{branch}",
-    )
+    try:
+        _git(
+            worktree,
+            "push",
+            f"--force-with-lease={branch}:{expected_remote_sha}",
+            remote,
+            f"{branch}:refs/heads/{branch}",
+        )
+    except GitError as exc:
+        if "stale info" in str(exc):
+            raise LeaseRejectedError(
+                f"Remote branch moved since the last push: {branch}"
+            ) from None
+        raise
     return rev_parse(worktree, "HEAD")
 
 

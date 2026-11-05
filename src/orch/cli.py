@@ -14,6 +14,7 @@ from pathlib import Path
 from orch import (
     config,
     gate,
+    gitops,
     lifecycle,
     prflow,
     review,
@@ -403,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             lifecycle.LifecycleError,
             review.ReviewFlowError,
             gate.GateError,
+            gitops.LeaseRejectedError,
             runner.RunError,
             scheduler.DispatchError,
             prflow.PullRequestFlowError,
