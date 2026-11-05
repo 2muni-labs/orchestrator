@@ -17,15 +17,12 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   artifacts.
 - You do not implement features. The only exceptions are resolving rebase
   conflicts, P0 emergency fixes and the throwaway reference implementation described
-  under the manual procedure.
+  under the procedure.
 - Judge from the result JSON and gates. Read sub-agent code only when a gate fails
   or a task is partial. Do not re-analyze or re-implement work that passed.
 - Never merge a pull request. Never push to `main`. Push task branches only.
-- Never force push. The one exception is step 8a: updating the `task/<id>` branch of
-  an open pull request that conflicts with `main`, with
-  `--force-with-lease=task/<id>:<last pushed sha>`. A `--force`, or a
-  `--force-with-lease` without that value, is never allowed, and neither is any
-  force push to `main` or another branch.
+- Never force push, with `--force` or `--force-with-lease`. Only `orch pr` updates a
+  pushed `task/<id>` branch, with a lease on its recorded `pushed_sha`.
 
 ## Sessions
 
@@ -39,6 +36,10 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   After `git fetch origin`, compare `ps -o lstart= -p <claude pid>` with
   `git log -1 --first-parent --format=%cI origin/main -- CLAUDE.md AGENTS.md .claude/`.
   If the process is older, report that to the user and wait.
+- At the start of a session, also confirm that the hub clone's `HEAD` equals
+  `origin/main` after that fetch. A process started after a merge but before the hub
+  clone was updated still loads the old rules. If they differ, report that to the user
+  and wait.
 
 ## Merge policy
 
@@ -60,7 +61,7 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   | --- | --- | --- | --- | --- | --- | --- | --- |
 
   `Merge by` is `verification session` or `user check`. The results hold only for
-  those two commits: if either one moves, run the step 8a check again.
+  those two commits: if either one moves, run step 8a again.
 
 ## GitHub authentication
 
@@ -71,32 +72,48 @@ helper. Call `gh` only in this form, and never pass the token to a sub-agent:
 GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 ```
 
-## Manual procedure (Phase 2)
+## Procedure (Phase 3)
 
-`orch` does not exist yet, so you run its steps by hand. `R` below stands for
+You run tasks through the installed `orch`. `R` below stands for
 `~/.orch/orchestrator`.
 
 | # | Step | What to do |
 | --- | --- | --- |
 | 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
-| 1 | Prepare | `git fetch origin`, update the hub clone's `main` to `origin/main`, then `git worktree add R/worktrees/<id> -b task/<id> origin/main`, then run `uv sync --frozen` in the worktree. |
-| 2 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. |
-| 3 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. Before dispatch, check that the fields, functions and state names the spec mentions match the tests. |
-| 4 | Run | In a background shell, run `scripts/run-sub.sh <id>` from the hub clone. Report the dispatch and end the turn. Do not poll. |
-| 5 | Judge | On the completion notice, read `R/results/<id>.json`, which `run-sub.sh` has moved there or written as a failure. Ignore the notice's exit code. If `DONE`, run `scripts/gate.sh <id>` from the hub clone. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
-| 6 | Commit | When the gates pass, commit the sub-agent's changes on `task/<id>`. |
-| 7 | Review | For L3 and above, or risk areas: run `git diff <merge-base>..HEAD > R/reviews/<id>.diff` so that the diff holds the tests and the implementation, then start `orch-reviewer` in the background with the paths of that diff, the spec and the worktree. Save its JSON as `R/reviews/<id>.json`. |
-| 8 | Pull request | Rebase on `origin/main`, re-run the tests, `git push -u origin task/<id>`, write the pushed commit id to `R/pushes/<id>`, create the pull request in English, and report to the user with the merge table below. Before copying review findings into the pull request body, confirm that they contain no personal paths such as `/Users/`. |
-| 8a | Main moved | While a pull request is open and `origin/main` moves, do not push if there is no conflict. In the worktree, run `git merge --no-ff --no-edit origin/main`, run `scripts/gate.sh <id>` from the hub clone, then discard the merge with `git reset --hard $(cat R/pushes/<id>)`. If the merge conflicts: `git merge --abort`, rebase on `origin/main` and resolve; run `scripts/gate.sh <id>`; if the resolution changed logic and the task is L3 or above, repeat step 7; `git push --force-with-lease=task/<id>:$(cat R/pushes/<id>) origin task/<id>`; update `R/pushes/<id>`; and describe the resolution in a pull request comment. |
-| 9 | After merge | The pull request is merged under the merge policy below. Return to the hub clone, then remove the worktree, the local branch and `R/pushes/<id>`. |
-| 10 | Failure | Retry once: reset to the test commit, remove `.orch-result.json`, append a failure summary to the spec. On a second failure, discard and re-decompose. |
+| 1 | Spec | Write `R/tasks/<id>.md` from `templates/task.md`. |
+| 2 | Prepare | `orch prepare R/tasks/<id>.md`. It fetches, creates `R/worktrees/<id>` on branch `task/<id>` from `origin/main`, and runs the target's setup command. It refuses a used id, an unregistered dependency, and a `modify` that reaches a shared path or `tests/`. |
+| 3 | Tests first | Write tests and interface stubs (bodies are `raise NotImplementedError`) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. Then check that the fields, functions and state names the spec mentions match the tests. |
+| 4 | Dispatch | `orch dispatch <id>`. It refuses unless the range holds exactly one commit. `reserved` goes on to step 5. `queued` waits for the reasons in `waiting_for`; run `orch next` on each completion notice. `blocked` means a dependency was discarded. |
+| 5 | Run | In a background shell, run `orch run <id>` within the 10 minute reservation. Report the dispatch and end the turn. Do not poll. |
+| 6 | Judge | On the completion notice, read the command's JSON output and `R/results/<id>.json`. Ignore the notice's exit code. If `DONE`, run `orch gate <id>`, which runs G1 to G3 and commits the sub-agent's changes when they pass. A failed gate returns the task to `judging`. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
+| 7 | Review | When the gate leaves the task in `reviewing` (L3, L3R, or `review = true`): run `git diff <merge-base>..HEAD > R/reviews/<id>.diff` in the worktree so that the diff holds the tests and the implementation, then start `orch-reviewer` in the background with the paths of that diff, the spec and the worktree. Pass its JSON to `orch review save <id>` on standard input. `PASS` moves the task to `ready`; `BLOCK` moves it to `judging`. |
+| 8 | Pull request | `orch pr <id>`. It rebases on `origin/main`, re-runs the tests, pushes, and opens the pull request in English. Report to the user with the merge table above. A rebase conflict moves the task to `conflict`; a test failure moves it to `judging`. |
+| 8a | Main moved | While a pull request is open and `origin/main` moves, run `orch update <id>`. It checks a temporary merge and discards it, pushing nothing. On failing gates it comments on the pull request. On a conflict it moves the task to `conflict`: in the worktree, rebase on `origin/main` and resolve; if the resolution changed logic and the task is L3 or above, run `orch-reviewer` on the new diff and stop and report on a P0 or P1 finding; then run `orch pr <id> --resolution "<English description>"`, which pushes with the lease and comments. A lease rejection exits 64 and leaves the remote alone: stop and report. |
+| 9 | After merge | The pull request is merged under the merge policy above. Run `orch close <id>`, which confirms the merge and removes the worktree and local branch. Update the hub clone's `main` to `origin/main`, then run `orch next`. |
+| 10 | Failure | `orch retry <id>` starts the second attempt from the test commit and appends the failure to the spec. On a second failure, `orch discard <id>` and re-decompose. A task with an open pull request can be discarded only after that pull request is closed. |
 
-- A harness pull request you write yourself must also pass before you push: in its
+- Run only the installed `orch` (`~/.local/bin/orch`), never a worktree's
+  `.venv/bin/orch`. Changed code runs only after a merge, a new tag and an upgrade the
+  user approves: confirm that `orch status` shows no running task, back up
+  `~/.orch/state.db`, then `uv tool install --reinstall` the new tag.
+- `.claude/settings.local.json` in the hub clone sets `ORCH_HUB` and `ORCH_TARGET` for
+  the session. It is ignored by git, and it replaces `orch open` until M13.
+- `orch` refuses a `modify` that reaches a shared file, so a pull request changing one
+  is a harness pull request you write yourself, outside `orch`: create the worktree
+  with `git worktree add R/worktrees/<id> -b task/<id> origin/main`, run
+  `uv sync --frozen`, push with `git push -u origin task/<id>`, and open it with `gh`.
+  After the merge, remove the worktree and local branch. If it conflicts with `main`,
+  merge `origin/main` into the branch and push normally.
+- A harness pull request must also pass before you push: in its
   worktree, run `.venv/bin/python -m pytest`, `.venv/bin/python -m ruff check .` and
   `.venv/bin/python -m ruff format --check .` on the final commit. This covers every
   push to that branch. Put the results in the pull request body.
-- When two pull requests go up together, finish the step 8a check before the user
-  merges and report it: full tests and ruff on the combined state. Do not defer it to
+- `scripts/run-sub.sh` and `scripts/gate.sh` stay until M16 as a fallback for when
+  `orch` itself fails and the user approves using them. Never handle one task with
+  both: they do not update `state.db`.
+- When two pull requests go up together, finish a check on their combined state before
+  the user merges and report it: full tests and ruff, in a temporary worktree that
+  merges both. `orch update` checks each one against `main` only. Do not defer it to
   a later task's worktree. Watch for semantic conflicts, especially when both change
   the same test file.
 - When you discard a task and dispatch it again under a new id, state that and its
@@ -112,38 +129,41 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 - When a test expects a result from an existing module, such as a classification or
   an exit code, confirm the actual behavior from that module's code or tests before
   committing. Stubs fail first, so they cannot reveal a wrong expectation.
-- Run at most 1 or 2 tasks at once, and check by hand that their `modify` paths do
-  not overlap.
-- `<test_sha>` is the first commit after the branch point from `origin/main`, which is why step 2 allows exactly one commit.
+- Run at most 1 or 2 tasks at once. `orch dispatch` queues a task whose `modify`
+  overlaps a running one and enforces the limits in `~/.orch/config`.
 - `<merge-base>` is the output of `git merge-base origin/main HEAD`, run in the worktree.
-- `run-sub.sh` reads the lane, model, effort and `timeout_min` from the spec's front matter, removes tokens from the sub-agent's environment, enforces the time limit, reports `BLOCKED_QUOTA` when a run without a valid result ends with a usage limit message, and runs lane B only. Keep the worktree of a `BLOCKED_QUOTA` task and wait for the user. Each run writes its own log, `R/logs/<id>.<n>.log`, and the usage limit check reads only that log, so an earlier run's message cannot change the verdict. It runs Codex by the absolute path of the globally pinned version (`mise use -g codex@0.160.0`), not through `PATH` or a mise shim, because a shim follows the current directory's mise settings.
+- `orch run` reads the lane, model, effort and `timeout_min` from the spec's front matter, removes tokens from the sub-agent's environment, enforces the time limit, and reports `BLOCKED_QUOTA` when a run without a valid result ends with a usage limit message. A `BLOCKED` or `BLOCKED_QUOTA` result moves the task to `blocked` and keeps its worktree: report and wait for the user. Run `orch resume <id>` only after the user approves; it resets to the test commit unless given `--keep`, and uses no attempt. Each run writes its own log, `R/logs/<id>.<n>.log`, and the usage limit check reads only that log, so an earlier run's message cannot change the verdict. It runs the agents by the absolute paths in `~/.orch/config`, not through `PATH` or a mise shim, because a shim follows the current directory's mise settings.
 - Use absolute paths in commands. `cd` into a worktree carries over to later commands, and you cannot remove a worktree you are still inside.
-- Run `run-sub.sh` and `gate.sh` from the hub clone, not the worktree. A sub-agent can change the worktree's copy.
 - **Only `tests/**` is frozen.** List each stub file in the spec's `modify`. Gate
   G1 fails if a file under `tests/` changes.
 - Review judgments can vary between runs. Before a P0 or P1 finding leads to a retry
-  or a discard, check it against the spec and the code. Reject a wrong finding and
-  record the reason in `R/reviews/<id>.triage.md` and the pull request body.
+  or a discard, check it against the spec and the code. Reject a wrong finding with a
+  triage file: `orch review save <id> --triage <file>`, one decision per P0 or P1
+  finding. It moves the task to `ready`, and `orch pr` adds the override section and
+  the `review-overridden` label.
 - A confirmed finding whose `path` starts with `tests/` does not use the retry,
   because tests are frozen and a sub-agent cannot fix them. Sort it into one of three
   kinds:
-  - **Wrong tests** expect incorrect behavior. Discard the task, fix the tests
-    yourself and dispatch the work again as a new task with a new id.
-  - **Insufficient tests, correct implementation:** only a check is missing. Continue
-    with the pull request and create a follow-up task that adds the tests. Record this
-    in the triage file and the pull request body, since the review verdict stays
-    `BLOCK`.
+  - **Wrong tests** expect incorrect behavior. Save the review without a triage file,
+    `orch discard <id>`, fix the tests yourself and dispatch the work again as a new
+    task with a new id.
+  - **Insufficient tests, correct implementation:** only a check is missing. Register
+    a follow-up task that adds the tests, then save with a triage file whose
+    `insufficient_tests` decision names it. The review verdict stays `BLOCK`.
   - **Insufficient tests, implementation defect:** review confirmed a defect that no
-    test catches. Discard the task and dispatch it under a new id with stronger tests.
+    test catches. Save without a triage file, `orch discard <id>`, and dispatch it
+    under a new id with stronger tests.
+- A confirmed implementation defect never goes through triage: save without
+  `--triage`, then `orch retry <id>` or `orch discard <id>`.
 - When you dispatch under a new id with stronger tests, run them against the
   discarded implementation, confirm that only the tests for the defect fail, and
   state the result in the test commit message.
 - **Retry exemption.** It applies only when a sub-agent reports `spec_mismatch`, the
-  cause is your spec error, and the tests do not change. Fix the spec, return to the
-  test commit, remove uncommitted changes and untracked files, and run again from the
-  start. This does not count against the retry. Record the fix and the reason at the
-  end of the spec and in the pull request body. If the tests must change, the
-  exemption does not apply: dispatch under a new id.
+  cause is your spec error, and the tests do not change. Report it, fix `R/tasks/<id>.md`,
+  and with the user's approval run `orch resume <id>`, which returns to the test commit
+  and removes uncommitted changes. This does not count against the retry. Record the
+  fix and the reason at the end of the spec and in a pull request comment. If the tests
+  must change, the exemption does not apply: dispatch under a new id.
 - For concurrency tests in an L3 task only, you may check before dispatch that the
   tests are stable by running them repeatedly against a reference implementation.
   Never commit it, delete it right after the check, and state that you used it in
@@ -157,8 +177,8 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 - Write `verify` as `.venv/bin/python -m pytest ...`. It must work without network
   access and must not write outside the worktree.
 - Do not add `--add-dir`. Under `workspace-write`, a sub-agent cannot run
-  `git commit`, write outside the worktree, or use `uv run`, which is why you sync,
-  move the result file and commit.
+  `git commit`, write outside the worktree, or use `uv run`, which is why `orch` syncs,
+  moves the result file and commits.
 - Worktrees and reviews live outside this repository. You and the read-only
   sub-agents read them without a permission prompt because the user settings
   (`~/.claude/settings.json`) set `permissions.additionalDirectories` to
