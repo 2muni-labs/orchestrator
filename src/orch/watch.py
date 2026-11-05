@@ -1,5 +1,6 @@
 """orch watch: a foreground status board that redraws on an interval."""
 
+import sys
 import time
 from collections.abc import Callable
 from typing import TextIO
@@ -16,4 +17,25 @@ def watch(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Draw frames until interrupted and return the exit code."""
-    raise NotImplementedError
+    try:
+        output = sys.stdout if out is None else out
+        while True:
+            failed = False
+            try:
+                content = frame()
+            except Exception as exc:
+                content = f"조회 실패: {exc}"
+                failed = True
+
+            if output.isatty():
+                output.write(CLEAR_SCREEN)
+            output.write(content)
+            if not content.endswith("\n"):
+                output.write("\n")
+            output.flush()
+
+            if once:
+                return 70 if failed else 0
+            sleep(interval_sec)
+    except KeyboardInterrupt:
+        return 0
