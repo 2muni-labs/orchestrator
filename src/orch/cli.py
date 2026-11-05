@@ -23,6 +23,7 @@ from orch import (
     scheduler,
     store,
     taskfile,
+    waiter,
 )
 from orch.models import Task, TaskState
 
@@ -49,6 +50,13 @@ class _VersionAction(argparse.Action):
     ) -> None:
         print(f"orch {importlib.metadata.version('orch')}")
         parser.exit()
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -92,8 +100,8 @@ def _parser() -> argparse.ArgumentParser:
     wait = commands.add_parser("wait")
     wait.add_argument("id")
     wait.add_argument("--merged", action="store_true")
-    wait.add_argument("--interval")
-    wait.add_argument("--max-wait")
+    wait.add_argument("--interval", type=_positive_int, default=60)
+    wait.add_argument("--max-wait", type=_positive_int, default=90)
     commands.add_parser("next")
     commands.add_parser("status").add_argument("--human", action="store_true")
     return parser
@@ -207,6 +215,8 @@ def _command(
     secrets: list[str],
 ) -> tuple[int, dict[str, object]]:
     command = args.command
+    if command == "wait" and not args.merged:
+        raise _UsageError("wait requires --merged")
     session_target = os.environ.get("ORCH_TARGET")
     if command == "prepare":
         try:
@@ -282,7 +292,15 @@ def _command(
         }
     task_id = args.id
     if command == "wait":
-        raise NotImplementedError
+        report = waiter.wait_for_merge(
+            conn,
+            task_id,
+            token=lambda: _token(orch_home, secrets),
+            interval_sec=args.interval,
+            max_wait_min=args.max_wait,
+        )
+        code = 0 if report.merged else 50 if report.pr_state == "CLOSED" else 60
+        return code, asdict(report)
     if command in {"dispatch", "retry", "resume"}:
         if command == "dispatch":
             decision = scheduler.dispatch(
@@ -439,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             store.TaskNotFoundError,
             store.StateMismatchError,
             store.IllegalTransitionError,
+            waiter.MergeWaitError,
         ) as exc:
             code = 64
             output = {
