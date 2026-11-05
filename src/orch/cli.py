@@ -1,6 +1,7 @@
 """The orch command line: subcommands, one-line JSON output and exit codes."""
 
 import argparse
+import importlib.metadata
 import json
 import os
 import sqlite3
@@ -35,8 +36,26 @@ class _Parser(argparse.ArgumentParser):
         raise _UsageError(message)
 
 
+class _VersionAction(argparse.Action):
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: object) -> None:
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        print(f"orch {importlib.metadata.version('orch')}")
+        parser.exit()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="orch")
+    parser.add_argument(
+        "--version", action=_VersionAction, help="Show the package version and exit"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     target = commands.add_parser("target")
     add = target.add_subparsers(dest="target_command", required=True).add_parser("add")
