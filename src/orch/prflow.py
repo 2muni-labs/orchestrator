@@ -1,22 +1,19 @@
 """orch pr, update and close: the flow around a task's pull request."""
 
 import sqlite3
-from collections import Counter
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from orch import gate, github, gitops, results, store
 from orch.config import Target
 from orch.gate import GateReport
-from orch.models import Gate, GateResult, Review, Severity, Task, TaskState, Verdict
+from orch.models import Gate, TaskState, Verdict
+from orch.render import build_body
 from orch.review import (
     OVERRIDE_LABEL,
     ReviewFlowError,
-    Triage,
     check_triage,
     load_triage,
-    override_section,
 )
 from orch.taskfile import TaskSpec
 
@@ -44,51 +41,6 @@ class UpdateReport:
     state: TaskState
     conflicts: tuple[str, ...] = ()
     gates: GateReport | None = None
-
-
-def build_body(
-    task: Task,
-    *,
-    changed: Iterable[str],
-    gates: Iterable[GateResult],
-    review: Review | None,
-    triage: Triage | None = None,
-) -> str:
-    """Return the minimal English pull request body."""
-    review_summary = "Not required"
-    if review is not None:
-        counts = Counter(finding.severity for finding in review.findings)
-        review_summary = f"Verdict: {review.verdict}"
-        for severity in Severity:
-            if counts[severity]:
-                review_summary += f", {severity}: {counts[severity]}"
-
-    body = "\n".join(
-        [
-            "## Summary",
-            "",
-            f"Task `{task.id}`: {task.title}",
-            "",
-            "## Changed files",
-            "",
-            *(f"- `{path}`" for path in sorted(changed)),
-            "",
-            "## Gates",
-            "",
-            *(
-                f"- {result.gate}: {'passed' if result.passed else 'failed'}"
-                for result in gates
-            ),
-            "",
-            "## Review",
-            "",
-            review_summary,
-            "",
-        ]
-    )
-    if triage is not None:
-        body = override_section(triage) + "\n\n" + body
-    return body
 
 
 def open_pull_request(
