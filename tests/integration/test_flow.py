@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import (
     CHANGED,
+    COMMIT_DATE,
     FAKE_GH,
     GITHUB,
     LABEL,
@@ -262,6 +263,27 @@ def test_the_sandbox_is_isolated_as_built(sandbox: Sandbox) -> None:
     assert sandbox.env["HOME"].startswith(str(sandbox.root))
     assert sandbox.env["ORCH_HOME"].startswith(str(sandbox.root))
     assert sandbox.env["ORCH_HUB"].startswith(str(sandbox.root))
+
+
+def test_commits_in_the_sandbox_have_the_frozen_date(sandbox: Sandbox) -> None:
+    # orch's own commit, through the gate, as well as the sandbox's.
+    worktree = sandbox.reviewing(TASK)
+    dates = sandbox.git(worktree, "log", "--format=%ad %cd", "--date=raw").split()
+    # Raw dates are seconds and zone: 2026-01-01T00:00:00+0000 is 1767225600.
+    assert COMMIT_DATE.endswith("+0000")
+    assert set(dates) == {"1767225600", "+0000"}
+    # The seed commit, the test commit and orch's commit.
+    assert len(dates) == 3 * 4
+
+
+@pytest.mark.parametrize("name", ["GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"])
+def test_isolation_requires_the_frozen_commit_date(sandbox: Sandbox, name: str) -> None:
+    moved = {**sandbox.env, name: "2026-06-01T00:00:00+0000"}
+    assert problems(sandbox, moved) == [f"{name} is not the frozen commit date"]
+    missing = {k: v for k, v in sandbox.env.items() if k != name}
+    assert problems(sandbox, missing) == [f"{name} is not the frozen commit date"]
+    with pytest.raises(pytest.fail.Exception, match="frozen commit date"):
+        sandbox.orch("status", unset=(name,))
 
 
 def test_isolation_requires_git_config_nosystem(sandbox: Sandbox) -> None:

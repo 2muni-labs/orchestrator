@@ -12,6 +12,12 @@ from conftest import CHANGED, TARGET, Sandbox
 
 TASK = "fault-task"
 INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
+# The value under test: the limit itself, for an agent that only has to be stopped.
+SHORT_LIMIT_SEC = 2
+# Waits not under test: an agent starting and writing a file, a killed process going
+# away. These only have to be generous, so a slow machine does not fail them.
+AGENT_WAIT_SEC = 10
+RUN_BOUND_SEC = 60
 
 
 def result_file(sandbox: Sandbox, task_id: str = TASK) -> dict:
@@ -32,7 +38,7 @@ def set_timeout(sandbox: Sandbox, task_id: str, seconds: int) -> None:
 
 
 def wait_until_gone(pid: int) -> bool:
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + AGENT_WAIT_SEC
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
@@ -148,16 +154,22 @@ def test_resume_needs_a_blocked_task(sandbox: Sandbox) -> None:
 # Timeout
 
 
-@pytest.mark.parametrize("scenario", ["timeout", "report_then_hang"])
+@pytest.mark.parametrize(
+    ("scenario", "limit"),
+    [("timeout", SHORT_LIMIT_SEC), ("report_then_hang", AGENT_WAIT_SEC)],
+    ids=["no-report", "report-before-the-limit"],
+)
 def test_a_timeout_stops_the_agent_and_rejects_its_report(
-    sandbox: Sandbox, scenario: str
+    sandbox: Sandbox, scenario: str, limit: int
 ) -> None:
+    # The second scenario needs its report written before the limit, so the limit must
+    # also cover the agent's start.
     worktree = sandbox.reserve(TASK)
-    set_timeout(sandbox, TASK, 2)
+    set_timeout(sandbox, TASK, limit)
 
     started = time.monotonic()
     result = sandbox.orch("run", TASK, env={"ORCH_FAKE_SCENARIO": scenario})
-    assert time.monotonic() - started < 30
+    assert time.monotonic() - started < RUN_BOUND_SEC
     assert result.code == 20, result
     assert (result.data["status"], result.data["failure_reason"]) == (
         "FAILED",
@@ -182,8 +194,9 @@ def test_a_timeout_stops_the_agent_and_rejects_its_report(
 
 
 def test_a_timeout_also_stops_a_child_in_another_session(sandbox: Sandbox) -> None:
+    # The limit must cover the agent's start, since the agent writes the child's pid.
     sandbox.reserve(TASK)
-    set_timeout(sandbox, TASK, 2)
+    set_timeout(sandbox, TASK, AGENT_WAIT_SEC)
     pid_file = sandbox.root / "child-pid"
     result = sandbox.orch(
         "run",

@@ -25,6 +25,9 @@ TOKEN = "gh" + "s_" + "integration0sandbox0token0" * 2
 GITHUB = "owner/sample"
 TARGET = "sample"
 LABEL = "review-overridden"
+# One value, not increasing per commit. Identical commits then always get the same id,
+# so a check that expects different ids fails every time, on a machine of any speed.
+COMMIT_DATE = "2026-01-01T00:00:00+0000"
 CHANGED = "src/fake_change.py"
 TEST_SCRIPT = "tests/check.sh"
 TOKEN_NAMES = (
@@ -44,6 +47,9 @@ def environment_problems(env: Mapping[str, str], fake_gh: Path) -> list[str]:
     found_gh = shutil.which("gh", path=env.get("PATH", ""))
     if found_gh is None or Path(found_gh).resolve() != fake_gh.resolve():
         problems.append(f"gh on PATH is not the fake gh: {found_gh}")
+    for name in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
+        if env.get(name) != COMMIT_DATE:
+            problems.append(f"{name} is not the frozen commit date")
     return problems
 
 
@@ -131,6 +137,8 @@ class Sandbox:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(self.home / ".gitconfig"),
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_AUTHOR_DATE": COMMIT_DATE,
+            "GIT_COMMITTER_DATE": COMMIT_DATE,
         }
         self._build()
         require_isolation(self.env, [self.clone], self.bare, FAKE_GH)
