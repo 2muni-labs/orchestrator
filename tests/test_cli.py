@@ -17,7 +17,7 @@ from orch import config, github, prflow, store
 from orch.cli import main
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
-from orch.gitops import GitError
+from orch.gitops import GitError, LeaseRejectedError
 from orch.models import Effort, Grade, Lane, Task, TaskState
 from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
 
@@ -1046,6 +1046,37 @@ def test_pr_flow_refusal_is_refused(
 
     monkeypatch.setattr(prflow, "open_pull_request", failed)
     assert_error(orch("pr", TASK), USAGE, "refused")
+
+
+@pytest.mark.usefixtures("target")
+def test_a_lease_rejection_is_refused_and_named(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+
+    def failed(*args: object, **kwargs: object) -> None:
+        raise LeaseRejectedError(f"Remote branch moved: task/{TASK}")
+
+    monkeypatch.setattr(prflow, "open_pull_request", failed)
+    result = orch("pr", TASK)
+    assert_error(result, USAGE, "refused")
+    assert f"task/{TASK}" in str(result[1]["message"])
+    assert TOKEN not in json.dumps(result[1])
+
+
+@pytest.mark.usefixtures("target")
+def test_another_push_failure_stays_internal(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+
+    def failed(*args: object, **kwargs: object) -> None:
+        raise GitError("push failed")
+
+    monkeypatch.setattr(prflow, "open_pull_request", failed)
+    assert_error(orch("pr", TASK), INTERNAL, "internal")
 
 
 @pytest.mark.usefixtures("target")

@@ -17,6 +17,10 @@ class GitError(Exception):
     """A git command failed, timed out or was refused by a safety check."""
 
 
+class LeaseRejectedError(GitError):
+    """The remote branch is no longer at the commit the lease expected."""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RebaseResult:
     """Outcome of a rebase. A conflict is an outcome, not an error."""

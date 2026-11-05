@@ -11,6 +11,7 @@ import pytest
 from orch import gitops
 from orch.gitops import (
     GitError,
+    LeaseRejectedError,
     MergeResult,
     RebaseResult,
     changed_paths,
@@ -540,10 +541,59 @@ def test_update_refuses_when_someone_else_pushed(
     theirs = add_commit(other, "theirs.txt")
     git(other, "push", "-q", "origin", BRANCH)
     head = git(worktree, "rev-parse", "HEAD")
-    with pytest.raises(GitError):
+    with pytest.raises(LeaseRejectedError):
         update_task_branch(worktree, "m1", pushed)
     assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == theirs
     assert git(worktree, "rev-parse", "HEAD") == head
+
+
+def test_a_lease_rejection_is_still_a_git_error() -> None:
+    assert issubclass(LeaseRejectedError, GitError)
+
+
+def test_a_lease_rejection_names_the_branch_and_no_path(
+    worktree: Path, remote: Path, tmp_path: Path, pushed: str
+) -> None:
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", "-b", BRANCH, str(remote), str(other)], check=True
+    )
+    add_commit(other, "theirs.txt")
+    git(other, "push", "-q", "origin", BRANCH)
+    with pytest.raises(LeaseRejectedError) as caught:
+        update_task_branch(worktree, "m1", pushed)
+    assert BRANCH in str(caught.value)
+    assert str(tmp_path) not in str(caught.value)
+
+
+def test_a_deleted_remote_branch_rejects_the_lease(
+    worktree: Path, remote: Path, pushed: str
+) -> None:
+    git(remote, "update-ref", "-d", f"refs/heads/{BRANCH}")
+    with pytest.raises(LeaseRejectedError):
+        update_task_branch(worktree, "m1", pushed)
+    assert git(remote, "for-each-ref", f"refs/heads/{BRANCH}") == ""
+
+
+def test_a_push_the_remote_declines_is_not_a_lease_rejection(
+    worktree: Path, remote: Path, pushed: str
+) -> None:
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    with pytest.raises(GitError) as caught:
+        update_task_branch(worktree, "m1", pushed)
+    assert not isinstance(caught.value, LeaseRejectedError)
+    assert git(remote, "rev-parse", f"refs/heads/{BRANCH}") == pushed
+
+
+def test_a_missing_remote_is_not_a_lease_rejection(
+    worktree: Path, pushed: str, tmp_path: Path
+) -> None:
+    git(worktree, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    with pytest.raises(GitError) as caught:
+        update_task_branch(worktree, "m1", pushed)
+    assert not isinstance(caught.value, LeaseRejectedError)
 
 
 def test_lease_uses_the_given_id_even_after_a_fetch_moved_the_tracking_branch(

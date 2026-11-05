@@ -11,7 +11,7 @@ from orch import gate, github, prflow, store
 from orch.config import Target
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
-from orch.gitops import GitError, create_worktree, fetch
+from orch.gitops import GitError, LeaseRejectedError, create_worktree, fetch
 from orch.models import (
     Finding,
     Gate,
@@ -1192,7 +1192,7 @@ def test_a_moved_remote_branch_rejects_the_lease(
     resolve_by_rebase(worktree)
     other = git(repo, "rev-parse", "HEAD")
     git(repo, "push", "-qf", "origin", f"{other}:refs/heads/{BRANCH}")
-    with pytest.raises(GitError):
+    with pytest.raises(LeaseRejectedError):
         open_pr(conn, repo, tmp_path)
     assert remote_tip(remote) == other
     task = task_of(conn)
@@ -1274,7 +1274,7 @@ def test_a_moved_remote_branch_rejects_the_lease_from_ready(
     return_to_ready(conn, repo, worktree, tmp_path)
     other = git(repo, "rev-parse", "HEAD")
     git(repo, "push", "-qf", "origin", f"{other}:refs/heads/{BRANCH}")
-    with pytest.raises(GitError):
+    with pytest.raises(LeaseRejectedError):
         open_pr(conn, repo, tmp_path)
     assert remote_tip(remote) == other
     task = task_of(conn)
