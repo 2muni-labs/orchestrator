@@ -35,6 +35,18 @@ TOKEN_NAMES = (
 )
 
 
+def environment_problems(env: Mapping[str, str], fake_gh: Path) -> list[str]:
+    """Return every way these variables alone could reach real credentials."""
+    problems = []
+    if env.get("GIT_CONFIG_NOSYSTEM") != "1":
+        problems.append("GIT_CONFIG_NOSYSTEM is not 1")
+    problems.extend(f"{name} is set" for name in TOKEN_NAMES if name in env)
+    found_gh = shutil.which("gh", path=env.get("PATH", ""))
+    if found_gh is None or Path(found_gh).resolve() != fake_gh.resolve():
+        problems.append(f"gh on PATH is not the fake gh: {found_gh}")
+    return problems
+
+
 def isolation_problems(
     env: Mapping[str, str], repos: Iterable[Path], bare: Path, fake_gh: Path
 ) -> list[str]:
@@ -48,13 +60,7 @@ def isolation_problems(
             text=True,
         )
 
-    problems = []
-    if env.get("GIT_CONFIG_NOSYSTEM") != "1":
-        problems.append("GIT_CONFIG_NOSYSTEM is not 1")
-    problems.extend(f"{name} is set" for name in TOKEN_NAMES if name in env)
-    found_gh = shutil.which("gh", path=env.get("PATH", ""))
-    if found_gh is None or Path(found_gh).resolve() != fake_gh.resolve():
-        problems.append(f"gh on PATH is not the fake gh: {found_gh}")
+    problems = environment_problems(env, fake_gh)
     if git(bare, "rev-parse", "--is-bare-repository").stdout.strip() != "true":
         problems.append(f"Not a bare repository: {bare}")
     for repo in repos:
@@ -198,6 +204,9 @@ class Sandbox:
         variables = {**self.env, **(env or {})}
         for name in unset:
             variables.pop(name, None)
+        problems = environment_problems(variables, FAKE_GH)
+        if problems:
+            pytest.fail("orch call is not isolated:\n" + "\n".join(problems))
         done = subprocess.run(
             [str(self.orch_command), *args],
             env=variables,
@@ -421,8 +430,8 @@ class Sandbox:
         assert data["state"] == "reviewing", data
         return worktree
 
-    def save_review(
-        self, task_id: str, findings: Iterable[tuple[str, str]] = (), **options: object
+    def orch_review(
+        self, task_id: str, findings: Iterable[tuple[str, str]], triage: str | None
     ) -> Result:
         """Act as the fake reviewer: findings are (severity, path) pairs."""
         items = list(findings)
@@ -436,7 +445,16 @@ class Sandbox:
                 for severity, path in items
             ],
         }
-        return self.orch("review", "save", task_id, stdin=json.dumps(review), **options)
+        args = ["review", "save", task_id]
+        if triage is not None:
+            args.extend(("--triage", triage))
+        return self.orch(*args, stdin=json.dumps(review))
+
+    def save_review(
+        self, task_id: str, findings: Iterable[tuple[str, str]] = ()
+    ) -> Result:
+        """Save a review without a triage."""
+        return self.orch_review(task_id, findings, None)
 
     def ready(self, task_id: str, **spec: object) -> Path:
         worktree = self.reviewing(task_id, **spec)
