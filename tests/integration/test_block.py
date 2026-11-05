@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from conftest import CHANGED, GITHUB, LABEL, TARGET, TEST_SCRIPT, Sandbox
 
 TASK = "block-task"
@@ -76,7 +77,7 @@ def test_a_blocked_implementation_retries_and_reaches_a_pull_request(
 
     # A standing BLOCK stops the gate and the pull request.
     assert_refused(sandbox.orch("gate", TASK), "Blocking review")
-    assert_refused(sandbox.orch("pr", TASK), "ready or conflict")
+    assert_refused(sandbox.orch("pr", TASK, unchecked=True), "ready or conflict")
     assert sandbox.remote_sha(f"task/{TASK}") is None
     assert sandbox.gh_calls() == []
 

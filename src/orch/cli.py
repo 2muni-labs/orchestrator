@@ -104,6 +104,9 @@ def _parser() -> argparse.ArgumentParser:
     wait.add_argument("--max-wait", type=_positive_int, default=90)
     commands.add_parser("next")
     commands.add_parser("status").add_argument("--human", action="store_true")
+    watch_parser = commands.add_parser("watch")
+    watch_parser.add_argument("--interval", type=_positive_int, default=2)
+    watch_parser.add_argument("--once", action="store_true")
     return parser
 
 
@@ -235,6 +238,8 @@ def _command(
             "worktree": task.worktree,
             "base_sha": task.base_sha,
         }
+    if command == "watch":
+        raise NotImplementedError
     if command == "status":
         tasks = store.list_tasks(conn, target=session_target)
         chains = scheduler.blocked_chains(conn, target=session_target)

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+
 from conftest import CHANGED, TARGET, Sandbox
 
 TASK = "fault-task"
@@ -106,7 +107,7 @@ def test_a_usage_limit_blocks_and_resume_keeps_the_attempt(
 
     # A blocked task cannot retry or go through the gates.
     assert sandbox.orch("retry", TASK).code == 64
-    assert sandbox.orch("gate", TASK).code == 64
+    assert sandbox.orch("gate", TASK, unchecked=True).code == 64
     assert sandbox.state(TASK) == "blocked"
 
     # Leave an untracked file, to tell a reset from --keep.
@@ -188,7 +189,7 @@ def test_a_timeout_stops_the_agent_and_rejects_its_report(
     assert wait_until_gone(run["pid"])
 
     # A timeout is a failure with evidence: the gate refuses, retry is open.
-    assert sandbox.orch("gate", TASK).code == 64
+    assert sandbox.orch("gate", TASK, unchecked=True).code == 64
     assert sandbox.ok("retry", TASK)["state"] == "reserved"
     assert sandbox.status(TASK)["attempt"] == 2
 
@@ -237,7 +238,7 @@ def test_a_change_out_of_scope_fails_the_run_and_records_the_path(
     assert result_file(sandbox)["out_of_scope_changes"] == [path]
 
     # Nothing is committed or pushed, and a retry removes the stray file.
-    assert sandbox.orch("gate", TASK).code == 64
+    assert sandbox.orch("gate", TASK, unchecked=True).code == 64
     assert sandbox.head(worktree) == test_sha
     assert sandbox.remote_sha(f"task/{TASK}") is None
     assert (worktree / path).exists()
@@ -284,7 +285,10 @@ def test_a_discarded_dependency_blocks_the_chain_and_resume_keeps_it_blocked(
     lines = human.stdout.splitlines()
     assert f"dep-task blocked: {TASK}" in lines
     assert "last-task queued: dep-task" in lines
-    assert f"{TASK} discarded" in lines
+    # Each task line now ends with the elapsed time and the head commit.
+    assert any(
+        line.startswith(f"{TASK} discarded ") and line.endswith(" -") for line in lines
+    )
 
     # resume cannot get past the discarded task, and the worktree is left alone.
     marker = dependent / "lib" / "work.py"

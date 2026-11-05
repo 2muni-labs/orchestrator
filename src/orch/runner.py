@@ -170,6 +170,7 @@ def run_task(
     config: Config,
     paths: TargetPaths,
     environ: Mapping[str, str],
+    on_started: Callable[[], None] | None = None,
 ) -> TaskResult:
     """Run a reserved task to its end, record the result, and move it to judging."""
     task = store.get_task(conn, task_id)

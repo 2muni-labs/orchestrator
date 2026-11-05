@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from transitions import check_call
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FAKE_GH = REPO_ROOT / "tests" / "fake_gh" / "gh"
 FAKE_AGENTS = REPO_ROOT / "tests" / "fake_agents"
@@ -207,9 +209,11 @@ class Sandbox:
         stdin: str = "",
         env: Mapping[str, str] | None = None,
         unset: Iterable[str] = (),
+        unchecked: bool = False,
     ) -> Result:
         """Run orch as a process and hold it to the output contract."""
         variables = {**self.env, **(env or {})}
+        check_call(Path(variables["ORCH_HOME"]) / "state.db", args, unchecked=unchecked)
         for name in unset:
             variables.pop(name, None)
         problems = environment_problems(variables, FAKE_GH)
@@ -225,7 +229,7 @@ class Sandbox:
         )
         assert TOKEN not in done.stdout + done.stderr
         data = None
-        if "--human" not in args:
+        if "--human" not in args and args[0] != "watch":
             assert done.stdout.endswith("\n"), done
             assert done.stdout.count("\n") == 1, done
             data = json.loads(done.stdout)

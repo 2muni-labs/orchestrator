@@ -1348,3 +1348,75 @@ def test_module_uses_only_the_standard_library_and_orch() -> None:
         elif isinstance(node, ast.Constant) and node.value == "git":
             pytest.fail("runner.py must not name the git command")
     assert imported - {"orch"} <= sys.stdlib_module_names
+
+
+# on_started
+
+
+def run_with_callback(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    callback: object,
+) -> results.TaskResult:
+    return run_task(
+        conn,
+        TASK,
+        target=make_target(repo),
+        config=make_config(),
+        paths=paths,
+        environ=make_env(home, "success"),
+        on_started=callback,
+    )
+
+
+def test_on_started_runs_once_after_running_is_committed_and_before_the_agent(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    seen: list[tuple[TaskState, bool, bool]] = []
+
+    def callback() -> None:
+        seen.append(
+            (
+                task_of(conn).state,
+                conn.in_transaction,
+                (worktree / "src" / "fake_change.py").exists(),
+            )
+        )
+
+    result = run_with_callback(conn, repo, paths, home, callback)
+    assert result.status == "DONE"
+    assert seen == [(TaskState.RUNNING, False, False)]
+    assert task_of(conn).state is TaskState.JUDGING
+
+
+def test_a_failing_on_started_changes_nothing(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    def callback() -> None:
+        raise OSError("disk full")
+
+    result = run_with_callback(conn, repo, paths, home, callback)
+    assert result.status == "DONE"
+    assert result.failure_reason is None
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).outcome == "DONE"
+
+
+def test_on_started_is_optional(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    assert run(conn, repo, paths, home, "success").status == "DONE"
