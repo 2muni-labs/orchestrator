@@ -66,6 +66,35 @@ DENY = [
     "cat /Users/someone/.orch/secrets/app.pem",
     "cp x ~/.orch/secrets/y",
     "openssl x -in ~/.orch/secrets/a.pem",
+    # options with values before the rule (position independent)
+    "gh -R o/r pr merge 3",
+    "gh --repo o/r pr merge 3",
+    "gh pr -R o/r merge 3",
+    "gh -R o/r api repos/o/r/pulls/3/merge -X PUT",
+    "gh --hostname h api repos/o/r/pulls/3/merge",
+    "git --git-dir x push -f origin y",
+    "git --work-tree w --git-dir x push --force origin y",
+    "git push origin y --force",
+    "git push origin y -f",
+    "git -C /repo push origin +y",
+    "env -u X codex exec",
+    "sudo -u bob codex",
+    "time -p codex exec",
+    # substitutions inside unquoted heredoc bodies
+    "cat <<EOF\n$(codex exec)\nEOF",
+    "cat <<EOF\nx `codex exec` y\nEOF",
+    "cat <<-EOF\n\t$(git push -f origin x)\n\tEOF",
+    "cat <<EOF\nit's $(gh pr merge 3)\nEOF",
+    "cat <<EOF\n$(codex exec\nEOF",
+    # unquoted delimiters inside a quoted substitution: the body runs $(...)
+    'git commit -m "$(cat <<EOF\nmsg $(codex exec)\nEOF\n)"',
+    'git commit -m "$(cat <<EOF\nmsg `codex exec`\nEOF\n)"',
+    'gh pr create --body "$(cat <<EOF\n$(gh pr merge 3)\nEOF\n)"',
+    # commands after a heredoc inside a substitution are still judged
+    "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"; codex exec",
+    # a heredoc operator inside quotes is not a heredoc
+    'echo "a <<EOF b"\ncodex exec',
+    "echo 'a <<EOF b'\ncodex exec",
     # unparsable
     "echo 'unterminated",
     'echo "unterminated',
@@ -108,6 +137,31 @@ ALLOW = [
     ),
     'cat <<-"END"\n\tit\'s fine\n\tEND\nls',
     "cat <<< 'codex'",
+    "cat <<'EOF'\n$(codex exec)\nEOF",
+    'cat <<"EOF"\n`codex exec`\nEOF',
+    "cat <<EOF\nrun codex exec, then gh pr merge 3\nEOF",
+    "cat <<EOF\nit's $(date) now\nEOF",
+    "gh pr view 3 -R o/r",
+    "gh -R o/r pr list",
+    "gh -R o/r issue view 3",
+    "git -C /repo log --format=%H",
+    "git --git-dir x push origin y",
+    "env -u X ls",
+    "sudo -u bob ls",
+    # the commit and PR body forms the main agent uses every day
+    "git commit -m \"$(cat <<'EOF'\nIt's a message (#1)\nEOF\n)\"",
+    (
+        "git commit -m \"$(cat <<'EOF'\nFix x\n\ncodex is mentioned\n"
+        'gh pr merge 3\ngit push --force\nEOF\n)"'
+    ),
+    (
+        "gh pr create --title t --body \"$(cat <<'EOF'\n## Summary\n"
+        "- main's rule (#75)\nEOF\n)\""
+    ),
+    'git commit -m "$(cat <<EOF\nIt\'s $(date) (#1)\nEOF\n)"',
+    # a quoted delimiter makes the body plain text, even $(...) and backticks
+    "cat <<'EOF'\n`codex exec`\nit's (x\nEOF",
+    'cat <<"EOF"\n$(gh pr merge 3)\nEOF',
 ]
 
 
@@ -186,9 +240,16 @@ def test_handle_asks() -> None:
     )
 
 
-def test_handle_never_allows_explicitly() -> None:
-    for command in ALLOW:
-        assert "allow" not in handle(payload(command), {"HOME": HOME})
+@pytest.mark.parametrize("command", ALLOW)
+def test_handle_passes_allowed_commands_without_output(command: str) -> None:
+    assert handle(payload(command), {"HOME": HOME}) == ""
+
+
+@pytest.mark.parametrize("command", DENY)
+def test_handle_denies_every_deny_case_and_never_allows(command: str) -> None:
+    text = handle(payload(command), {"HOME": HOME})
+    assert output(text)["permissionDecision"] == "deny"
+    assert '"allow"' not in text
 
 
 def test_handle_passes_home_from_environ() -> None:
