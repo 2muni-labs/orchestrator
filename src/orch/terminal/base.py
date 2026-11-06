@@ -1,6 +1,13 @@
 """Terminal adapter boundary and the record of panes orch created."""
 
-from dataclasses import dataclass
+import fcntl
+import json
+import os
+import re
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -16,12 +23,53 @@ class PaneRecord:
 
 
 def record_path(target_root: Path) -> Path:
-    raise NotImplementedError
+    return target_root / "terminal.json"
+
+
+def _valid_pane(pane: object) -> bool:
+    return isinstance(pane, str) and re.fullmatch(r"%[0-9]+", pane) is not None
+
+
+@contextmanager
+def _record_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def load_record(path: Path) -> PaneRecord | None:
-    raise NotImplementedError
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise TerminalError(f"Cannot read terminal record: {exc}") from exc
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("session"), str)
+        or not _valid_pane(data.get("main_pane"))
+        or not isinstance(data.get("created"), list)
+        or not all(_valid_pane(pane) for pane in data["created"])
+    ):
+        raise TerminalError("Invalid terminal record")
+    return PaneRecord(data["session"], data["main_pane"], tuple(data["created"]))
 
 
 def save_record(path: Path, record: PaneRecord) -> None:
-    raise NotImplementedError
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = stream.name
+            json.dump(asdict(record), stream)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
