@@ -9,13 +9,25 @@ import stat
 import subprocess
 import sys
 import tomllib
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from orch import config, github, prflow, render, store, waiter, watch
+from orch import (
+    config,
+    credentials,
+    github,
+    notify,
+    prflow,
+    render,
+    scheduler,
+    store,
+    waiter,
+    watch,
+)
 from orch.cli import main
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
@@ -163,11 +175,34 @@ def orch(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) ->
             check_call(config.state_db_path(orch_home), args, unchecked=unchecked)
         monkeypatch.setattr(sys, "stdin", io.StringIO(stdin))
         code = main(list(args))
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
+        # Keep stderr for the test: reading the output must not discard warnings.
+        sys.stderr.write(captured.err)
+        out = captured.out
         assert out.endswith("\n") and out.count("\n") == 1, out
         return code, json.loads(out)
 
     return call
+
+
+def test_the_orch_fixture_keeps_stderr_for_the_test(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    insert(env, state=TaskState.PREPARED)
+
+    def failed(path: Path, text: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(render, "write_todo", failed)
+    code, data = orch("next")
+    assert code == 0, data
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "TODO.md 갱신 실패" in captured.err
+    assert "disk full" in captured.err
 
 
 def assert_error(result: tuple[int, dict[str, object]], code: int, error: str) -> None:
@@ -998,6 +1033,7 @@ def test_pr_passes_the_paths_and_the_token(
         "pr_url": URL,
         "conflicts": [],
         "detail": None,
+        "user_check": False,
         "head_sha": None,
     }
     call = pr_calls[1]
@@ -2311,3 +2347,354 @@ def test_each_frame_reads_the_current_state(
 @pytest.mark.parametrize("value", ["0", "-1", "x"])
 def test_watch_refuses_a_bad_interval(orch: Call, value: str) -> None:
     assert_error(orch("watch", "--interval", value), USAGE, "usage")
+
+
+# notifications
+
+TOPIC = "zq7Kx9mP2vLw4RtY8nBcHs3D"
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch: pytest.MonkeyPatch) -> object:
+    """Fail the test if anything reaches the real urlopen."""
+    calls: list[object] = []
+
+    def guard(*args: object, **kwargs: object) -> None:
+        calls.append(args)
+        raise AssertionError("network used")
+
+    monkeypatch.setattr(urllib.request, "urlopen", guard)
+    yield calls
+    assert calls == []
+
+
+def write_notify_config(env: Env, mode: int = 0o600, method: str = "ntfy") -> None:
+    text = f'[notify]\nmethod = "{method}"\n'
+    if method == "ntfy":
+        text += f'topic = "{TOPIC}"\n'
+    path = config.config_path(env.orch_home)
+    write(path, text)
+    path.chmod(mode)
+
+
+@pytest.fixture
+def sent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def fake(event: str, **kwargs: object) -> notify.Outcome:
+        calls.append({"event": event, **kwargs})
+        return notify.Outcome.SENT
+
+    monkeypatch.setattr(notify, "send", fake)
+    return calls
+
+
+def assert_notified(
+    call: dict[str, object], env: Env, event: str, *, task_id: str = TASK
+) -> None:
+    assert call["event"] == event
+    assert call["target"] == TARGET
+    assert call["task_id"] == task_id
+    assert call["orch_home"] == env.orch_home
+    assert call["home"] == env.home
+    assert isinstance(call["settings"], config.Config)
+    now = call["now"]
+    assert now.tzinfo is not None
+    assert call.get("dedup", True) is True
+    assert "transport" not in call
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("scenario", "code", "event"),
+    [
+        ("blocked", 30, "blocked"),
+        ("usage_limit", 40, "quota"),
+        ("success", 0, None),
+        ("partial", 10, None),
+        ("report_missing", 20, None),
+        ("out_of_scope", 20, None),
+    ],
+)
+def test_run_notifies_only_when_it_moves_to_blocked(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    sent: list[dict[str, object]],
+    scenario: str,
+    code: int,
+    event: str | None,
+) -> None:
+    reserve(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", scenario)
+    result = orch("run", TASK)
+    assert result[0] == code, result
+    if event is None:
+        assert sent == []
+    else:
+        assert len(sent) == 1
+        assert_notified(sent[0], env, event)
+        assert state_of(env) is TaskState.BLOCKED
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize("scenario", ["blocked", "usage_limit"])
+def test_a_failing_notification_does_not_change_the_run(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scenario: str,
+) -> None:
+    write_notify_config(env)
+    calls: list[str] = []
+
+    def failed(event: str, **kwargs: object) -> None:
+        calls.append(event)
+        raise RuntimeError(f"cannot reach https://ntfy.sh/{TOPIC}")
+
+    monkeypatch.setattr(notify, "send", failed)
+    reserve(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", scenario)
+    code, data = orch("run", TASK)
+    err = capsys.readouterr().err
+    assert len(calls) == 1
+    assert code == (30 if scenario == "blocked" else 40)
+    assert data["ok"] is True
+    assert data["state"] == "blocked"
+    assert state_of(env) is TaskState.BLOCKED
+    assert TOPIC not in json.dumps(data)
+    assert TOPIC not in err
+    assert re.search("[가-힣]", err)
+
+
+@pytest.mark.usefixtures("target")
+def test_a_blocked_run_with_notifications_disabled_sends_nothing(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reserve(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "blocked")
+    code, data = orch("run", TASK)
+    assert code == 30, data
+    assert data["state"] == "blocked"
+
+
+@pytest.mark.usefixtures("target")
+def test_pr_notifies_a_user_check_and_reports_it(
+    orch: Call,
+    env: Env,
+    pr_calls: list[dict[str, object]],
+    sent: list[dict[str, object]],
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    pr_calls[0]["report"][0] = PullRequestReport(
+        state=TaskState.PR_OPEN, pr_url=URL, user_check=True
+    )
+    code, data = orch("pr", TASK)
+    assert code == 0, data
+    assert data["user_check"] is True
+    assert len(sent) == 1
+    assert_notified(sent[0], env, "needs_review")
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    "report",
+    [
+        PullRequestReport(state=TaskState.PR_OPEN, pr_url=URL),
+        PullRequestReport(state=TaskState.CONFLICT, conflicts=("src/app.py",)),
+        PullRequestReport(state=TaskState.JUDGING, detail="G2 failed"),
+        PullRequestReport(state=TaskState.CONFLICT, user_check=True),
+    ],
+)
+def test_pr_does_not_notify_without_an_open_user_check(
+    orch: Call,
+    env: Env,
+    pr_calls: list[dict[str, object]],
+    sent: list[dict[str, object]],
+    report: PullRequestReport,
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    pr_calls[0]["report"][0] = report
+    code, data = orch("pr", TASK)
+    assert code == (0 if report.state is TaskState.PR_OPEN else 20), data
+    assert data["user_check"] is report.user_check
+    assert sent == []
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failing_needs_review_notification_does_not_change_the_pr(
+    orch: Call,
+    env: Env,
+    pr_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_notify_config(env)
+    make_ready(orch, env)
+    add_token_script(env)
+    pr_calls[0]["report"][0] = PullRequestReport(
+        state=TaskState.PR_OPEN, pr_url=URL, user_check=True
+    )
+
+    calls: list[str] = []
+
+    def failed(event: str, **kwargs: object) -> None:
+        calls.append(event)
+        raise RuntimeError(f"{TOPIC} {TOKEN}")
+
+    monkeypatch.setattr(notify, "send", failed)
+    code, data = orch("pr", TASK)
+    err = capsys.readouterr().err
+    assert calls == ["needs_review"]
+    assert code == 0, data
+    assert data["state"] == "pr_open"
+    assert data["pr_url"] == URL
+    assert data["user_check"] is True
+    assert state_of(env) is TaskState.READY
+    assert TOPIC not in err and TOKEN not in err
+    assert TOPIC not in json.dumps(data)
+
+
+@pytest.mark.usefixtures("target")
+def test_the_topic_is_removed_from_command_output(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_notify_config(env)
+
+    def failed(*args: object, **kwargs: object) -> None:
+        raise RuntimeError(f"leaked {TOPIC} here")
+
+    monkeypatch.setattr(scheduler, "next_reservations", failed)
+    result = orch("next")
+    assert_error(result, INTERNAL, "internal")
+    assert TOPIC not in json.dumps(result[1])
+    assert "leaked [REDACTED] here" in str(result[1]["message"])
+
+
+@pytest.mark.usefixtures("target")
+def test_pr_issues_the_token_through_credentials(
+    orch: Call,
+    env: Env,
+    pr_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_ready(orch, env)
+    issued: list[Path] = []
+
+    def fake_issue(orch_home: Path, secrets: list[str]) -> str:
+        issued.append(orch_home)
+        secrets.append("fake-issued-token")
+        return "fake-issued-token"
+
+    monkeypatch.setattr(credentials, "issue_token", fake_issue)
+    code, data = orch("pr", TASK)
+    assert code == 0, data
+    assert issued == [env.orch_home]
+    assert pr_calls[1]["token"] == "fake-issued-token"
+
+
+# orch notify test
+
+
+class FakeUrlopen:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.requests: list[tuple[urllib.request.Request, float]] = []
+        self.error = error
+
+    def __call__(self, request: urllib.request.Request, timeout: float) -> object:
+        self.requests.append((request, timeout))
+        if self.error is not None:
+            raise self.error
+        return io.BytesIO(b"{}")
+
+
+def notify_test(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, fake: FakeUrlopen
+) -> tuple[int, dict[str, object]]:
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return orch("notify", "test")
+
+
+def test_notify_test_sends_without_deduplication_or_a_hub(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_notify_config(env)
+    monkeypatch.delenv("ORCH_HUB")
+    fake = FakeUrlopen()
+    first = notify_test(orch, monkeypatch, fake)
+    second = notify_test(orch, monkeypatch, fake)
+    assert first == (0, {"ok": True, "result": "sent"})
+    assert second == (0, {"ok": True, "result": "sent"})
+    assert len(fake.requests) == 2
+    request, timeout = fake.requests[0]
+    assert request.full_url == "https://ntfy.sh/" + TOPIC
+    assert request.get_method() == "POST"
+    assert request.data == b"orch test"
+    assert timeout == 5
+    assert not config.notify_state_path(env.orch_home).exists()
+    assert not config.state_db_path(env.orch_home).exists()
+
+
+def test_notify_test_ignores_orch_target(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_notify_config(env)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    fake = FakeUrlopen()
+    assert notify_test(orch, monkeypatch, fake) == (0, {"ok": True, "result": "sent"})
+    assert fake.requests[0][0].data == b"orch test"
+
+
+@pytest.mark.parametrize(
+    ("setup", "result"),
+    [
+        ("missing", "disabled"),
+        ("none", "disabled"),
+        ("open", "refused_permissions"),
+        ("failing", "failed"),
+    ],
+)
+def test_notify_test_reports_why_nothing_was_sent(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    setup: str,
+    result: str,
+) -> None:
+    if setup == "none":
+        write_notify_config(env, method="none")
+    elif setup == "open":
+        write_notify_config(env, 0o644)
+    elif setup == "failing":
+        write_notify_config(env)
+    error = OSError(f"POST https://ntfy.sh/{TOPIC} failed")
+    fake = FakeUrlopen(error if setup == "failing" else None)
+    code, data = notify_test(orch, monkeypatch, fake)
+    err = capsys.readouterr().err
+    assert code == 20, data
+    assert set(data) == {"ok", "error", "result", "message"}
+    assert data["ok"] is False
+    assert data["error"] == result
+    assert data["result"] == result
+    assert re.search("[가-힣]", str(data["message"]))
+    assert TOPIC not in json.dumps(data)
+    assert TOPIC not in err
+    assert len(fake.requests) == (1 if setup == "failing" else 0)
+    assert not config.notify_state_path(env.orch_home).exists()
+
+
+def test_notify_test_with_a_bad_config_is_refused(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(config.config_path(env.orch_home), '[notify]\nmethod = "ntfy"\n')
+    result = notify_test(orch, monkeypatch, FakeUrlopen())
+    assert_error(result, USAGE, "refused")
+
+
+@pytest.mark.parametrize("args", [("notify",), ("notify", "nosuch")])
+def test_notify_needs_the_test_subcommand(orch: Call, args: tuple[str, ...]) -> None:
+    assert_error(orch(*args), USAGE, "usage")

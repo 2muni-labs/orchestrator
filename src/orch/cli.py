@@ -5,7 +5,6 @@ import importlib.metadata
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import traceback
 from contextlib import closing
@@ -15,9 +14,11 @@ from pathlib import Path
 
 from orch import (
     config,
+    credentials,
     gate,
     gitops,
     lifecycle,
+    notify,
     prflow,
     render,
     review,
@@ -121,6 +122,9 @@ def _parser() -> argparse.ArgumentParser:
     wait.add_argument("--interval", type=_positive_int, default=60)
     wait.add_argument("--max-wait", type=_positive_int, default=90)
     commands.add_parser("next")
+    commands.add_parser("notify").add_subparsers(
+        dest="notify_command", required=True
+    ).add_parser("test")
     commands.add_parser("status").add_argument("--human", action="store_true")
     watch_parser = commands.add_parser("watch")
     watch_parser.add_argument("--interval", type=_positive_int, default=2)
@@ -185,21 +189,35 @@ def _load_spec(paths: config.TargetPaths, task_id: str) -> taskfile.TaskSpec:
         raise taskfile.TaskFileError(str(exc)) from exc
 
 
-def _token(orch_home: Path, secrets: list[str]) -> str:
+def _send_notification(
+    event: str,
+    *,
+    settings: config.Config,
+    orch_home: Path,
+    home: Path,
+    secrets: list[str],
+    target: str = "",
+    task_id: str = "",
+    dedup: bool = True,
+) -> notify.Outcome:
     try:
-        result = subprocess.run(
-            [str(orch_home / "bin" / "ghapp-token.sh")],
-            capture_output=True,
-            text=True,
-            timeout=60,
+        return notify.send(
+            event,
+            settings=settings,
+            orch_home=orch_home,
+            home=home,
+            now=datetime.now(UTC),
+            target=target,
+            task_id=task_id,
+            dedup=dedup,
         )
-    except Exception:
-        raise RuntimeError("Token script could not be executed") from None
-    token = result.stdout.strip()
-    if result.returncode != 0 or not token:
-        raise RuntimeError("Token script failed or returned an empty token")
-    secrets.append(token)
-    return token
+    except Exception as exc:
+        try:
+            message = credentials.redact_secrets(f"알림 전송 실패: {exc}", secrets)
+            print(" ".join(message.splitlines()), file=sys.stderr)
+        except Exception:
+            pass
+        return notify.Outcome.FAILED
 
 
 def _refresh_todos(
@@ -207,7 +225,7 @@ def _refresh_todos(
 ) -> None:
     def warn(exc: Exception) -> None:
         try:
-            message = _redact(f"TODO.md 갱신 실패: {exc}", secrets)
+            message = credentials.redact_secrets(f"TODO.md 갱신 실패: {exc}", secrets)
             print(" ".join(message.splitlines()), file=sys.stderr)
         except Exception:
             pass
@@ -235,6 +253,31 @@ def _execute(
 ) -> tuple[int, dict[str, object]]:
     orch_home, hub = _environment(args.command)
     home = Path.home()
+    if args.command == "notify":
+        settings = config.load_config(orch_home)
+        if settings.notify_topic:
+            secrets.append(settings.notify_topic)
+        outcome = _send_notification(
+            "test",
+            settings=settings,
+            orch_home=orch_home,
+            home=home,
+            secrets=secrets,
+            dedup=False,
+        )
+        if outcome == notify.Outcome.SENT:
+            return 0, {"result": outcome.value}
+        messages = {
+            notify.Outcome.DISABLED: "알림이 비활성화되어 있습니다.",
+            notify.Outcome.REFUSED_PERMISSIONS: "설정 파일 권한을 600으로 제한하세요.",
+            notify.Outcome.FAILED: "시험 알림을 전송하지 못했습니다.",
+        }
+        return 20, {
+            "ok": False,
+            "error": outcome.value,
+            "result": outcome.value,
+            "message": messages[outcome],
+        }
     if args.command == "target":
         assert hub is not None
         target = config.add_target(
@@ -319,6 +362,8 @@ def _command(
             target = _target(hub, task.target)
 
     settings = config.load_config(orch_home)
+    if settings.notify_topic:
+        secrets.append(settings.notify_topic)
     scheduling = {"limits": settings.limits, "ttl_min": settings.reservation_ttl_min}
     if command == "next":
 
@@ -347,7 +392,7 @@ def _command(
         report = waiter.wait_for_merge(
             conn,
             task_id,
-            token=lambda: _token(orch_home, secrets),
+            token=lambda: credentials.issue_token(orch_home, secrets),
             interval_sec=args.interval,
             max_wait_min=args.max_wait,
         )
@@ -376,6 +421,16 @@ def _command(
             on_started=lambda: _refresh_todos(conn, orch_home, secrets),
         )
         state = lifecycle.settle_run(conn, task_id)
+        if state == TaskState.BLOCKED and result.status in {"BLOCKED_QUOTA", "BLOCKED"}:
+            _send_notification(
+                "quota" if result.status == "BLOCKED_QUOTA" else "blocked",
+                settings=settings,
+                orch_home=orch_home,
+                home=home,
+                secrets=secrets,
+                target=task.target,
+                task_id=task_id,
+            )
         code = {
             "DONE": 0,
             "PARTIAL": 10,
@@ -423,7 +478,7 @@ def _command(
         return 0, {"task_id": task_id, "state": state}
     token = None
     if command in {"pr", "update", "close"} or (command == "discard" and task.pr_url):
-        token = _token(orch_home, secrets)
+        token = credentials.issue_token(orch_home, secrets)
     if command == "pr":
         report = prflow.open_pull_request(
             conn,
@@ -437,6 +492,16 @@ def _command(
             orch_home=orch_home,
             resolution=args.resolution,
         )
+        if report.state == TaskState.PR_OPEN and report.user_check:
+            _send_notification(
+                "needs_review",
+                settings=settings,
+                orch_home=orch_home,
+                home=home,
+                secrets=secrets,
+                target=task.target,
+                task_id=task_id,
+            )
         return (0 if report.state == TaskState.PR_OPEN else 20), {
             "task_id": task_id,
             **asdict(report),
@@ -465,14 +530,6 @@ def _command(
     return 0, {"task_id": task_id, "state": _get_task(conn, task_id).state}
 
 
-def _redact(text: str, secrets: list[str]) -> str:
-    for token in secrets:
-        escaped = json.dumps(token, ensure_ascii=False)[1:-1]
-        text = text.replace(escaped, "[REDACTED]")
-        text = text.replace(token, "[REDACTED]")
-    return text
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run one orch command and return its exit code."""
     secrets: list[str] = []
@@ -484,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                 return code
             if args.command == "status" and args.human:
                 for line in data["lines"]:
-                    print(_redact(line, secrets))
+                    print(credentials.redact_secrets(line, secrets))
                 return code
             output = {"ok": True, **data}
         except _UsageError as exc:
@@ -522,13 +579,19 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": f"내부 오류가 발생했습니다: {exc}",
             }
-        print(_redact(json.dumps(output, ensure_ascii=False), secrets))
+        print(
+            credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
+        )
         return code
     except BaseException as exc:
         if isinstance(exc, SystemExit) and not secrets:
             raise
         try:
-            sys.stderr.write(_redact("".join(traceback.format_exception(exc)), secrets))
+            sys.stderr.write(
+                credentials.redact_secrets(
+                    "".join(traceback.format_exception(exc)), secrets
+                )
+            )
         except BaseException:
             pass
         try:
@@ -537,7 +600,11 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": "내부 오류가 발생했습니다.",
             }
-            print(_redact(json.dumps(output, ensure_ascii=False), secrets))
+            print(
+                credentials.redact_secrets(
+                    json.dumps(output, ensure_ascii=False), secrets
+                )
+            )
         except BaseException:
             pass
         return 70

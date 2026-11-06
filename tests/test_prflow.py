@@ -31,6 +31,7 @@ from orch.prflow import (
     close_task,
     open_pull_request,
     update_pull_request,
+    user_check,
 )
 from orch.results import write_review
 from orch.store import (
@@ -1852,3 +1853,161 @@ def test_module_uses_only_the_standard_library_and_orch() -> None:
         elif isinstance(node, ast.Constant) and node.value in ("git", "gh"):
             pytest.fail("prflow.py must not name the git or gh command")
     assert imported - {"orch"} <= sys.stdlib_module_names
+
+
+# user check
+
+
+@pytest.mark.parametrize(
+    ("changed", "safety", "overridden", "expected"),
+    [
+        ((), (), False, False),
+        (("src/app.py",), (), False, False),
+        (("src/app.py",), (), True, True),
+        ((), ("CLAUDE.md",), True, True),
+        (("CLAUDE.md",), ("CLAUDE.md",), False, True),
+        (("docs/CLAUDE.md",), ("CLAUDE.md",), False, False),
+        (("src/orch/notify.py",), ("src/orch/notify.py",), False, True),
+        (("src/orch/notify.pyc",), ("src/orch/notify.py",), False, False),
+        (("scripts/gate.sh",), ("scripts/**",), False, True),
+        (("scripts/a/b/c.sh",), ("scripts/**",), False, True),
+        (("scripts",), ("scripts/**",), False, True),
+        (("scriptsx/a.sh",), ("scripts/**",), False, False),
+        ((".claude/agents/r.md",), (".claude/agents/",), False, True),
+        ((".claude/settings.json",), (".claude/agents/",), False, False),
+        (("src/app.py", "scripts/run.sh"), ("CLAUDE.md", "scripts/**"), False, True),
+    ],
+)
+def test_user_check(
+    changed: tuple[str, ...],
+    safety: tuple[str, ...],
+    overridden: bool,
+    expected: bool,
+) -> None:
+    assert user_check(changed, safety, overridden=overridden) is expected
+
+
+def test_user_check_accepts_any_iterable() -> None:
+    assert user_check(iter(["CLAUDE.md"]), iter(["CLAUDE.md"]), overridden=False)
+
+
+@pytest.mark.parametrize(
+    ("safety", "expected"),
+    [
+        ((), False),
+        (("src/app.py",), True),
+        (("tests/**",), True),
+        (("src/other.py",), False),
+        (("scripts/**", "docs/"), False),
+    ],
+)
+def test_open_reports_user_check_from_the_task_changes(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    safety: tuple[str, ...],
+    expected: bool,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, safety_paths=safety)
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert report.user_check is expected
+
+
+def test_changes_on_main_do_not_count_for_user_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    move_main(repo, "scripts/gate.sh")
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, safety_paths=("scripts/**",))
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert report.user_check is False
+
+
+def test_an_overridden_block_is_a_user_check_without_safety_paths(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, TRIAGE)
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert report.user_check is True
+
+
+def test_a_passing_review_is_not_a_user_check_by_itself(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    write_review(tmp_path / "reviews" / "feat-x.json", make_review())
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert report.user_check is False
+
+
+def test_an_update_of_an_open_pull_request_reports_user_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo, "src/app.py")
+    assert update_pr(conn, repo, tmp_path).state is TaskState.CONFLICT
+    resolve_by_rebase(worktree)
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, safety_paths=("src/app.py",))
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert len(hub.comments) == 1
+    assert report.user_check is True
+
+
+def test_a_conflict_or_failed_gate_is_never_a_user_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    failing = make_target(repo, test_command="exit 1", safety_paths=("src/**",))
+    judged = open_pr(conn, repo, tmp_path, target=failing)
+    assert judged.state is TaskState.JUDGING
+    assert judged.user_check is False
+    store.transition(conn, TASK, TaskState.JUDGING, TaskState.GATING, actor="test")
+    store.transition(conn, TASK, TaskState.GATING, TaskState.READY, actor="test")
+    move_main(repo, "src/app.py")
+    conflicted = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, safety_paths=("src/**",))
+    )
+    assert conflicted.state is TaskState.CONFLICT
+    assert conflicted.user_check is False
