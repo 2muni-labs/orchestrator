@@ -49,7 +49,14 @@ def user_check(
     changed: Iterable[str], safety_paths: Iterable[str], *, overridden: bool
 ) -> bool:
     """Return True if the pull request needs the user's own check."""
-    raise NotImplementedError
+    if overridden:
+        return True
+    safety = tuple(s.removesuffix("/**").removesuffix("/") for s in safety_paths)
+    return any(
+        gate.glob_matches(path, entry) or gate.glob_matches(path, entry + "/**")
+        for path in changed
+        for entry in safety
+    )
 
 
 def open_pull_request(
@@ -141,6 +148,7 @@ def open_pull_request(
         gitops.push_task_branch(worktree, branch)
     store.update_task(conn, spec.id, pushed_sha=head)
 
+    changed = gitops.changed_paths(worktree, main_ref)
     if task.pr_url:
         body = (
             resolution
@@ -158,7 +166,7 @@ def open_pull_request(
     else:
         body = build_body(
             task,
-            changed=gitops.changed_paths(worktree, main_ref),
+            changed=changed,
             gates=store.gate_results(conn, spec.id, task.attempt),
             review=review,
             triage=triage,
@@ -178,7 +186,13 @@ def open_pull_request(
     with store.transaction(conn):
         store.update_task(conn, spec.id, pr_url=url)
         store.transition(conn, spec.id, task.state, TaskState.PR_OPEN, actor="orch")
-    return PullRequestReport(state=TaskState.PR_OPEN, pr_url=url)
+    return PullRequestReport(
+        state=TaskState.PR_OPEN,
+        pr_url=url,
+        user_check=user_check(
+            changed, target.safety_paths, overridden=triage is not None
+        ),
+    )
 
 
 def update_pull_request(
