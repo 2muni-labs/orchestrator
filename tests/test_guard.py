@@ -300,6 +300,11 @@ def test_handle_ignores_other_tools() -> None:
     assert handle(payload("codex", tool="Read"), {"HOME": HOME}) == ""
 
 
+@pytest.mark.parametrize("tool", ["Read", "Edit", "bash", "mcp__x__run"])
+def test_handle_passes_a_named_tool_other_than_bash(tool: str) -> None:
+    assert handle(payload("codex exec", tool=tool), {"HOME": HOME}) == ""
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -311,6 +316,14 @@ def test_handle_ignores_other_tools() -> None:
         json.dumps({"tool_name": "Bash", "tool_input": "ls"}),
         json.dumps({"tool_name": "Bash", "tool_input": {"command": 5}}),
         json.dumps({"tool_name": "Bash", "tool_input": {}}),
+        # the tool name must be present: only a named non-Bash tool passes
+        "{}",
+        json.dumps({"tool_input": {"command": "codex exec"}}),
+        json.dumps({"tool_input": {"command": "ls"}}),
+        json.dumps({"tool_name": None, "tool_input": {"command": "ls"}}),
+        json.dumps({"tool_name": 5, "tool_input": {"command": "ls"}}),
+        json.dumps({"tool_name": "", "tool_input": {"command": "ls"}}),
+        json.dumps({"tool_name": ["Bash"], "tool_input": {"command": "ls"}}),
     ],
 )
 def test_handle_fails_closed_on_bad_input(text: str) -> None:

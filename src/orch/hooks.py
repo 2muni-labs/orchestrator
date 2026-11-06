@@ -202,3 +202,8 @@ def handle_notification(
     except Exception as exc:
         _log(environ, now, "notification", type(exc).__name__)
     return ""
+
+
+def run_hook(name: str) -> int:
+    """Run one Claude Code hook in its own output format (technical design 5.3)."""
+    raise NotImplementedError
