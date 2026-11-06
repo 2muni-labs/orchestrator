@@ -97,6 +97,8 @@ You run tasks through the installed `orch`. `R` below stands for
   `.venv/bin/orch`. Changed code runs only after a merge, a new tag and an upgrade the
   user approves: confirm that `orch status` shows no running task, back up
   `~/.orch/state.db`, then `uv tool install --reinstall` the new tag.
+- The user creates a version tag only after the version pull request merges, on
+  the resulting `main` commit. Never ask for a tag before that merge.
 - `.claude/settings.local.json` in the hub clone sets `ORCH_HUB` and `ORCH_TARGET` for
   the session. It is ignored by git, and it replaces `orch open` until M13.
 - `orch` refuses a `modify` that reaches a shared file, so a pull request changing one
@@ -126,6 +128,12 @@ You run tasks through the installed `orch`. `R` below stands for
   its reason in the commit message.
 - Pass test inputs through the real parser once, because `NotImplementedError` can
   hide an input error.
+- Call state-changing `orch` commands in tests through the `orch` fixture in
+  `tests/test_cli.py` or the integration `Sandbox`. Both check the transition with
+  `models.can_transition` before the call (`tests/transitions.py`). Mark a call that
+  expects a refusal, or whose command is replaced with a fake, `unchecked=True`. In a
+  test with several calls, make every call before asserting on behavior the stubs
+  lack, so that an early failure cannot hide a later call from the check.
 - Before naming a function in a spec, read its code and confirm its behavior matches
   the spec's intent.
 - When a test expects a result from an existing module, such as a classification or
