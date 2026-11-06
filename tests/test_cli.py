@@ -2698,3 +2698,399 @@ def test_notify_test_with_a_bad_config_is_refused(
 @pytest.mark.parametrize("args", [("notify",), ("notify", "nosuch")])
 def test_notify_needs_the_test_subcommand(orch: Call, args: tuple[str, ...]) -> None:
     assert_error(orch(*args), USAGE, "usage")
+
+
+# orch open and orch watch --panels (M13)
+
+from orch import cli as cli_module  # noqa: E402
+from orch import launcher  # noqa: E402
+from orch.terminal import (  # noqa: E402
+    PaneRecord,
+    TerminalError,
+    record_path,
+    save_record,
+)
+
+CLAUDE_BIN = "/opt/claude/bin/claude"
+
+
+class FakeTerminal:
+    def __init__(self, session: str, record: Path, *, exists: bool = False) -> None:
+        self.session = session
+        self.record = record
+        self.exists = exists
+        self.calls: list[tuple[object, ...]] = []
+        self.next_id = 1
+        self.fail_open = False
+
+    def _pane(self) -> str:
+        pane = f"%{self.next_id}"
+        self.next_id += 1
+        return pane
+
+    def has_session(self) -> bool:
+        self.calls.append(("has_session",))
+        return self.exists
+
+    def open_session(self, *, cwd: Path, env: dict[str, str], command: object) -> str:
+        self.calls.append(("open", cwd, dict(env), list(command)))  # type: ignore[call-overload]
+        if self.fail_open:
+            raise TerminalError("duplicate session")
+        return self._pane()
+
+    def terminal_split(
+        self,
+        command: object,
+        *,
+        target: str | None = None,
+        vertical: bool = False,
+        percent: int | None = None,
+    ) -> str:
+        self.calls.append(("split", list(command), target, vertical, percent))  # type: ignore[call-overload]
+        return self._pane()
+
+    def close_pane(self, pane: str) -> None:
+        self.calls.append(("close", pane))
+
+    def live_panes(self) -> frozenset[str]:
+        self.calls.append(("live",))
+        return frozenset()
+
+    def attach_argv(self, environ: object) -> list[str]:
+        return ["tmux", "attach-session", "-t", f"={self.session}"]
+
+
+class Terminals(list[FakeTerminal]):
+    """Terminals made by the patched factory, with options for the next one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.options: dict[str, bool] = {"exists": False, "fail_open": False}
+
+
+@pytest.fixture
+def terminals(monkeypatch: pytest.MonkeyPatch) -> Terminals:
+    made = Terminals()
+
+    def factory(session: str, record: Path) -> FakeTerminal:
+        terminal = FakeTerminal(session, record, exists=made.options["exists"])
+        terminal.fail_open = made.options["fail_open"]
+        made.append(terminal)
+        return terminal
+
+    monkeypatch.setattr(cli_module, "_terminal", factory)
+    monkeypatch.setattr(cli_module, "_interactive", lambda: False)
+    return made
+
+
+@pytest.fixture
+def openable(env: Env, monkeypatch: pytest.MonkeyPatch, target: None) -> None:
+    write(env.hub / "config" / "settings.json", "{}\n")
+    write(env.orch_home / "config", f'[agents]\nclaude = "{CLAUDE_BIN}"\n')
+    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: "2.1.319")
+
+
+def open_options(terminals: list[FakeTerminal]) -> dict[str, bool]:
+    assert isinstance(terminals, Terminals)
+    return terminals.options
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_starts_the_main_session_and_panels(
+    orch: Call, env: Env, repo: Path, terminals: list[FakeTerminal]
+) -> None:
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "target": TARGET,
+        "session": f"orch-{TARGET}",
+        "opened": True,
+        "warnings": [],
+        "attach": False,
+    }
+    [terminal] = terminals
+    assert terminal.session == f"orch-{TARGET}"
+    assert terminal.record == record_path(env.paths.root)
+    assert terminal.calls == [
+        ("has_session",),
+        (
+            "open",
+            repo,
+            {
+                "ORCH_TARGET": TARGET,
+                "ORCH_HUB": str(env.hub),
+                "ORCH_HOME": str(env.orch_home),
+            },
+            [
+                CLAUDE_BIN,
+                "--model",
+                "claude-opus-5-5",
+                "--settings",
+                str(env.hub / "config" / "settings.json"),
+                "--add-dir",
+                str(env.paths.root),
+                "--remote-control",
+            ],
+        ),
+        ("split", ["orch", "watch", "--panels"], "%1", False, 40),
+        (
+            "split",
+            ["tail", "-F", str(env.paths.logs / "subagents.log")],
+            "%2",
+            True,
+            30,
+        ),
+    ]
+    assert env.paths.logs.is_dir()
+    assert not config.state_db_path(env.orch_home).exists()
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_reattaches_to_an_existing_session(
+    orch: Call, terminals: list[FakeTerminal]
+) -> None:
+    open_options(terminals)["exists"] = True
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data["opened"] is False
+    assert terminals[0].calls == [("has_session",)]
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_reports_version_and_dirty_warnings(
+    orch: Call,
+    repo: Path,
+    terminals: list[FakeTerminal],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: "2.2.0")
+    write(repo / "scratch.txt")
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    warnings = data["warnings"]
+    assert isinstance(warnings, list) and len(warnings) == 2
+    assert warnings[0] == launcher.version_warning("2.2.0")
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_passes_the_probed_version_and_claude_path(
+    orch: Call, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Path] = []
+
+    def probe(claude: Path) -> None:
+        seen.append(claude)
+        return None
+
+    monkeypatch.setattr(launcher, "probe_claude_version", probe)
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert seen == [Path(CLAUDE_BIN)]
+    assert data["warnings"] == [launcher.version_warning(None)]
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_attaches_after_printing_json(
+    terminals: list[FakeTerminal],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, list[str], str]] = []
+
+    def execvp(file: str, argv: list[str]) -> None:
+        calls.append((file, list(argv), capsys.readouterr().out))
+
+    monkeypatch.setattr(cli_module, "_interactive", lambda: True)
+    monkeypatch.setattr(os, "execvp", execvp)
+    assert main(["open", TARGET]) == 0
+    [(file, argv, printed)] = calls
+    assert file == "tmux"
+    assert argv == ["tmux", "attach-session", "-t", f"=orch-{TARGET}"]
+    data = json.loads(printed)
+    assert data["ok"] is True and data["attach"] is True
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_attach_failure_exits_70(
+    terminals: list[FakeTerminal],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def execvp(file: str, argv: list[str]) -> None:
+        raise OSError("no tmux")
+
+    monkeypatch.setattr(cli_module, "_interactive", lambda: True)
+    monkeypatch.setattr(os, "execvp", execvp)
+    assert main(["open", TARGET]) == INTERNAL
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["attach"] is True
+    assert captured.err.strip()
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_no_attach_skips_exec(
+    orch: Call, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def execvp(file: str, argv: list[str]) -> None:
+        raise AssertionError("must not attach")
+
+    monkeypatch.setattr(cli_module, "_interactive", lambda: True)
+    monkeypatch.setattr(os, "execvp", execvp)
+    code, data = orch("open", TARGET, "--no-attach")
+    assert code == 0, data
+    assert data["attach"] is False
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_without_a_claude_path(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    write(env.orch_home / "config", "")
+    assert_error(orch("open", TARGET), USAGE, "refused")
+    assert all(call[0] != "open" for t in terminals for call in t.calls)
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_an_unregistered_target(
+    orch: Call, terminals: list[FakeTerminal]
+) -> None:
+    assert_error(orch("open", "other"), USAGE, "refused")
+    assert terminals == []
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_without_hook_settings(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    (env.hub / "config" / "settings.json").unlink()
+    assert_error(orch("open", TARGET), USAGE, "refused")
+    assert all(call[0] != "open" for t in terminals for call in t.calls)
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_requires_the_hub(
+    orch: Call, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("open", TARGET), USAGE, "usage")
+    assert terminals == []
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_a_terminal_failure(
+    orch: Call, terminals: list[FakeTerminal]
+) -> None:
+    open_options(terminals)["fail_open"] = True
+    assert_error(orch("open", TARGET), USAGE, "refused")
+
+
+def test_the_real_terminal_factory(tmp_path: Path) -> None:
+    terminal = cli_module._terminal("orch-x", tmp_path / "terminal.json")
+    assert isinstance(terminal, cli_module.TmuxTerminal)
+
+
+def test_watch_panels_requires_tmux_and_a_target(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, terminals: list[FakeTerminal]
+) -> None:
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    assert_error(orch("watch", "--panels", "--once", unchecked=True), USAGE, "usage")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
+    monkeypatch.delenv("ORCH_TARGET")
+    assert_error(orch("watch", "--panels", "--once", unchecked=True), USAGE, "usage")
+    assert terminals == []
+
+
+def run_panels_tick(
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    terminals: list[FakeTerminal],
+    pane: str | None,
+) -> FakeTerminal:
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    if pane is None:
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+    else:
+        monkeypatch.setenv("TMUX_PANE", pane)
+    seen: dict[str, object] = {}
+
+    def fake(frame: object, *, interval_sec: int, once: bool, tick: object) -> int:
+        seen.update(interval_sec=interval_sec, once=once)
+        tick()  # type: ignore[operator]
+        return 0
+
+    monkeypatch.setattr(watch, "watch", fake)
+    assert main(["watch", "--panels", "--once"]) == 0
+    assert seen == {"interval_sec": 2, "once": True}
+    [terminal] = terminals
+    assert terminal.session == f"orch-{TARGET}"
+    assert terminal.record == record_path(env.paths.root)
+    return terminal
+
+
+def test_watch_panels_opens_a_panel_for_a_running_task(
+    env: Env, monkeypatch: pytest.MonkeyPatch, terminals: list[FakeTerminal]
+) -> None:
+    insert(env, state=TaskState.RUNNING)
+    insert(env, "other-run", state=TaskState.RUNNING, target="other")
+    insert(env, "no-log", state=TaskState.RUNNING)
+    insert(env, "judged", state=TaskState.JUDGING)
+    write(env.paths.logs / f"{TASK}.1.log")
+    write(env.paths.logs / f"{TASK}.2.log")
+    write(env.paths.logs / "judged.1.log")
+    save_record(
+        record_path(env.paths.root),
+        PaneRecord(session=f"orch-{TARGET}", main_pane="%0", created=("%5",)),
+    )
+    terminal = run_panels_tick(env, monkeypatch, terminals, "%5")
+    splits = [call for call in terminal.calls if call[0] == "split"]
+    assert splits == [
+        (
+            "split",
+            ["tail", "-F", str(env.paths.logs / f"{TASK}.2.log")],
+            "%5",
+            True,
+            None,
+        )
+    ]
+    assert watch.load_panel_map(env.paths.root / "panels.json") == {TASK: "%1"}
+
+
+def test_watch_panels_anchor_is_none_for_an_unrecorded_pane(
+    env: Env, monkeypatch: pytest.MonkeyPatch, terminals: list[FakeTerminal]
+) -> None:
+    insert(env, state=TaskState.RUNNING)
+    write(env.paths.logs / f"{TASK}.1.log")
+    save_record(
+        record_path(env.paths.root),
+        PaneRecord(session=f"orch-{TARGET}", main_pane="%0", created=("%5",)),
+    )
+    terminal = run_panels_tick(env, monkeypatch, terminals, "%9")
+    splits = [call for call in terminal.calls if call[0] == "split"]
+    assert [call[2] for call in splits] == [None]
+
+
+def test_watch_panels_anchor_is_none_without_a_record(
+    env: Env, monkeypatch: pytest.MonkeyPatch, terminals: list[FakeTerminal]
+) -> None:
+    insert(env, state=TaskState.RUNNING)
+    write(env.paths.logs / f"{TASK}.1.log")
+    terminal = run_panels_tick(env, monkeypatch, terminals, "%0")
+    splits = [call for call in terminal.calls if call[0] == "split"]
+    assert [call[2] for call in splits] == [None]
+
+
+def test_watch_panels_accepts_the_main_pane_as_anchor(
+    env: Env, monkeypatch: pytest.MonkeyPatch, terminals: list[FakeTerminal]
+) -> None:
+    insert(env, state=TaskState.RUNNING)
+    write(env.paths.logs / f"{TASK}.1.log")
+    save_record(
+        record_path(env.paths.root),
+        PaneRecord(session=f"orch-{TARGET}", main_pane="%0"),
+    )
+    terminal = run_panels_tick(env, monkeypatch, terminals, "%0")
+    splits = [call for call in terminal.calls if call[0] == "split"]
+    assert [call[2] for call in splits] == ["%0"]

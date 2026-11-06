@@ -30,6 +30,7 @@ from orch import (
     watch,
 )
 from orch.models import Task, TaskState
+from orch.terminal import TmuxTerminal
 
 _REFRESH_COMMANDS = {
     "prepare",
@@ -129,7 +130,19 @@ def _parser() -> argparse.ArgumentParser:
     watch_parser = commands.add_parser("watch")
     watch_parser.add_argument("--interval", type=_positive_int, default=2)
     watch_parser.add_argument("--once", action="store_true")
+    watch_parser.add_argument("--panels", action="store_true")
+    open_parser = commands.add_parser("open")
+    open_parser.add_argument("name")
+    open_parser.add_argument("--no-attach", action="store_true")
     return parser
+
+
+def _terminal(session: str, record: Path) -> TmuxTerminal:
+    raise NotImplementedError
+
+
+def _interactive() -> bool:
+    raise NotImplementedError
 
 
 def _environment(command: str) -> tuple[Path, Path | None]:
@@ -253,6 +266,8 @@ def _execute(
 ) -> tuple[int, dict[str, object]]:
     orch_home, hub = _environment(args.command)
     home = Path.home()
+    if args.command == "open":
+        raise NotImplementedError
     if args.command == "notify":
         settings = config.load_config(orch_home)
         if settings.notify_topic:
@@ -332,6 +347,8 @@ def _command(
             "base_sha": task.base_sha,
         }
     if command == "watch":
+        if args.panels:
+            raise NotImplementedError
 
         def frame() -> str:
             now = datetime.now(UTC)

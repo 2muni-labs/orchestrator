@@ -1173,3 +1173,17 @@ def test_module_imports_redact_but_not_config() -> None:
         and node.module.split(".")[0] == "orch"
     }
     assert orch_imports == {"orch.redact"}
+
+
+def test_has_uncommitted_changes(repo: Path) -> None:
+    assert gitops.has_uncommitted_changes(repo) is False
+    write(repo / "untracked.txt")
+    assert gitops.has_uncommitted_changes(repo) is True
+    (repo / "untracked.txt").unlink()
+    (repo / "base.txt").write_text("changed\n")
+    assert gitops.has_uncommitted_changes(repo) is True
+
+
+def test_has_uncommitted_changes_outside_a_repository(tmp_path: Path) -> None:
+    with pytest.raises(GitError):
+        gitops.has_uncommitted_changes(tmp_path / "missing")
