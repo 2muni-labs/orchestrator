@@ -31,22 +31,43 @@ _FAILURE_OUTPUT = (
 )
 
 
-def _without_heredocs(command: str) -> str:
-    """Keep operator lines, but omit each queued heredoc and its delimiter."""
-    lines: list[str] = []
-    pending: list[tuple[str, bool]] = []
-    for line in command.split("\n"):
-        if pending:
-            delimiter, strip_tabs = pending[0]
+def _heredoc_commands(
+    command: str, start: int, pending: list[tuple[str, bool, bool]]
+) -> tuple[list[list[str]], int]:
+    """Consume queued bodies, inspecting only unquoted bodies' substitutions."""
+    commands: list[list[str]] = []
+    index = start
+    for delimiter, strip_tabs, quoted in pending:
+        body_start = index
+        body_end = len(command)
+        while index < len(command):
+            end = command.find("\n", index)
+            if end == -1:
+                end = len(command)
+            line = command[index:end]
+            next_line = min(end + 1, len(command))
             if (line.lstrip("\t") if strip_tabs else line) == delimiter:
-                pending.pop(0)
-            lines.append("")
+                body_end = index
+                index = next_line
+                break
+            index = next_line
+        if quoted:
             continue
-        lines.append(line)
-        for match in _HEREDOC.finditer(line):
-            delimiter = match["single"] or match["double"] or match["bare"]
-            pending.append((delimiter, bool(match["tabs"])))
-    return "\n".join(lines)
+        body = command[body_start:body_end]
+        offset = 0
+        while offset < len(body):
+            char = body[offset]
+            if char == "\\":
+                offset += 2
+            elif body.startswith("$(", offset) or char == "`":
+                backtick = char == "`"
+                nested, offset = _commands(
+                    body, offset + (1 if backtick else 2), "`" if backtick else ")"
+                )
+                commands.extend(nested)
+            else:
+                offset += 1
+    return commands, index
 
 
 def _commands(
@@ -61,6 +82,7 @@ def _commands(
     commands: list[list[str]] = []
     current: list[str] = []
     quote: str | None = None
+    pending: list[tuple[str, bool, bool]] = []
     depth = 0
     index = start
 
@@ -96,6 +118,12 @@ def _commands(
         elif char in {"'", '"'}:
             current.append(char)
             quote = char
+        elif match := _HEREDOC.match(command, index):
+            delimiter = match["single"] or match["double"] or match["bare"]
+            pending.append((delimiter, bool(match["tabs"]), match["bare"] is None))
+            current.append(match[0])
+            index = match.end()
+            continue
         elif char == ")" and closing == ")" and depth == 0:
             flush()
             return commands, index + 1
@@ -105,6 +133,11 @@ def _commands(
             elif char == ")":
                 depth -= 1
             flush()
+            if char == "\n" and pending:
+                nested, index = _heredoc_commands(command, index + 1, pending)
+                commands.extend(nested)
+                pending.clear()
+                continue
         else:
             current.append(char)
         index += 1
@@ -118,29 +151,18 @@ def _executable_index(words: list[str]) -> int:
     index = 0
     while index < len(words) and _ASSIGNMENT.match(words[index]):
         index += 1
-    while index < len(words) and basename(words[index]) in _WRAPPERS:
-        wrapper = basename(words[index])
-        index += 1
-        while index < len(words) and (
-            words[index].startswith("-")
-            or (wrapper == "env" and _ASSIGNMENT.match(words[index]))
-        ):
-            index += 1
     return index
 
 
 def _force_push(args: list[str]) -> bool:
-    index = 0
-    while index < len(args) and args[index].startswith("-"):
-        index += 2 if args[index] in {"-C", "-c"} else 1
-    if index >= len(args) or args[index] != "push":
+    if "push" not in args:
         return False
     return any(
         arg in {"--force", "--force-with-lease", "--force-if-includes"}
         or arg.startswith("--force-with-lease=")
         or (arg.startswith("-") and not arg.startswith("--") and "f" in arg)
         or arg.startswith("+")
-        for arg in args[index + 1 :]
+        for arg in args
     )
 
 
@@ -160,20 +182,31 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
         return Verdict("allow")
     executable = basename(words[index])
     args = words[index + 1 :]
+    if executable in _WRAPPERS:
+        result = Verdict("allow")
+        for index, arg in enumerate(args):
+            if arg.startswith("-") or _ASSIGNMENT.match(arg):
+                continue
+            verdict = _judge_simple(args[index:], home=home)
+            if verdict.decision == "deny":
+                return verdict
+            if verdict.decision == "ask":
+                result = verdict
+        return result
     if executable == "codex":
         return Verdict("deny", "Codex 직접 실행은 차단합니다. orch를 사용하세요.")
     if executable == "claude" and any(arg in {"-p", "--print"} for arg in args):
         return Verdict("deny", "Claude 비대화형 직접 실행은 차단합니다.")
     if executable == "git" and _force_push(args):
         return Verdict("deny", "Git 강제 푸시는 차단합니다.")
-    if executable in {"gh", "orch"}:
+    if executable == "gh":
+        if "pr" in args and "merge" in args[args.index("pr") + 1 :]:
+            return Verdict("deny", "PR 머지는 사용자가 직접 수행해야 합니다.")
+        if any(_MERGE_ENDPOINT.search(arg) for arg in args):
+            return Verdict("deny", "API를 통한 PR 머지는 차단합니다.")
+    if executable == "orch":
         subcommand = next((arg for arg in args if not arg.startswith("-")), None)
-        if executable == "gh":
-            if subcommand == "pr" and "merge" in args[args.index("pr") + 1 :]:
-                return Verdict("deny", "PR 머지는 사용자가 직접 수행해야 합니다.")
-            if subcommand == "api" and any(_MERGE_ENDPOINT.search(arg) for arg in args):
-                return Verdict("deny", "API를 통한 PR 머지는 차단합니다.")
-        elif subcommand == "resume":
+        if subcommand == "resume":
             return Verdict("ask", "작업을 재개하려면 사용자 확인이 필요합니다.")
     if executable in {"bash", "sh", "zsh"}:
         for index, arg in enumerate(args[:-1]):
@@ -184,7 +217,7 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
 
 def judge(command: str, *, home: str | None) -> Verdict:
     try:
-        commands, _ = _commands(_without_heredocs(command))
+        commands, _ = _commands(command)
         result = Verdict("allow")
         for words in commands:
             verdict = _judge_simple(words, home=home)
