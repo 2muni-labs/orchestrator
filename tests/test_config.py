@@ -20,6 +20,7 @@ from orch.config import (
     home_relative,
     load_config,
     load_targets,
+    notify_state_path,
     orch_home,
     state_db_path,
     target_paths,
@@ -71,6 +72,10 @@ def test_orch_home_reads_the_process_environment_by_default(
 def test_orch_home_must_be_absolute() -> None:
     with pytest.raises(ConfigError):
         orch_home({"ORCH_HOME": "relative/path"})
+
+
+def test_notify_state_sits_directly_in_orch_home() -> None:
+    assert notify_state_path(Path("/x/.orch")) == Path("/x/.orch/notify.json")
 
 
 def test_state_db_and_config_sit_directly_in_orch_home() -> None:
@@ -347,6 +352,49 @@ def test_shared_paths_is_optional(tmp_path: Path) -> None:
     )
     targets = load_targets(write(tmp_path / "targets.toml", text))
     assert targets["sample-app"].shared_paths == ()
+
+
+def test_safety_paths_are_loaded(tmp_path: Path) -> None:
+    text = (
+        VALID_TARGET + 'safety_paths = ["CLAUDE.md", "scripts/**", ".claude/agents/"]\n'
+    )
+    target = load_targets(write(tmp_path / "targets.toml", text))["sample-app"]
+    assert target.safety_paths == ("CLAUDE.md", "scripts/**", ".claude/agents/")
+    assert target.shared_paths == ("package-lock.json", "migrations/", ".claude/**")
+
+
+def test_safety_paths_is_optional_and_empty_by_default(tmp_path: Path) -> None:
+    targets = load_targets(write(tmp_path / "targets.toml", VALID_TARGET))
+    assert targets["sample-app"].safety_paths == ()
+    assert [f.name for f in dataclasses.fields(Target)][-2:] == [
+        "shared_paths",
+        "safety_paths",
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"CLAUDE.md"',
+        "[1]",
+        '["../x"]',
+        '["/abs"]',
+        '["*.md"]',
+        '["src/*/x.py"]',
+        '["src/?.py"]',
+        '[""]',
+    ],
+)
+def test_invalid_safety_paths_raise(tmp_path: Path, value: str) -> None:
+    text = VALID_TARGET + f"safety_paths = {value}\n"
+    with pytest.raises(ConfigError, match="safety"):
+        load_targets(write(tmp_path / "targets.toml", text))
+
+
+def test_an_empty_safety_paths_list_is_allowed(tmp_path: Path) -> None:
+    text = VALID_TARGET + "safety_paths = []\n"
+    targets = load_targets(write(tmp_path / "targets.toml", text))
+    assert targets["sample-app"].safety_paths == ()
 
 
 @pytest.mark.parametrize(

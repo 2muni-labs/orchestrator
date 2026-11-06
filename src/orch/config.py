@@ -64,6 +64,7 @@ class Target:
     test_command: str
     lint_command: str
     shared_paths: tuple[str, ...] = ()
+    safety_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -116,6 +117,11 @@ def state_db_path(home: Path) -> Path:
 def config_path(home: Path) -> Path:
     """Return the path of the TOML configuration file."""
     return home / "config"
+
+
+def notify_state_path(home: Path) -> Path:
+    """Return the path of the notification deduplication state."""
+    return home / "notify.json"
 
 
 def validate_target_name(name: str) -> None:
@@ -253,6 +259,23 @@ def load_targets(path: Path) -> dict[str, Target]:
     return targets
 
 
+def _target_path_list(value: object, *, field: str, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{field} must be a list")
+    for path in value:
+        if not _nonempty_string(path):
+            raise ConfigError(f"Invalid {label} path")
+        plain = path[:-3] if path.endswith("/**") else path
+        if (
+            path.startswith("/")
+            or ".." in path.split("/")
+            or "*" in plain
+            or "?" in plain
+        ):
+            raise ConfigError(f"Invalid {label} path")
+    return tuple(value)
+
+
 def _target_from_entry(name: str, entry: object) -> Target:
     """Validate a target entry using the same rules for loading and registration."""
     required = {
@@ -263,27 +286,19 @@ def _target_from_entry(name: str, entry: object) -> Target:
         "test_command",
         "lint_command",
     }
-    entry = _table(entry, required | {"shared_paths"})
+    entry = _table(entry, required | {"shared_paths", "safety_paths"})
     if not required <= entry.keys() or any(
         not _nonempty_string(entry[key]) for key in required
     ):
         raise ConfigError("Missing or invalid target field")
     target_path = _absolute_path(entry["path"])
     _validate_github(entry["github"])
-    shared = entry.get("shared_paths", [])
-    if not isinstance(shared, list):
-        raise ConfigError("shared_paths must be a list")
-    for value in shared:
-        if not _nonempty_string(value):
-            raise ConfigError("Invalid shared path")
-        plain = value[:-3] if value.endswith("/**") else value
-        if (
-            value.startswith("/")
-            or ".." in value.split("/")
-            or "*" in plain
-            or "?" in plain
-        ):
-            raise ConfigError("Invalid shared path")
+    shared = _target_path_list(
+        entry.get("shared_paths", []), field="shared_paths", label="shared"
+    )
+    safety = _target_path_list(
+        entry.get("safety_paths", []), field="safety_paths", label="safety"
+    )
     return Target(
         name=name,
         path=target_path,
@@ -292,7 +307,8 @@ def _target_from_entry(name: str, entry: object) -> Target:
         setup_command=entry["setup_command"],
         test_command=entry["test_command"],
         lint_command=entry["lint_command"],
-        shared_paths=tuple(shared),
+        shared_paths=shared,
+        safety_paths=safety,
     )
 
 
