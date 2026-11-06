@@ -94,7 +94,13 @@ def _commands(
 
     while index < len(command):
         char = command[index]
-        if char == "\\" and quote != "'":
+        if quote == "'":
+            current.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
             current.append(command[index : index + 2])
             index += 2
             continue
