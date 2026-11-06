@@ -49,6 +49,9 @@ _REFRESH_COMMANDS = {
 }
 
 
+_HOOK_NAMES = ("session-start", "pre-bash", "subagent-stop", "notification")
+
+
 class _UsageError(Exception):
     """Invalid command arguments or environment."""
 
@@ -135,6 +138,7 @@ def _parser() -> argparse.ArgumentParser:
     open_parser = commands.add_parser("open")
     open_parser.add_argument("name")
     open_parser.add_argument("--no-attach", action="store_true")
+    commands.add_parser("hook").add_argument("name", choices=_HOOK_NAMES)
     return parser
 
 
@@ -144,6 +148,11 @@ def _terminal(session: str, record: Path) -> TmuxTerminal:
 
 def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _hook(name: str) -> int:
+    """Run one Claude Code hook in its own output format."""
+    raise NotImplementedError
 
 
 def _environment(command: str) -> tuple[Path, Path | None]:
@@ -643,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         try:
             args = _parser().parse_args(argv)
+            if args.command == "hook":
+                return _hook(args.name)
             code, data = _execute(args, secrets)
             if args.command in {"open", "watch"}:
                 return code
