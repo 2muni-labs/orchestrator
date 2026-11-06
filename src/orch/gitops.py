@@ -81,6 +81,11 @@ def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
     return stdout
 
 
+def has_uncommitted_changes(repo: Path) -> bool:
+    """Return True if the work tree has staged, unstaged or untracked changes."""
+    return bool(_git(repo, "status", "--porcelain").strip())
+
+
 def _validate_value(value: str) -> None:
     if not value or value.startswith("-"):
         raise GitError(f"Invalid revision or remote: {value!r}")
