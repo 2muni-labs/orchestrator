@@ -1,15 +1,17 @@
-"""Claude Code hooks other than PreToolUse. Every handler fails open."""
+"""Claude Code hook runner and fail-open handlers other than PreToolUse."""
 
 import io
 import json
+import os
 import re
 import sqlite3
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from orch import config, notify, runner, scheduler, store
+from orch import config, guard, notify, runner, scheduler, store
 from orch.models import TaskState
 
 Alive = Callable[[int, str], bool]
@@ -206,4 +208,48 @@ def handle_notification(
 
 def run_hook(name: str) -> int:
     """Run one Claude Code hook in its own output format (technical design 5.3)."""
-    raise NotImplementedError
+
+    def log_failure(exc: BaseException) -> None:
+        if name == "pre-bash":
+            return
+        try:
+            _log(os.environ, None, name, type(exc).__name__)
+        except BaseException:
+            pass
+
+    try:
+        stdin_text = sys.stdin.read()
+    except BaseException as exc:
+        log_failure(exc)
+        stdin_text = ""
+
+    try:
+        if name == "pre-bash":
+            output = guard.handle(stdin_text, os.environ)
+        else:
+            handler = {
+                "session-start": handle_session_start,
+                "subagent-stop": handle_subagent_stop,
+                "notification": handle_notification,
+            }[name]
+            output = handler(stdin_text, os.environ)
+    except BaseException as exc:
+        log_failure(exc)
+        output = guard._FAILURE_OUTPUT if name == "pre-bash" else ""
+
+    try:
+        if output:
+            sys.stdout.write(output + "\n")
+            sys.stdout.flush()
+    except BaseException as exc:
+        # Do not let Python retry a failed flush at shutdown and exit with 120.
+        sys.stdout = None
+        if name == "pre-bash":
+            try:
+                sys.stderr.write("Bash 훅 출력을 쓸 수 없어 차단합니다.\n")
+                sys.stderr.flush()
+            except BaseException:
+                sys.stderr = None
+            return 2
+        log_failure(exc)
+    return 0
