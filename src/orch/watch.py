@@ -2,10 +2,50 @@
 
 import sys
 import time
-from collections.abc import Callable
-from typing import TextIO
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Protocol, TextIO
 
 CLEAR_SCREEN = "\x1b[2J\x1b[H"
+
+
+class Panels(Protocol):
+    """The part of the terminal adapter that log panels use."""
+
+    def terminal_split(
+        self,
+        command: Sequence[str],
+        *,
+        target: str | None = None,
+        vertical: bool = False,
+        percent: int | None = None,
+    ) -> str: ...
+
+    def close_pane(self, pane: str) -> None: ...
+
+    def live_panes(self) -> frozenset[str]: ...
+
+
+def current_log(logs: Path, task_id: str) -> Path | None:
+    raise NotImplementedError
+
+
+def load_panel_map(path: Path) -> dict[str, str]:
+    raise NotImplementedError
+
+
+def save_panel_map(path: Path, mapping: Mapping[str, str]) -> None:
+    raise NotImplementedError
+
+
+def sync_panels(
+    terminal: Panels,
+    *,
+    running: Mapping[str, Path],
+    state: Path,
+    anchor: str | None = None,
+) -> dict[str, str]:
+    raise NotImplementedError
 
 
 def watch(
@@ -15,8 +55,11 @@ def watch(
     once: bool = False,
     out: TextIO | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    tick: Callable[[], None] | None = None,
 ) -> int:
     """Draw frames until interrupted and return the exit code."""
+    if tick is not None:
+        raise NotImplementedError
     try:
         output = sys.stdout if out is None else out
         while True:
