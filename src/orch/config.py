@@ -13,6 +13,7 @@ from orch.redact import RedactionError, redact
 
 RESERVED_TARGET_NAMES = frozenset({"bin", "secrets", "config", "state.db"})
 MARKER_FILE = ".orch-target.toml"
+NOTIFICATION_TOPIC_PATTERN = r"[A-Za-z0-9_-]{20,64}"
 
 
 class ConfigError(Exception):
@@ -450,6 +451,10 @@ def load_config(home: Path) -> Config:
         raise ConfigError("Notification topic requires ntfy")
     if method == "ntfy" and not _nonempty_string(notify.get("topic")):
         raise ConfigError("ntfy requires a topic")
+    if method == "ntfy" and not re.fullmatch(
+        NOTIFICATION_TOPIC_PATTERN, notify["topic"]
+    ):
+        raise ConfigError("Invalid notification topic")
     agents = _table(data.get("agents", {}), {"codex", "claude"})
     agent_paths = {key: _absolute_path(value) for key, value in agents.items()}
     patterns_data = _table(data.get("usage_limit_patterns", {}), {"codex", "claude"})
