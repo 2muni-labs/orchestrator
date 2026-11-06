@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import re
 import threading
 import tomllib
@@ -505,7 +506,7 @@ lane_a = 3
 
 [notify]
 method = "ntfy"
-topic = "hard-to-guess"
+topic = "hard-to-guess-topic_0001"
 
 [agents]
 codex = "~/bin/codex"
@@ -520,7 +521,7 @@ codex = ["limit one", "limit two"]
     assert config.reservation_ttl_min == 5
     assert config.limits == Limits(total=4, lane_b=1, lane_a=3)
     assert config.notify_method == "ntfy"
-    assert config.notify_topic == "hard-to-guess"
+    assert config.notify_topic == "hard-to-guess-topic_0001"
     assert config.codex_path == Path("/fake/home/bin/codex")
     assert config.claude_path == Path("/opt/claude")
     assert config.usage_limit_patterns["codex"] == ("limit one", "limit two")
@@ -536,8 +537,72 @@ def test_partial_limits_keep_other_defaults(tmp_path: Path) -> None:
 
 
 def test_notify_topic_stays_out_of_repr(tmp_path: Path) -> None:
-    write(config_path(tmp_path), '[notify]\nmethod = "ntfy"\ntopic = "hard-to-guess"\n')
-    assert "hard-to-guess" not in repr(load_config(tmp_path))
+    write(
+        config_path(tmp_path),
+        '[notify]\nmethod = "ntfy"\ntopic = "hard-to-guess-topic_0001"\n',
+    )
+    assert "hard-to-guess-topic_0001" not in repr(load_config(tmp_path))
+
+
+VALID_TOPIC = "Abc_def-123456789012"
+
+
+def notify_text(topic: str) -> str:
+    return f'[notify]\nmethod = "ntfy"\ntopic = {json.dumps(topic)}\n'
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        VALID_TOPIC,
+        "a" * 20,
+        "Z" * 64,
+        "0123456789_-ABCDEFGHIJ",
+        "-" * 20,
+        "zq7Kx9mP2vLw4RtY8nBcHs3D",
+    ],
+)
+def test_valid_topics_are_accepted(tmp_path: Path, topic: str) -> None:
+    write(config_path(tmp_path), notify_text(topic))
+    assert load_config(tmp_path).notify_topic == topic
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "a" * 19,
+        "short",
+        "x",
+        "a" * 65,
+        "b" * 200,
+        "abcdefghij/klmnopqrst",
+        "abcdefghij?klmnopqrst",
+        "abcdefghij#klmnopqrst",
+        "abcdefghij klmnopqrst",
+        "abcdefghij.klmnopqrst",
+        "abcdefghij%2Fklmnopqr",
+        "../abcdefghijklmnopqrst",
+        "abcdefghijklmnopqrst\n",
+        "abcdefghijklmnopqrstü",
+        "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔ",
+    ],
+)
+def test_malformed_topics_raise_without_the_value(tmp_path: Path, topic: str) -> None:
+    write(config_path(tmp_path), notify_text(topic))
+    with pytest.raises(ConfigError) as caught:
+        load_config(tmp_path)
+    error: BaseException | None = caught.value
+    while error is not None:
+        assert topic not in str(error)
+        error = error.__cause__ or error.__context__
+
+
+def test_a_topic_with_method_none_is_still_refused(tmp_path: Path) -> None:
+    write(
+        config_path(tmp_path), f'[notify]\nmethod = "none"\ntopic = "{VALID_TOPIC}"\n'
+    )
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
 
 
 def test_config_is_frozen() -> None:
