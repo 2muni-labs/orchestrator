@@ -95,6 +95,17 @@ DENY = [
     # a heredoc operator inside quotes is not a heredoc
     'echo "a <<EOF b"\ncodex exec',
     "echo 'a <<EOF b'\ncodex exec",
+    # substitutions outside single quotes still run
+    'echo "$(codex exec y)"',
+    'echo "`codex exec`"',
+    "echo 'a' \"$(codex exec)\"",
+    "echo 'x'$(codex exec)'y'",
+    'echo "it\'s $(codex exec)"',
+    "cat <<EOF\n'$(codex exec)'\nEOF",
+    # wrappers with their own options
+    "nohup -- codex exec",
+    "command -p codex",
+    "exec -a name codex",
     # unparsable
     "echo 'unterminated",
     'echo "unterminated',
@@ -162,6 +173,15 @@ ALLOW = [
     # a quoted delimiter makes the body plain text, even $(...) and backticks
     "cat <<'EOF'\n`codex exec`\nit's (x\nEOF",
     'cat <<"EOF"\n$(gh pr merge 3)\nEOF',
+    # inside single quotes, $( and backticks are plain text
+    "echo 'it`s'",
+    "grep 'x$(codex exec y)' f",
+    "grep -v 'a\\|(`/Users' f",
+    "grep -nE 'git diff|`orch prepare <|results/<id>' docs/x.md",
+    "echo '$('",
+    "echo 'a`codex exec`b'",
+    "echo \"$(echo 'it`s')\"",
+    "cat <<EOF\nit's `date`\nEOF",
 ]
 
 
@@ -179,7 +199,18 @@ def test_allow(command: str) -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["orch resume m13-x", "orch resume m13-x --keep", "cd /x && orch resume a"],
+    [
+        "orch resume m13-x",
+        "orch resume m13-x --keep",
+        "cd /x && orch resume a",
+        # ask passes through wrappers
+        "env orch resume 3",
+        "env FOO=1 orch resume 3",
+        "exec orch resume 3",
+        "nohup orch resume 3",
+        "command orch resume 3",
+        "env orch resume 3; ls",
+    ],
 )
 def test_ask_for_resume(command: str) -> None:
     verdict = judge(command, home=HOME)
@@ -199,8 +230,16 @@ def test_commands_after_a_heredoc_are_judged(command: str) -> None:
     assert judge(command, home=HOME).decision == "deny"
 
 
-def test_deny_wins_over_ask() -> None:
-    assert judge("orch resume a; codex exec", home=HOME).decision == "deny"
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch resume a; codex exec",
+        "env orch resume 3 && nohup codex exec",
+        "command orch resume 3 | exec codex",
+    ],
+)
+def test_deny_wins_over_ask(command: str) -> None:
+    assert judge(command, home=HOME).decision == "deny"
 
 
 def test_home_form_needs_home() -> None:
