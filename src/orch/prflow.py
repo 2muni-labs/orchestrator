@@ -1,6 +1,7 @@
 """orch pr, update and close: the flow around a task's pull request."""
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,7 @@ class PullRequestReport:
     pr_url: str | None = None
     conflicts: tuple[str, ...] = ()
     detail: str | None = None
+    user_check: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -41,6 +43,13 @@ class UpdateReport:
     state: TaskState
     conflicts: tuple[str, ...] = ()
     gates: GateReport | None = None
+
+
+def user_check(
+    changed: Iterable[str], safety_paths: Iterable[str], *, overridden: bool
+) -> bool:
+    """Return True if the pull request needs the user's own check."""
+    raise NotImplementedError
 
 
 def open_pull_request(

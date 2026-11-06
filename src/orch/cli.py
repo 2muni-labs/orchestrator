@@ -121,6 +121,9 @@ def _parser() -> argparse.ArgumentParser:
     wait.add_argument("--interval", type=_positive_int, default=60)
     wait.add_argument("--max-wait", type=_positive_int, default=90)
     commands.add_parser("next")
+    commands.add_parser("notify").add_subparsers(
+        dest="notify_command", required=True
+    ).add_parser("test")
     commands.add_parser("status").add_argument("--human", action="store_true")
     watch_parser = commands.add_parser("watch")
     watch_parser.add_argument("--interval", type=_positive_int, default=2)
@@ -235,6 +238,8 @@ def _execute(
 ) -> tuple[int, dict[str, object]]:
     orch_home, hub = _environment(args.command)
     home = Path.home()
+    if args.command == "notify":
+        raise NotImplementedError
     if args.command == "target":
         assert hub is not None
         target = config.add_target(
