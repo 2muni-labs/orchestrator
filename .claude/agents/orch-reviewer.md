@@ -17,6 +17,17 @@ set to `<id>.diff`.
 Judge the tests as well as the implementation: decide whether the tests verify the
 specification sufficiently. The severity scale below applies to both.
 
+Look for assertions that always pass, and report each as a finding on the test:
+
+- an assertion on a capture that is always empty, for example stderr read after a
+  fixture already consumed it;
+- a condition that is always true, whatever the implementation does;
+- a check that never runs, for example after an early return, inside a branch or
+  loop the test never enters, or in a fake that is never called.
+
+Such an assertion is P1 when it is the only check of a behavior the specification
+requires, and P2 when another assertion in the tests already covers it.
+
 Severity:
 
 - **P0**: security flaw, data loss, build or test failure, specification violation.
