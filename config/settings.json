@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook session-start", "timeout": 30 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "orch hook pre-bash", "timeout": 10 }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook subagent-stop", "timeout": 10 }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          { "type": "command", "command": "orch hook notification", "timeout": 15 }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(~/.orch/secrets/**)",
+      "Grep(~/.orch/secrets/**)",
+      "Glob(~/.orch/secrets/**)",
+      "Edit(~/.orch/secrets/**)",
+      "Write(~/.orch/secrets/**)"
+    ]
+  }
+}
