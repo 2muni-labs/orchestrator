@@ -17,6 +17,8 @@ from orch import (
     credentials,
     gate,
     gitops,
+    guard,
+    hooks,
     launcher,
     lifecycle,
     notify,
@@ -152,7 +154,51 @@ def _interactive() -> bool:
 
 def _hook(name: str) -> int:
     """Run one Claude Code hook in its own output format."""
-    raise NotImplementedError
+
+    def log_failure(exc: BaseException) -> None:
+        if name == "pre-bash":
+            return
+        try:
+            hooks._log(os.environ, None, name, type(exc).__name__)
+        except BaseException:
+            pass
+
+    try:
+        stdin_text = sys.stdin.read()
+    except BaseException as exc:
+        log_failure(exc)
+        stdin_text = ""
+
+    try:
+        if name == "pre-bash":
+            output = guard.handle(stdin_text, os.environ)
+        else:
+            handler = {
+                "session-start": hooks.handle_session_start,
+                "subagent-stop": hooks.handle_subagent_stop,
+                "notification": hooks.handle_notification,
+            }[name]
+            output = handler(stdin_text, os.environ)
+    except BaseException as exc:
+        log_failure(exc)
+        output = guard._FAILURE_OUTPUT if name == "pre-bash" else ""
+
+    try:
+        if output:
+            sys.stdout.write(output + "\n")
+            sys.stdout.flush()
+    except BaseException as exc:
+        # Do not let Python retry a failed flush at shutdown and exit with 120.
+        sys.stdout = None
+        if name == "pre-bash":
+            try:
+                sys.stderr.write("Bash 훅 출력을 쓸 수 없어 차단합니다.\n")
+                sys.stderr.flush()
+            except BaseException:
+                sys.stderr = None
+            return 2
+        log_failure(exc)
+    return 0
 
 
 def _environment(command: str) -> tuple[Path, Path | None]:
