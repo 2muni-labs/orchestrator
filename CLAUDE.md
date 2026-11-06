@@ -49,8 +49,12 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   and ruff pass on the combined state, and it leaves an approving review first, then
   merges with a merge commit.
 - The user personally checks pull requests with the `review-overridden` label and
-  those that change a safety mechanism: `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`,
-  `scripts/`, `redact`, and code handling tokens or gates. Mark them in the table.
+  those that change a safety path: a path matched by the hub target's `safety_paths`
+  in `targets.toml`. That list is the only definition; do not copy it elsewhere.
+  `orch pr` reports `user_check` and sends the `needs_review` notification for task
+  pull requests. A harness pull request gets neither, so check its changed files
+  against the list yourself. Mark them in the table. Change the list only through a
+  harness pull request, which itself needs the user's check.
 - The `main` ruleset requires one approval and the bot cannot approve its own pull
   request, so the bot cannot merge one without an approval. This does not stop a
   merge after an approval, so the rule above still applies.
@@ -128,6 +132,12 @@ You run tasks through the installed `orch`. `R` below stands for
   its reason in the commit message.
 - Pass test inputs through the real parser once, because `NotImplementedError` can
   hide an input error.
+- A fixture that captures output must not discard what it captured. If it reads
+  `capsys` or similar for its own use, write the rest back (for example
+  `sys.stderr.write(captured.err)`) so the test can still assert on it. The `orch`
+  fixture in `tests/test_cli.py` does this. Otherwise an assertion on the capture
+  sees an empty string: it either always fails or always passes, and the stubs fail
+  earlier and hide it (m-notify-cli).
 - Call state-changing `orch` commands in tests through the `orch` fixture in
   `tests/test_cli.py` or the integration `Sandbox`. Both check the transition with
   `models.can_transition` before the call (`tests/transitions.py`). Mark a call that
