@@ -53,8 +53,8 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
   in `targets.toml`. That list is the only definition; do not copy it elsewhere.
   `orch pr` reports `user_check` and sends the `needs_review` notification for task
   pull requests. A harness pull request gets neither, so check its changed files
-  against the list yourself. Mark them in the table. Change the list only through a
-  harness pull request, which itself needs the user's check.
+  against the list yourself. Mark them in the table. The list includes
+  `targets.toml` itself, so a change to it is always a user check.
 - The `main` ruleset requires one approval and the bot cannot approve its own pull
   request, so the bot cannot merge one without an approval. This does not stop a
   merge after an approval, so the rule above still applies.
