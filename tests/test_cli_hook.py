@@ -1,17 +1,19 @@
 """orch hook <name>: Claude Code hook output only, always exit code 0."""
 
+import inspect
 import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
 
-from orch import config, guard, hooks, store
+from orch import cli, config, gate, guard, hooks, store
 from orch.cli import main
 
 HOOKS = {
@@ -473,3 +475,36 @@ def test_a_process_exits_2_when_stdout_is_a_closed_pipe(tmp_path: Path) -> None:
         os.close(write_end)
     assert process.returncode == 2, process.stderr
     assert re.search("[가-힣]", process.stderr.decode("utf-8")), process.stderr
+
+
+# where the hook logic lives
+
+
+@pytest.mark.parametrize("name", ["pre-bash", *sorted(HOOKS)])
+def test_orch_hook_delegates_to_hooks_run_hook(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    calls: list[str] = []
+
+    def fake(hook: str) -> int:
+        calls.append(hook)
+        return 7
+
+    monkeypatch.setattr(hooks, "run_hook", fake)
+    assert main(["hook", name]) == 7
+    assert calls == [name]
+
+
+def test_the_cli_keeps_no_hook_logic() -> None:
+    assert not hasattr(cli, "_hook")
+
+
+def test_the_hook_runner_is_on_a_safety_path() -> None:
+    """A change to hook failure handling must need the user's own check."""
+    hub = Path(__file__).resolve().parents[1]
+    targets = tomllib.loads((hub / "targets.toml").read_text(encoding="utf-8"))
+    safety = targets["targets"]["orchestrator"]["safety_paths"]
+    for function in (hooks.run_hook, guard.handle):
+        source = Path(inspect.getsourcefile(function) or "").resolve()
+        path = source.relative_to(hub).as_posix()
+        assert any(gate.glob_matches(path, entry) for entry in safety), path

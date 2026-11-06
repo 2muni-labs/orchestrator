@@ -241,7 +241,10 @@ def handle(stdin_text: str, environ: Mapping[str, str]) -> str:
         payload = json.loads(stdin_text)
         if not isinstance(payload, dict):
             return _FAILURE_OUTPUT
-        if payload.get("tool_name") != "Bash":
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            return _FAILURE_OUTPUT
+        if tool_name != "Bash":
             return ""
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):

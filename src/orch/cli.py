@@ -17,7 +17,6 @@ from orch import (
     credentials,
     gate,
     gitops,
-    guard,
     hooks,
     launcher,
     lifecycle,
@@ -150,55 +149,6 @@ def _terminal(session: str, record: Path) -> TmuxTerminal:
 
 def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
-
-
-def _hook(name: str) -> int:
-    """Run one Claude Code hook in its own output format."""
-
-    def log_failure(exc: BaseException) -> None:
-        if name == "pre-bash":
-            return
-        try:
-            hooks._log(os.environ, None, name, type(exc).__name__)
-        except BaseException:
-            pass
-
-    try:
-        stdin_text = sys.stdin.read()
-    except BaseException as exc:
-        log_failure(exc)
-        stdin_text = ""
-
-    try:
-        if name == "pre-bash":
-            output = guard.handle(stdin_text, os.environ)
-        else:
-            handler = {
-                "session-start": hooks.handle_session_start,
-                "subagent-stop": hooks.handle_subagent_stop,
-                "notification": hooks.handle_notification,
-            }[name]
-            output = handler(stdin_text, os.environ)
-    except BaseException as exc:
-        log_failure(exc)
-        output = guard._FAILURE_OUTPUT if name == "pre-bash" else ""
-
-    try:
-        if output:
-            sys.stdout.write(output + "\n")
-            sys.stdout.flush()
-    except BaseException as exc:
-        # Do not let Python retry a failed flush at shutdown and exit with 120.
-        sys.stdout = None
-        if name == "pre-bash":
-            try:
-                sys.stderr.write("Bash 훅 출력을 쓸 수 없어 차단합니다.\n")
-                sys.stderr.flush()
-            except BaseException:
-                sys.stderr = None
-            return 2
-        log_failure(exc)
-    return 0
 
 
 def _environment(command: str) -> tuple[Path, Path | None]:
@@ -699,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             args = _parser().parse_args(argv)
             if args.command == "hook":
-                return _hook(args.name)
+                return hooks.run_hook(args.name)
             code, data = _execute(args, secrets)
             if args.command in {"open", "watch"}:
                 return code
