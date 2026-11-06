@@ -83,7 +83,7 @@ def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
 
 def has_uncommitted_changes(repo: Path) -> bool:
     """Return True if the work tree has staged, unstaged or untracked changes."""
-    raise NotImplementedError
+    return bool(_git(repo, "status", "--porcelain").strip())
 
 
 def _validate_value(value: str) -> None:

@@ -17,6 +17,7 @@ from orch import (
     credentials,
     gate,
     gitops,
+    launcher,
     lifecycle,
     notify,
     prflow,
@@ -30,7 +31,7 @@ from orch import (
     watch,
 )
 from orch.models import Task, TaskState
-from orch.terminal import TmuxTerminal
+from orch.terminal import TerminalError, TmuxTerminal, load_record, record_path
 
 _REFRESH_COMMANDS = {
     "prepare",
@@ -138,11 +139,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _terminal(session: str, record: Path) -> TmuxTerminal:
-    raise NotImplementedError
+    return TmuxTerminal(session, record)
 
 
 def _interactive() -> bool:
-    raise NotImplementedError
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _environment(command: str) -> tuple[Path, Path | None]:
@@ -160,6 +161,7 @@ def _environment(command: str) -> tuple[Path, Path | None]:
     hub = None
     if command in {
         "target",
+        "open",
         "prepare",
         "run",
         "gate",
@@ -267,7 +269,61 @@ def _execute(
     orch_home, hub = _environment(args.command)
     home = Path.home()
     if args.command == "open":
-        raise NotImplementedError
+        assert hub is not None
+        target = _target(hub, args.name)
+        paths = config.ensure_target(orch_home, target.name, target.github)
+        settings = config.load_config(orch_home)
+        if settings.claude_path is None:
+            raise config.ConfigError("Claude Code path is not configured")
+        try:
+            dirty = gitops.has_uncommitted_changes(target.path)
+        except gitops.GitError:
+            dirty = True
+        version = launcher.probe_claude_version(settings.claude_path)
+        plan = launcher.build_plan(
+            target=target,
+            hub=hub,
+            orch_home=orch_home,
+            default_orch_home=config.orch_home({}),
+            claude=settings.claude_path,
+            claude_version=version,
+            dirty=dirty,
+        )
+        session = f"orch-{target.name}"
+        terminal = _terminal(session, record_path(paths.root))
+        opened = not terminal.has_session()
+        if opened:
+            main_pane = terminal.open_session(
+                cwd=plan.cwd, env=plan.env, command=plan.argv
+            )
+            watch_pane = terminal.terminal_split(
+                ["orch", "watch", "--panels"], target=main_pane, percent=40
+            )
+            terminal.terminal_split(
+                ["tail", "-F", str(paths.logs / "subagents.log")],
+                target=watch_pane,
+                vertical=True,
+                percent=30,
+            )
+        attach = not args.no_attach and _interactive()
+        output = {
+            "ok": True,
+            "target": target.name,
+            "session": session,
+            "opened": opened,
+            "warnings": list(plan.warnings),
+            "attach": attach,
+        }
+        print(json.dumps(output, ensure_ascii=False))
+        if attach:
+            sys.stdout.flush()
+            argv = terminal.attach_argv(os.environ)
+            try:
+                os.execvp(argv[0], argv)
+            except OSError as exc:
+                print(" ".join(f"세션 연결 실패: {exc}".splitlines()), file=sys.stderr)
+                return 70, {}
+        return 0, {}
     if args.command == "notify":
         settings = config.load_config(orch_home)
         if settings.notify_topic:
@@ -347,8 +403,6 @@ def _command(
             "base_sha": task.base_sha,
         }
     if command == "watch":
-        if args.panels:
-            raise NotImplementedError
 
         def frame() -> str:
             now = datetime.now(UTC)
@@ -358,6 +412,42 @@ def _command(
                 now,
             )
 
+        if args.panels:
+            if not os.environ.get("TMUX") or not session_target:
+                raise _UsageError("watch --panels requires TMUX and ORCH_TARGET")
+            paths = config.target_paths(orch_home, session_target)
+            record = record_path(paths.root)
+            terminal = _terminal(f"orch-{session_target}", record)
+            try:
+                panes = load_record(record)
+            except TerminalError:
+                panes = None
+            pane = os.environ.get("TMUX_PANE")
+            anchor = (
+                pane
+                if panes is not None
+                and (pane == panes.main_pane or pane in panes.created)
+                else None
+            )
+
+            def tick() -> None:
+                running = {}
+                for task in store.list_tasks(
+                    conn, states=[TaskState.RUNNING], target=session_target
+                ):
+                    log = watch.current_log(paths.logs, task.id)
+                    if log is not None:
+                        running[task.id] = log
+                watch.sync_panels(
+                    terminal,
+                    running=running,
+                    state=paths.root / "panels.json",
+                    anchor=anchor,
+                )
+
+            return watch.watch(
+                frame, interval_sec=args.interval, once=args.once, tick=tick
+            ), {}
         return watch.watch(frame, interval_sec=args.interval, once=args.once), {}
     if command == "status":
         tasks = store.list_tasks(conn, target=session_target)
@@ -554,7 +644,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             args = _parser().parse_args(argv)
             code, data = _execute(args, secrets)
-            if args.command == "watch":
+            if args.command in {"open", "watch"}:
                 return code
             if args.command == "status" and args.human:
                 for line in data["lines"]:
@@ -573,6 +663,8 @@ def main(argv: list[str] | None = None) -> int:
             review.ReviewFlowError,
             gate.GateError,
             gitops.LeaseRejectedError,
+            launcher.LaunchError,
+            TerminalError,
             runner.RunError,
             scheduler.DispatchError,
             prflow.PullRequestFlowError,
