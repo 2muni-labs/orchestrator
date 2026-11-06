@@ -54,6 +54,7 @@ scripts/gate.sh    manual gates G1 to G3, a fallback until M16
 scripts/run-sub.sh manual sub-agent runner, a fallback until M16
 targets.toml       registered targets, with home-relative paths only
 .claude/agents/    read-only sub-agent definitions
+config/settings.json  hooks and deny rules that orch open injects
 
 ~/.orch/orchestrator/   runtime data, never committed
   tasks/<id>.md         task specs
@@ -84,9 +85,9 @@ design.
   until the tests pass.
 - Never change anything under `tests/`. Doing so fails gate G1.
 - Shared files belong to the main agent: `pyproject.toml`, `uv.lock`,
-  `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.github/`, `docs/`,
-  `schemas/`, `scripts/`, `templates/`. If one must change, report `BLOCKED` with
-  the request.
+  `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.github/`, `config/`,
+  `docs/`, `schemas/`, `scripts/`, `templates/`. If one must change, report
+  `BLOCKED` with the request.
 
 **Do not commit**
 
