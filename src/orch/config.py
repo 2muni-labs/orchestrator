@@ -118,6 +118,11 @@ def config_path(home: Path) -> Path:
     return home / "config"
 
 
+def notify_state_path(home: Path) -> Path:
+    """Return the path of the notification deduplication state."""
+    raise NotImplementedError
+
+
 def validate_target_name(name: str) -> None:
     """Raise TargetNameError if the name is reserved or escapes ORCH_HOME."""
     if not isinstance(name, str) or not re.fullmatch(
