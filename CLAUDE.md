@@ -28,6 +28,15 @@ You are the main agent: you design, dispatch and integrate. The sub-agent rules 
 
 - Start each bundle in a new session. Subagent definitions load when a session
   starts, so a session cannot use one created or changed after it began.
+- The user starts the main session with `orch open <target>`, from a shell that
+  exports `ORCH_HUB` as an absolute path. `orch open` injects the hub's
+  `config/settings.json` (hooks and deny rules), sets `ORCH_TARGET` and `ORCH_HUB`,
+  and opens the watch panels in the tmux session `orch-<target>`.
+- At the start of a session, also confirm that it runs under `orch open`:
+  `tmux display-message -p '#S'` prints `orch-<target>` and `ORCH_TARGET` is set.
+  If not, report that to the user and wait, unless the user said this is an escape
+  hatch session: `claude` started in the hub without `orch open`, which gets no
+  hooks. Use one only to repair broken hooks.
 - At the start of a session, confirm that the main model is Opus 5.5
   (`claude-opus-5-5`). If it is not, report that to the user and wait.
 - At the start of a session, also confirm that this process started after the last
@@ -103,8 +112,14 @@ You run tasks through the installed `orch`. `R` below stands for
   `~/.orch/state.db`, then `uv tool install --reinstall` the new tag.
 - The user creates a version tag only after the version pull request merges, on
   the resulting `main` commit. Never ask for a tag before that merge.
-- `.claude/settings.local.json` in the hub clone sets `ORCH_HUB` and `ORCH_TARGET` for
-  the session. It is ignored by git, and it replaces `orch open` until M13.
+- `orch open` sets `ORCH_HUB` and `ORCH_TARGET` for the main session.
+  `.claude/settings.local.json` in the hub clone, ignored by git, sets the same two
+  values only so that an escape hatch session can still run `orch`.
+- The pre-bash hook denies running `codex` or `claude -p` directly, force pushes,
+  `gh pr merge`, the pull request merge API path and any path under
+  `~/.orch/secrets`, and asks the user before `orch resume`. A denial is a rule, not
+  an error to work around: never rephrase a command to get past it. If a legitimate
+  command is denied, stop and report it as a false positive.
 - `orch` refuses a `modify` that reaches a shared file, so a pull request changing one
   is a harness pull request you write yourself, outside `orch`: create the worktree
   with `git worktree add R/worktrees/<id> -b task/<id> origin/main`, run
