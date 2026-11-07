@@ -71,6 +71,7 @@ EXPECTED_COLUMNS = {
         "worktree",
         "pr_url",
         "pushed_sha",
+        "gated_sha",
         "slot_expires_at",
         "created_at",
         "updated_at",
@@ -219,17 +220,17 @@ def test_primary_keys_match_the_design(conn: sqlite3.Connection) -> None:
 
 
 def test_version_is_the_number_of_migrations(conn: sqlite3.Connection) -> None:
-    assert len(store.MIGRATIONS) == 2
-    assert user_version(conn) == 2
+    assert len(store.MIGRATIONS) == 3
+    assert user_version(conn) == 3
 
 
 def test_migrate_is_idempotent(db_path: Path) -> None:
     conn = connect(db_path)
     insert_task(conn, make_task())
-    assert migrate(conn) == 2
+    assert migrate(conn) == 3
     conn.close()
     reopened = connect(db_path)
-    assert user_version(reopened) == 2
+    assert user_version(reopened) == 3
     assert get_task(reopened, "feat-x") is not None
 
 
@@ -240,8 +241,8 @@ def test_new_migration_applies_once_and_keeps_data(
     insert_task(conn, make_task())
     added = ("CREATE TABLE extra (id INTEGER PRIMARY KEY)",)
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, added))
-    assert migrate(conn) == 3
-    assert migrate(conn) == 3
+    assert migrate(conn) == 4
+    assert migrate(conn) == 4
     assert "extra" in table_names(conn)
     assert get_task(conn, "feat-x") is not None
 
@@ -254,7 +255,7 @@ def test_failed_migration_rolls_back_entirely(
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, broken))
     with pytest.raises(sqlite3.Error):
         migrate(conn)
-    assert user_version(conn) == 2
+    assert user_version(conn) == 3
     assert "half_done" not in table_names(conn)
     assert conn.in_transaction is False
 
@@ -273,7 +274,7 @@ def test_concurrent_first_connections_migrate_once(db_path: Path) -> None:
 
     assert run_in_threads(work) == []
     conn = connect(db_path)
-    assert user_version(conn) == 2
+    assert user_version(conn) == 3
     assert table_names(conn) == set(EXPECTED_COLUMNS)
 
 
@@ -336,6 +337,7 @@ def test_task_round_trip_with_all_fields(conn: sqlite3.Connection) -> None:
         worktree="/tmp/w",
         pr_url="https://example.com/1",
         pushed_sha="a" * 40,
+        gated_sha="b" * 40,
         slot_expires_at="2026-11-03T01:00:00+00:00",
         created_at="2026-11-03T00:00:00+00:00",
         updated_at="2026-11-03T00:30:00+00:00",
@@ -567,11 +569,43 @@ def test_v1_database_gains_pushed_sha_and_keeps_its_rows(db_path: Path) -> None:
     )
     old.close()
     conn = connect(db_path)
-    assert user_version(conn) == 2
+    assert user_version(conn) == 3
     loaded = get_task(conn, "old")
     assert loaded is not None
     assert loaded.title == "Old"
     assert loaded.pushed_sha is None
+    assert loaded.gated_sha is None
+
+
+# Migration to schema v3
+
+
+def test_v2_database_gains_gated_sha_and_keeps_its_rows(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for migration in store.MIGRATIONS[:2]:
+        for statement in migration:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 2")
+    old.execute(
+        """INSERT INTO tasks (
+            id, target, title, grade, lane, model, state, timeout_sec, depends_on,
+            created_at, updated_at, pushed_sha
+        ) VALUES ('old', 't', 'Old', 'L2', 'B', 'm', 'pr_open', 60, '[]', 'c', 'u',
+            'ppp')"""
+    )
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == 3
+    assert "gated_sha" in {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    loaded = get_task(conn, "old")
+    assert loaded is not None
+    assert loaded.state is TaskState.PR_OPEN
+    assert loaded.pushed_sha == "ppp"
+    assert loaded.gated_sha is None
+
+
+def test_v3_migration_is_the_gated_sha_column_only() -> None:
+    assert store.MIGRATIONS[2] == ("ALTER TABLE tasks ADD COLUMN gated_sha TEXT",)
 
 
 def test_pr_open_can_move_to_conflict(conn: sqlite3.Connection) -> None:
@@ -694,6 +728,7 @@ def test_update_task_sets_fields_and_updated_at(conn: sqlite3.Connection) -> Non
         worktree="w",
         pr_url="https://example.com/1",
         pushed_sha="d" * 40,
+        gated_sha="e" * 40,
         slot_expires_at="2026-11-04T00:10:00+00:00",
     )
     loaded = get_task(conn, "feat-x")
@@ -704,6 +739,7 @@ def test_update_task_sets_fields_and_updated_at(conn: sqlite3.Connection) -> Non
     assert loaded.worktree == "w"
     assert loaded.pr_url == "https://example.com/1"
     assert loaded.pushed_sha == "d" * 40
+    assert loaded.gated_sha == "e" * 40
     assert loaded.slot_expires_at == "2026-11-04T00:10:00+00:00"
     assert loaded.updated_at == "2026-11-04T00:00:00+00:00"
     assert loaded.state is TaskState.PREPARED

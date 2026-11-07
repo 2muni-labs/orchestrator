@@ -171,6 +171,7 @@ def add_ready_task(
     pushed_sha: str | None = None,
     pr_url: str | None = None,
     base_sha: str | None = None,
+    gated_sha: str | None = None,
 ) -> None:
     insert_task(
         conn,
@@ -193,6 +194,8 @@ def add_ready_task(
             updated_at="2026-01-01T00:00:00+00:00",
         ),
     )
+    if gated_sha is not None:
+        store.update_task(conn, TASK, gated_sha=gated_sha)
     for name in (Gate.G1, Gate.G2, Gate.G3):
         store.record_gate_result(conn, TASK, 1, name, passed=True)
 
@@ -451,6 +454,8 @@ def test_open_records_the_pre_pr_gate(
     add_ready_task(conn, worktree, test_sha)
     open_pr(conn, repo, tmp_path)
     assert gates_of(conn)[Gate.G2_PRE_PR].passed is True
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail is None
+    assert task_of(conn).gated_sha == implemented
 
 
 def test_open_rebases_and_updates_the_test_commit(
@@ -690,6 +695,7 @@ def test_a_commit_made_during_the_pre_pr_gate_is_not_pushed(
     assert report.state is TaskState.JUDGING
     assert report.detail
     assert gates_of(conn)[Gate.G2_PRE_PR].passed is False
+    assert task_of(conn).gated_sha is None
     assert remote_tip(remote) is None
     assert hub.created == []
 
@@ -1308,6 +1314,162 @@ def test_a_failed_create_can_be_retried_after_main_moves(
     assert task_of(conn).pushed_sha == head
     assert len(hub.created) == 2
     assert hub.comments == []
+
+
+# Skipping the pre-PR gate on a commit that already passed G2
+
+
+def test_the_pre_pr_gate_is_skipped_on_the_gated_commit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, gated_sha=implemented)
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, test_command="exit 1")
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert report.detail is None
+    result = gates_of(conn)[Gate.G2_PRE_PR]
+    assert result.passed is True
+    assert result.detail == "skipped"
+    task = task_of(conn)
+    assert task.gated_sha == implemented
+    assert task.pushed_sha == implemented
+    assert remote_tip(remote) == implemented
+    assert len(hub.created) == 1
+    assert "- G2_PRE_PR: passed" in str(hub.created[0]["body"])
+
+
+def test_a_skipped_pre_pr_gate_runs_no_test_command(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, gated_sha=implemented)
+    calls: list[object] = []
+
+    def run_tests(*args: object, **kwargs: object) -> str | None:
+        calls.append(args)
+        return "should not run"
+
+    monkeypatch.setattr(gate, "run_tests", run_tests)
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert calls == []
+
+
+def test_the_pre_pr_gate_runs_when_main_moved_since_the_gate(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, gated_sha=implemented)
+    move_main(repo)
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, test_command="exit 1")
+    )
+    assert report.state is TaskState.JUDGING
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is False
+    assert task_of(conn).gated_sha == implemented
+    assert remote_tip(remote) is None
+    assert hub.created == []
+
+
+def test_a_passing_pre_pr_gate_after_main_moved_records_the_new_head(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, gated_sha=implemented)
+    move_main(repo)
+    report = open_pr(conn, repo, tmp_path)
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != implemented
+    assert report.state is TaskState.PR_OPEN
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail is None
+    assert task_of(conn).gated_sha == head
+
+
+def test_the_pre_pr_gate_runs_when_the_head_differs_from_the_gated_commit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(
+        conn, worktree, test_sha, state=TaskState.CONFLICT, gated_sha=test_sha
+    )
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, test_command="exit 1")
+    )
+    assert report.state is TaskState.JUDGING
+    assert events_of(conn) == [("conflict", "judging")]
+    assert task_of(conn).gated_sha == test_sha
+
+
+def test_a_failing_pre_pr_gate_leaves_the_gated_commit_alone(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, gated_sha="f" * 40)
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, test_command="exit 1")
+    )
+    assert report.state is TaskState.JUDGING
+    assert task_of(conn).gated_sha == "f" * 40
+
+
+def test_rerunning_after_a_failed_create_skips_the_pre_pr_gate(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    hub.create_error = GitHubError("boom")
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path)
+    assert task_of(conn).gated_sha == implemented
+    hub.create_error = None
+    report = open_pr(
+        conn, repo, tmp_path, target=make_target(repo, test_command="exit 1")
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail == "skipped"
+    assert remote_tip(remote) == implemented
+    assert len(hub.created) == 2
 
 
 # orch update

@@ -90,6 +90,8 @@ def test_a_task_goes_from_target_add_to_close(sandbox: Sandbox) -> None:
     assert sandbox.git(worktree, "rev-parse", "HEAD^") == test_sha
     assert sandbox.git(worktree, "show", "--name-only", "--format=", "HEAD") == CHANGED
     assert sandbox.git(worktree, "status", "--porcelain") == ""
+    gated = sandbox.head(worktree)
+    assert sandbox.task_row(TASK)["gated_sha"] == gated
 
     # pr: refused before a review is saved, with nothing pushed or created.
     refused = sandbox.orch("pr", TASK, unchecked=True)
@@ -112,6 +114,13 @@ def test_a_task_goes_from_target_add_to_close(sandbox: Sandbox) -> None:
     assert sandbox.task_row(TASK)["pushed_sha"] == head
     assert sandbox.status(TASK)["pr_url"] == url
     assert sandbox.gate_rows(TASK)["G2_PRE_PR"] is True
+    # main did not move, so the pre-PR gate is skipped on the gated commit.
+    assert head == gated
+    pre_pr = sandbox.query(
+        "SELECT detail FROM gate_results WHERE task_id = ? AND gate = 'G2_PRE_PR'",
+        TASK,
+    )
+    assert [row["detail"] for row in pre_pr] == ["skipped"]
     creates = [
         call for call in sandbox.gh_calls() if call["argv"][:2] == ["pr", "create"]
     ]
