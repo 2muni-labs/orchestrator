@@ -52,6 +52,7 @@ templates/task.md  task spec template
 schemas/           result and review JSON schemas
 scripts/gate.sh    manual gates G1 to G3, a fallback until M16
 scripts/run-sub.sh manual sub-agent runner, a fallback until M16
+scripts/guard_regress.py  guard false-positive check over local transcripts, kept after M16
 targets.toml       registered targets, with home-relative paths only
 .claude/agents/    read-only sub-agent definitions
 config/settings.json  hooks and deny rules that orch open injects

@@ -133,7 +133,14 @@ You run tasks through the installed `orch`. `R` below stands for
   push to that branch. Put the results in the pull request body.
 - `scripts/run-sub.sh` and `scripts/gate.sh` stay until M16 as a fallback for when
   `orch` itself fails and the user approves using them. Never handle one task with
-  both: they do not update `state.db`.
+  both: they do not update `state.db`. M16 removes only these two;
+  `scripts/guard_regress.py` stays.
+- `scripts/guard_regress.py` checks guard for false positives against your local
+  transcripts. Run a branch's guard with the worktree's `.venv/bin/python`, and the
+  installed guard with the installed orch tool's Python from the hub clone. Only the
+  number summary (total, unique, allow, deny, ask, false positives, deny count per
+  reason) leaves this machine. Never put `--show` output in a commit message, pull
+  request body or report.
 - When two pull requests go up together, finish a check on their combined state before
   the user merges and report it: full tests and ruff, in a temporary worktree that
   merges both. `orch update` checks each one against `main` only. Do not defer it to
