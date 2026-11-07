@@ -416,6 +416,21 @@ def finish_run(
             raise StateMismatchError(f"Run {run_id} already ended at {row[0]}")
 
 
+def get_run(conn: sqlite3.Connection, run_id: int) -> Run | None:
+    """Return the run with this run_id, or None."""
+    raise NotImplementedError
+
+
+def request_kill(conn: sqlite3.Connection, run_id: int, *, at: str) -> bool:
+    """Record an abort request on an unfinished run.
+
+    True: the run is unfinished and now has a request (an earlier request is kept,
+    not overwritten). False: the run already ended; nothing is written.
+    Raises RunNotFoundError for an unknown run_id.
+    """
+    raise NotImplementedError
+
+
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Run | None:
     """Return the task's run with the highest run_id, or None."""
     cursor = conn.execute(

@@ -181,7 +181,7 @@ def test_a_timeout_stops_the_agent_and_rejects_its_report(
     report = result_file(sandbox)
     assert (report["status"], report["failure_reason"]) == ("FAILED", "timeout")
     assert not (worktree / ".orch-result.json").exists()
-    rejected = sandbox.orch_home / TARGET / "logs" / f"{TASK}.rejected-result.json"
+    rejected = sandbox.orch_home / TARGET / "logs" / f"{TASK}.1.rejected-result.json"
     assert rejected.exists() is (scenario == "report_then_hang")
 
     run = sandbox.query("SELECT pid, outcome FROM runs WHERE task_id = ?", TASK)[0]

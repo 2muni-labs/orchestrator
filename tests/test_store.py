@@ -37,6 +37,7 @@ from orch.store import (
     connect,
     finish_run,
     gate_results,
+    get_run,
     get_task,
     insert_run,
     insert_task,
@@ -45,6 +46,7 @@ from orch.store import (
     list_tasks,
     migrate,
     record_gate_result,
+    request_kill,
     set_run_process,
     transaction,
     transition,
@@ -90,6 +92,7 @@ EXPECTED_COLUMNS = {
         "exit_code",
         "outcome",
         "failure_reason",
+        "kill_requested_at",
     },
     "locks": {"target", "path_glob", "task_id"},
     "gate_results": {"task_id", "attempt", "gate", "passed", "detail", "at"},
@@ -220,17 +223,16 @@ def test_primary_keys_match_the_design(conn: sqlite3.Connection) -> None:
 
 
 def test_version_is_the_number_of_migrations(conn: sqlite3.Connection) -> None:
-    assert len(store.MIGRATIONS) == 3
-    assert user_version(conn) == 3
+    assert user_version(conn) == len(store.MIGRATIONS)
 
 
 def test_migrate_is_idempotent(db_path: Path) -> None:
     conn = connect(db_path)
     insert_task(conn, make_task())
-    assert migrate(conn) == 3
+    assert migrate(conn) == len(store.MIGRATIONS)
     conn.close()
     reopened = connect(db_path)
-    assert user_version(reopened) == 3
+    assert user_version(reopened) == len(store.MIGRATIONS)
     assert get_task(reopened, "feat-x") is not None
 
 
@@ -239,10 +241,11 @@ def test_new_migration_applies_once_and_keeps_data(
 ) -> None:
     conn = connect(db_path)
     insert_task(conn, make_task())
+    latest = len(store.MIGRATIONS)
     added = ("CREATE TABLE extra (id INTEGER PRIMARY KEY)",)
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, added))
-    assert migrate(conn) == 4
-    assert migrate(conn) == 4
+    assert migrate(conn) == latest + 1
+    assert migrate(conn) == latest + 1
     assert "extra" in table_names(conn)
     assert get_task(conn, "feat-x") is not None
 
@@ -251,11 +254,12 @@ def test_failed_migration_rolls_back_entirely(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = connect(db_path)
+    latest = len(store.MIGRATIONS)
     broken = ("CREATE TABLE half_done (id INTEGER PRIMARY KEY)", "THIS IS NOT SQL")
     monkeypatch.setattr(store, "MIGRATIONS", (*store.MIGRATIONS, broken))
     with pytest.raises(sqlite3.Error):
         migrate(conn)
-    assert user_version(conn) == 3
+    assert user_version(conn) == latest
     assert "half_done" not in table_names(conn)
     assert conn.in_transaction is False
 
@@ -274,7 +278,7 @@ def test_concurrent_first_connections_migrate_once(db_path: Path) -> None:
 
     assert run_in_threads(work) == []
     conn = connect(db_path)
-    assert user_version(conn) == 3
+    assert user_version(conn) == len(store.MIGRATIONS)
     assert table_names(conn) == set(EXPECTED_COLUMNS)
 
 
@@ -569,7 +573,7 @@ def test_v1_database_gains_pushed_sha_and_keeps_its_rows(db_path: Path) -> None:
     )
     old.close()
     conn = connect(db_path)
-    assert user_version(conn) == 3
+    assert user_version(conn) == len(store.MIGRATIONS)
     loaded = get_task(conn, "old")
     assert loaded is not None
     assert loaded.title == "Old"
@@ -595,7 +599,7 @@ def test_v2_database_gains_gated_sha_and_keeps_its_rows(db_path: Path) -> None:
     )
     old.close()
     conn = connect(db_path)
-    assert user_version(conn) == 3
+    assert user_version(conn) == len(store.MIGRATIONS)
     assert "gated_sha" in {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
     loaded = get_task(conn, "old")
     assert loaded is not None
@@ -993,6 +997,71 @@ def test_run_changes_join_a_callers_transaction(conn: sqlite3.Connection) -> Non
             insert_run(conn, make_run())
             raise LookupError("stop")
     assert latest_run(conn, "a") is None
+
+
+# Kill requests (schema v4)
+
+
+def test_a_new_run_has_no_kill_request(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    run_id = insert_run(conn, make_run())
+    run = latest_run(conn, "a")
+    assert run is not None
+    assert run.kill_requested_at is None
+    assert get_run(conn, run_id) == run
+
+
+def test_get_run_returns_that_run_or_none(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    first = insert_run(conn, make_run("a", 1))
+    insert_run(conn, make_run("a", 2))
+    run = get_run(conn, first)
+    assert run is not None
+    assert (run.run_id, run.attempt, run.lane) == (first, 1, Lane.B)
+    assert get_run(conn, 999) is None
+
+
+def test_request_kill_marks_an_unfinished_run_once(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    run_id = insert_run(conn, make_run())
+    assert request_kill(conn, run_id, at="t1") is True
+    assert request_kill(conn, run_id, at="t2") is True
+    run = get_run(conn, run_id)
+    assert run is not None
+    assert run.kill_requested_at == "t1"
+    assert run.ended_at is None
+
+
+def test_request_kill_writes_nothing_on_an_ended_run(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    run_id = insert_run(conn, make_run())
+    finish_run(conn, run_id, ended_at="t0", exit_code=0, outcome=Outcome.DONE)
+    assert request_kill(conn, run_id, at="t1") is False
+    run = get_run(conn, run_id)
+    assert run is not None
+    assert run.kill_requested_at is None
+    assert (run.ended_at, run.outcome) == ("t0", Outcome.DONE)
+
+
+def test_request_kill_reports_a_missing_run(conn: sqlite3.Connection) -> None:
+    with pytest.raises(RunNotFoundError):
+        request_kill(conn, 99, at="t")
+
+
+def test_a_v3_database_gains_the_kill_column(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statements in store.MIGRATIONS[:3]:
+        for statement in statements:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 3")
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == len(store.MIGRATIONS)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    assert "kill_requested_at" in columns
+    assert store.MIGRATIONS[3] == (
+        "ALTER TABLE runs ADD COLUMN kill_requested_at TEXT",
+    )
 
 
 # Gate results

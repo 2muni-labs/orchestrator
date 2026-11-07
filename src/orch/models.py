@@ -147,6 +147,7 @@ class Run:
     exit_code: int | None = None
     outcome: Outcome | None = None
     failure_reason: FailureReason | None = None
+    kill_requested_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

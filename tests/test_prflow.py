@@ -1762,6 +1762,60 @@ def test_close_cleans_up_a_merged_task(
     assert hub.status_calls == [{"url": URL, "token": TOKEN}]
 
 
+def to_conflict(conn: sqlite3.Connection) -> None:
+    store.transition(conn, TASK, TaskState.PR_OPEN, TaskState.CONFLICT, actor="orch")
+
+
+def test_close_cleans_up_a_merged_task_in_conflict(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    hub: FakeGitHub,
+) -> None:
+    to_conflict(conn)
+    close(conn, repo)
+    assert task_of(conn).state is TaskState.CLOSED
+    assert not worktree.exists()
+    assert BRANCH not in git(repo, "branch", "--list", BRANCH)
+    last = conn.execute(
+        "SELECT from_state, to_state FROM events WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (TASK,),
+    ).fetchone()
+    assert last == ("conflict", "closed")
+    assert hub.status_calls == [{"url": URL, "token": TOKEN}]
+
+
+def test_close_refuses_an_unmerged_pull_request_in_conflict(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    hub: FakeGitHub,
+) -> None:
+    to_conflict(conn)
+    hub.merged = False
+    with pytest.raises(PullRequestFlowError):
+        close(conn, repo)
+    assert task_of(conn).state is TaskState.CONFLICT
+    assert worktree.exists()
+
+
+def test_close_refuses_a_conflict_without_a_pull_request(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, state=TaskState.CONFLICT)
+    with pytest.raises(PullRequestFlowError):
+        close(conn, repo)
+    assert task_of(conn).state is TaskState.CONFLICT
+    assert hub.status_calls == []
+
+
 def test_close_refuses_an_unmerged_pull_request(
     conn: sqlite3.Connection,
     repo: Path,

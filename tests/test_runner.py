@@ -399,7 +399,7 @@ def test_a_leftover_report_does_not_count_as_this_run(
     result = run(conn, repo, paths, home, "immediate_exit")
     assert result.status is Outcome.FAILED
     assert result.failure_reason is FailureReason.REPORT_MISSING
-    assert not (paths.logs / f"{TASK}.rejected-result.json").exists()
+    assert not (paths.logs / f"{TASK}.1.rejected-result.json").exists()
 
 
 def test_first_attempt_becomes_one_and_a_retry_keeps_its_number(
@@ -599,7 +599,7 @@ def test_a_rejected_report_is_kept_in_the_logs(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
 ) -> None:
     run(conn, repo, paths, home, "malformed_report")
-    rejected = paths.logs / f"{TASK}.rejected-result.json"
+    rejected = paths.logs / f"{TASK}.1.rejected-result.json"
     assert rejected.read_text(encoding="utf-8") == "{not json"
 
 
@@ -607,7 +607,7 @@ def test_a_report_from_a_killed_run_is_kept_but_not_used(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
 ) -> None:
     run(conn, repo, paths, home, "report_then_killed")
-    assert (paths.logs / f"{TASK}.rejected-result.json").exists()
+    assert (paths.logs / f"{TASK}.1.rejected-result.json").exists()
 
 
 def test_a_substitute_report_names_the_log(
@@ -1107,7 +1107,7 @@ def test_a_report_does_not_save_a_run_past_its_limit(
     result = run(conn, repo, paths, home, "report_then_hang")
     assert result.failure_reason is FailureReason.TIMEOUT
     assert not (worktree / ".orch-result.json").exists()
-    assert (paths.logs / f"{TASK}.rejected-result.json").exists()
+    assert (paths.logs / f"{TASK}.1.rejected-result.json").exists()
 
 
 def test_an_agent_ignoring_sigterm_gets_sigkill(
@@ -1420,3 +1420,262 @@ def test_on_started_is_optional(
     worktree: Path,
 ) -> None:
     assert run(conn, repo, paths, home, "success").status == "DONE"
+
+
+# Rejected reports follow the run's log number (m-kill-core)
+
+
+def test_rejected_path_uses_the_log_number(tmp_path: Path) -> None:
+    assert runner.rejected_path(tmp_path / f"{TASK}.3.log") == (
+        tmp_path / f"{TASK}.3.rejected-result.json"
+    )
+    assert runner.rejected_path(tmp_path / "a.b.12.log") == (
+        tmp_path / "a.b.12.rejected-result.json"
+    )
+
+
+def test_latest_log_path_is_the_highest_number_of_this_task(tmp_path: Path) -> None:
+    assert runner.latest_log_path(tmp_path / "missing", TASK) is None
+    for name in (f"{TASK}.1.log", f"{TASK}.10.log", f"{TASK}.2.log", "other.11.log"):
+        write(tmp_path / name)
+    write(tmp_path / f"{TASK}.log")
+    assert runner.latest_log_path(tmp_path, TASK) == tmp_path / f"{TASK}.10.log"
+    assert runner.latest_log_path(tmp_path, "nobody") is None
+
+
+def test_a_second_run_keeps_the_first_rejected_report(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+) -> None:
+    run(conn, repo, paths, home, "malformed_report")
+    conn.execute("UPDATE tasks SET state = 'reserved' WHERE id = ?", (TASK,))
+    run(conn, repo, paths, home, "report_then_killed")
+    assert (paths.logs / f"{TASK}.1.rejected-result.json").read_text(
+        encoding="utf-8"
+    ) == "{not json"
+    assert (paths.logs / f"{TASK}.2.rejected-result.json").exists()
+    assert not (paths.logs / f"{TASK}.rejected-result.json").exists()
+
+
+# Stopping a recorded process (m-kill-core)
+
+
+def start_sleeper(*, ignore_term: bool = False) -> subprocess.Popen[bytes]:
+    code = "import signal, time\n"
+    if ignore_term:
+        code += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    code += "print('ready', flush=True)\ntime.sleep(3600)\n"
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline() == b"ready\n"
+    return process
+
+
+def test_process_alive_needs_the_recorded_start_time() -> None:
+    real_ps()
+    process = start_sleeper()
+    try:
+        started = process_started_at(process.pid)
+        assert started
+        assert runner.process_alive(process.pid, started) is True
+        assert runner.process_alive(process.pid, "") is False
+        assert runner.process_alive(process.pid, "Thu Jan  1 00:00:00 1970") is False
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_stop_pid_sends_nothing_to_a_process_that_is_not_the_recorded_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append(("pg", pid, sig)))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(("p", pid, sig)))
+    assert runner.stop_pid(4242, "x", alive=lambda pid, started: False) is False
+    assert sent == []
+
+
+def test_stop_pid_terminates_the_group() -> None:
+    real_ps()
+    process = start_sleeper()
+    started = process_started_at(process.pid)
+    assert runner.stop_pid(process.pid, started, grace_sec=5, poll_sec=0.05) is True
+    assert process.wait(timeout=5) == -signal.SIGTERM
+
+
+def test_stop_pid_kills_a_process_that_ignores_term() -> None:
+    real_ps()
+    process = start_sleeper(ignore_term=True)
+    started = process_started_at(process.pid)
+    begun = time.monotonic()
+    assert runner.stop_pid(process.pid, started, grace_sec=0.5, poll_sec=0.05) is True
+    assert process.wait(timeout=5) == -signal.SIGKILL
+    assert time.monotonic() - begun < 5
+
+
+# The runner honours an abort request (m-kill-core)
+
+
+def start_run(
+    tmp_path: Path, repo: Path, paths: TargetPaths, home: Path, scenario: str
+) -> tuple[threading.Thread, dict[str, object]]:
+    outcome: dict[str, object] = {}
+
+    def target() -> None:
+        own = connect(tmp_path / "state.db")
+        try:
+            outcome["result"] = run_task(
+                own,
+                TASK,
+                target=make_target(repo),
+                config=make_config(),
+                paths=paths,
+                environ=make_env(home, scenario),
+            )
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            outcome["error"] = exc
+        finally:
+            own.close()
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def wait_for_pid(conn: sqlite3.Connection, limit: float = 20.0) -> Run:
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        row = latest_run(conn, TASK)
+        if row is not None and row.pid:
+            return row
+        time.sleep(0.05)
+    raise AssertionError("the run never recorded its process")
+
+
+def finish(thread: threading.Thread, outcome: dict[str, object]) -> results.TaskResult:
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    result = outcome["result"]
+    assert isinstance(result, results.TaskResult)
+    return result
+
+
+def test_an_abort_request_wins_over_a_signal_and_a_report(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+) -> None:
+    thread, outcome = start_run(tmp_path, repo, paths, home, "report_then_hang")
+    row = wait_for_pid(conn)
+    deadline = time.monotonic() + 10
+    while not (worktree / ".orch-result.json").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert row.run_id is not None
+    assert store.request_kill(conn, row.run_id, at="2026-11-07T00:00:00+00:00")
+    os.killpg(row.pid, signal.SIGTERM)
+    result = finish(thread, outcome)
+    assert (result.status, result.failure_reason) == (
+        Outcome.FAILED,
+        FailureReason.ABORTED,
+    )
+    assert result.summary == runner.KILL_SUMMARY
+    assert (paths.logs / f"{TASK}.1.rejected-result.json").exists()
+    saved = load_result(paths.results / f"{TASK}.json", TASK)
+    assert saved.failure_reason is FailureReason.ABORTED
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+    assert task_of(conn).state is TaskState.JUDGING
+
+
+def test_an_abort_request_wins_over_the_time_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    add_task(conn, repo, paths, tmp_path / "worktrees", timeout_sec=2)
+    thread, outcome = start_run(tmp_path, repo, paths, home, "timeout")
+    row = wait_for_pid(conn)
+    assert row.run_id is not None
+    assert store.request_kill(conn, row.run_id, at="2026-11-07T00:00:00+00:00")
+    result = finish(thread, outcome)
+    assert result.failure_reason is FailureReason.ABORTED
+    assert run_of(conn).failure_reason is FailureReason.ABORTED
+
+
+def end_run_as_kill_would(conn: sqlite3.Connection, run_id: int) -> None:
+    with store.transaction(conn):
+        store.finish_run(
+            conn,
+            run_id,
+            ended_at="2026-11-07T00:00:00+00:00",
+            exit_code=None,
+            outcome=Outcome.FAILED,
+            failure_reason=FailureReason.ABORTED,
+        )
+        store.transition(
+            conn, TASK, TaskState.RUNNING, TaskState.JUDGING, actor="orch", note="kill"
+        )
+
+
+def test_the_runner_keeps_a_run_that_kill_already_recorded(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+) -> None:
+    thread, outcome = start_run(tmp_path, repo, paths, home, "timeout")
+    row = wait_for_pid(conn)
+    assert row.run_id is not None
+    recorded = results.substitute_result(
+        task_id=TASK,
+        status=Outcome.FAILED,
+        failure_reason=FailureReason.ABORTED,
+        summary="kill이 기록한 결과",
+        verification_command="true",
+        log_path="~/x.log",
+    )
+    destination = paths.results / f"{TASK}.json"
+    results.write_result(destination, recorded)
+    before = destination.read_bytes()
+    end_run_as_kill_would(conn, row.run_id)
+    os.killpg(row.pid, signal.SIGKILL)
+    result = finish(thread, outcome)
+    assert result.summary == "kill이 기록한 결과"
+    assert destination.read_bytes() == before
+    assert events_of(conn).count(("running", "judging")) == 1
+    assert run_of(conn).ended_at == "2026-11-07T00:00:00+00:00"
+    assert task_of(conn).state is TaskState.JUDGING
+
+
+def test_the_runner_writes_nothing_when_kill_recorded_without_a_file(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+) -> None:
+    thread, outcome = start_run(tmp_path, repo, paths, home, "timeout")
+    row = wait_for_pid(conn)
+    assert row.run_id is not None
+    end_run_as_kill_would(conn, row.run_id)
+    os.killpg(row.pid, signal.SIGKILL)
+    result = finish(thread, outcome)
+    assert (result.status, result.failure_reason) == (
+        Outcome.FAILED,
+        FailureReason.ABORTED,
+    )
+    assert result.summary == runner.KILL_SUMMARY
+    assert not (paths.results / f"{TASK}.json").exists()
+    assert events_of(conn).count(("running", "judging")) == 1

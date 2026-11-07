@@ -1,15 +1,36 @@
-"""orch prepare, retry, resume and discard, and the move of a blocked run to blocked."""
+"""orch prepare, retry, resume, discard and kill, and moving a blocked run."""
 
 import os
 import sqlite3
 import tempfile
+from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orch import gate, github, gitops, models, results, scheduler, store, taskfile
+from orch import (
+    gate,
+    github,
+    gitops,
+    models,
+    results,
+    runner,
+    scheduler,
+    store,
+    taskfile,
+)
 from orch.config import Limits, Target, TargetPaths
-from orch.models import GateResult, Outcome, Review, Severity, Task, TaskState, Verdict
+from orch.models import (
+    FailureReason,
+    GateResult,
+    Outcome,
+    Review,
+    Severity,
+    Task,
+    TaskState,
+    Verdict,
+)
 from orch.scheduler import Decision
 
 
@@ -354,3 +375,30 @@ def discard_task(
     except gitops.GitError as exc:
         raise LifecycleError(str(exc)) from exc
     store.transition(conn, task_id, task.state, TaskState.DISCARDED, actor="orch")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KillReport:
+    """How orch kill ended a running task."""
+
+    task_id: str
+    state: TaskState
+    outcome: Outcome
+    failure_reason: FailureReason | None
+    finished_by: str
+    signalled: bool
+
+
+def kill_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    paths: TargetPaths,
+    environ: Mapping[str, str],
+    settle_sec: float = 30.0,
+    grace_sec: float = runner.TERM_GRACE_SEC,
+    poll_sec: float = 0.2,
+    alive: Callable[[int, str], bool] = runner.process_alive,
+) -> KillReport:
+    """Stop a running task and record FAILED/aborted exactly once."""
+    raise NotImplementedError

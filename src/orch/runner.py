@@ -18,6 +18,7 @@ from orch.results import TaskResult
 from orch.taskfile import TaskFileError, parse_task
 
 TERM_GRACE_SEC = 10
+KILL_SUMMARY = "orch kill로 중단했습니다."
 
 
 class RunError(Exception):
@@ -36,6 +37,16 @@ def next_log_path(logs: Path, task_id: str) -> Path:
     except FileNotFoundError:
         pass
     return logs / f"{task_id}.{highest + 1}.log"
+
+
+def rejected_path(log_path: Path) -> Path:
+    """<dir>/<id>.<n>.log -> <dir>/<id>.<n>.rejected-result.json."""
+    raise NotImplementedError
+
+
+def latest_log_path(logs: Path, task_id: str) -> Path | None:
+    """The highest numbered <id>.<n>.log of this task, or None."""
+    raise NotImplementedError
 
 
 def log_label(log_path: Path, environ: Mapping[str, str]) -> str:
@@ -112,6 +123,29 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
         pass
     _send(process.pid, pids, signal.SIGKILL)
     process.wait()
+
+
+def process_alive(pid: int, started_at: str) -> bool:
+    """True only if started_at is non-empty and equals process_started_at(pid)."""
+    raise NotImplementedError
+
+
+def stop_pid(
+    pid: int,
+    started_at: str,
+    *,
+    alive: Callable[[int, str], bool] = process_alive,
+    grace_sec: float = TERM_GRACE_SEC,
+    poll_sec: float = 0.1,
+) -> bool:
+    """Stop a recorded agent that this process did not start.
+
+    If alive(pid, started_at) is false, send nothing and return False. Otherwise
+    take descendants(pid), send SIGTERM to the group pid and those descendants,
+    poll alive every poll_sec until grace_sec passes, and if it is still alive,
+    send SIGKILL the same way. Return True.
+    """
+    raise NotImplementedError
 
 
 def _reject_report(source: Path, rejected: Path) -> None:
