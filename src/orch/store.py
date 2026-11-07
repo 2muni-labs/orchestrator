@@ -80,6 +80,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     ),
     ("ALTER TABLE tasks ADD COLUMN pushed_sha TEXT",),
     ("ALTER TABLE tasks ADD COLUMN gated_sha TEXT",),
+    ("ALTER TABLE runs ADD COLUMN kill_requested_at TEXT",),
 )
 
 
@@ -418,7 +419,9 @@ def finish_run(
 
 def get_run(conn: sqlite3.Connection, run_id: int) -> Run | None:
     """Return the run with this run_id, or None."""
-    raise NotImplementedError
+    cursor = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,))
+    row = cursor.fetchone()
+    return None if row is None else _run_from_row(cursor, row)
 
 
 def request_kill(conn: sqlite3.Connection, run_id: int, *, at: str) -> bool:
@@ -428,7 +431,17 @@ def request_kill(conn: sqlite3.Connection, run_id: int, *, at: str) -> bool:
     not overwritten). False: the run already ended; nothing is written.
     Raises RunNotFoundError for an unknown run_id.
     """
-    raise NotImplementedError
+    with transaction(conn):
+        cursor = conn.execute(
+            """UPDATE runs SET kill_requested_at = COALESCE(kill_requested_at, ?)
+            WHERE run_id = ? AND ended_at IS NULL""",
+            (at, run_id),
+        )
+        if cursor.rowcount:
+            return True
+        if get_run(conn, run_id) is None:
+            raise RunNotFoundError(run_id)
+        return False
 
 
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Run | None:
@@ -440,6 +453,11 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Run | None:
     row = cursor.fetchone()
     if row is None:
         return None
+    return _run_from_row(cursor, row)
+
+
+def _run_from_row(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> Run:
+    """Restore a run's enum fields from a database row."""
     fields = dict(zip((column[0] for column in cursor.description), row, strict=True))
     fields["lane"] = Lane(fields["lane"])
     if fields["effort"] is not None:
