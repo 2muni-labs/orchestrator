@@ -1,7 +1,9 @@
 """orch review: run a Codex review, store a review verdict, validate a triage."""
 
 import os
+import signal
 import sqlite3
+import subprocess
 import tempfile
 import tomllib
 from collections import Counter
@@ -10,9 +12,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from orch import config, results, store
+from orch import config, gitops, results, runner, store
 from orch.config import Config, Target, TargetPaths
-from orch.models import Review, Severity, Task, TaskState, Verdict
+from orch.lanes import base, codex
+from orch.models import Lane, Review, Severity, Task, TaskState, Verdict
 from orch.redact import RedactionError, redact
 
 OVERRIDE_LABEL = "review-overridden"
@@ -83,6 +86,14 @@ def parse_triage(text: str) -> Triage:
         path = table["path"]
         if not isinstance(path, str) or not path:
             raise ReviewFlowError("Triage path must not be empty")
+        if (
+            any(not " " <= char <= "~" for char in path)
+            or "`" in path
+            or path.startswith(("/", "~"))
+            or "\\" in path
+            or ".." in path.split("/")
+        ):
+            raise ReviewFlowError("Triage path must be plain and repository relative")
         try:
             verdict = TriageVerdict(table["verdict"])
         except ValueError as exc:
@@ -209,7 +220,11 @@ def save_review(
     if triage_file is not None:
         triage = load_triage(triage_file)
         check_triage(conn, triage, review, task)
-        for value in (*[item.decision for item in triage.decisions], triage.body):
+        for value in (
+            *[item.decision for item in triage.decisions],
+            *[item.path for item in triage.decisions],
+            triage.body,
+        ):
             try:
                 safe_value = redact(value, home=home, orch_home=orch_home)
             except RedactionError as exc:
@@ -288,12 +303,27 @@ class ReviewRun:
 
 def review_prompt(task_id: str, *, spec_path: Path, diff_path: Path) -> str:
     """Return the English prompt for a Codex review."""
-    raise NotImplementedError
+    return (
+        f'Task id: "{task_id}"\n'
+        f"Task specification: {spec_path}\n"
+        f"Review diff: {diff_path}\n\n"
+        "Read the specification and diff, and review the implementation. "
+        "Do not modify any files.\n"
+        "Your final message must be exactly one JSON object with these fields:\n"
+        f'- "task_id": "{task_id}"\n'
+        '- "reviewer": "codex-review"\n'
+        '- "verdict": "PASS" or "BLOCK"; use "BLOCK" only when there are '
+        "P0 or P1 findings.\n"
+        '- "findings": an array of objects with "severity" ("P0", "P1", '
+        '"P2", or "P3"), "path" (a repository-relative path), and "summary" '
+        "(one or two sentences in Korean).\n"
+        "Include no Markdown fences or other text in the final message.\n"
+    )
 
 
 def next_review_log(logs: Path, task_id: str) -> Path:
     """Return logs/review/<id>.<n>.log for the next review, without creating it."""
-    raise NotImplementedError
+    return runner.next_log_path(logs / "review", task_id)
 
 
 def run_codex_review(
@@ -311,4 +341,92 @@ def run_codex_review(
     timeout_sec: int | None = None,
 ) -> ReviewRun:
     """Review a Claude implementation with codex exec and save a valid review."""
-    raise NotImplementedError
+    task = store.get_task(conn, task_id)
+    if task is None or task.state is not TaskState.REVIEWING:
+        raise ReviewFlowError("Task must exist and be reviewing")
+    if task.lane not in (Lane.C, Lane.D):
+        raise ReviewFlowError("Codex can review only Claude implementations")
+    if not task.worktree or not (worktree := Path(task.worktree)).is_dir():
+        raise ReviewFlowError("Task worktree must be a directory")
+    spec_path = paths.tasks / f"{task_id}.md"
+    if not spec_path.is_file():
+        raise ReviewFlowError("Task specification is missing")
+
+    base_sha = gitops.merge_base(worktree, f"origin/{target.default_branch}")
+    diff_text = gitops.diff(worktree, base_sha)
+    diff_path = paths.reviews / f"{task_id}.diff"
+    diff_path.parent.mkdir(parents=True, exist_ok=True)
+    diff_path.write_text(diff_text, encoding="utf-8")
+    log_path = next_review_log(paths.logs, task_id)
+    output_path = log_path.with_suffix(".out")
+    state = task.state
+    outcome = ReviewOutcome.FAILED
+    exit_code = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.unlink(missing_ok=True)
+        command = codex.build_review_command(
+            worktree=worktree,
+            prompt=review_prompt(task_id, spec_path=spec_path, diff_path=diff_path),
+            output_path=output_path,
+            model=model,
+            effort=effort,
+            config=config,
+            environ=environ,
+        )
+        with (
+            tempfile.TemporaryFile(dir=log_path.parent) as stdin,
+            log_path.open("xb") as log,
+        ):
+            stdin.write(command.stdin_text.encode("utf-8"))
+            stdin.seek(0)
+            process = subprocess.Popen(
+                list(command.argv),
+                cwd=command.cwd,
+                env=dict(command.env),
+                stdin=stdin,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError, base.LaneError:
+        pass
+    else:
+        timed_out = False
+        try:
+            process.wait(
+                timeout=task.timeout_sec if timeout_sec is None else timeout_sec
+            )
+        except subprocess.TimeoutExpired:
+            runner.stop_process(process)
+            timed_out = True
+        else:
+            runner._send(process.pid, set(), signal.SIGKILL)
+        exit_code = process.returncode
+        if timed_out:
+            outcome = ReviewOutcome.TIMEOUT
+        elif exit_code == 0 and output_path.exists():
+            try:
+                text = output_path.read_text(encoding="utf-8")
+                state = save_review(
+                    conn, task_id, text, paths=paths, home=home, orch_home=orch_home
+                )
+            except ReviewFlowError, OSError, UnicodeError:
+                outcome = ReviewOutcome.INVALID
+            else:
+                outcome = ReviewOutcome.SAVED
+        elif codex.hit_usage_limit(
+            log_path,
+            patterns=base.patterns_for(config, "codex"),
+            environ=environ,
+        ):
+            outcome = ReviewOutcome.QUOTA
+    return ReviewRun(
+        task_id=task_id,
+        outcome=outcome,
+        state=state,
+        exit_code=exit_code,
+        log_path=log_path,
+        output_path=output_path,
+        diff_path=diff_path,
+    )
