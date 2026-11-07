@@ -159,6 +159,10 @@ You run tasks through the installed `orch`. `R` below stands for
   expects a refusal, or whose command is replaced with a fake, `unchecked=True`. In a
   test with several calls, make every call before asserting on behavior the stubs
   lack, so that an early failure cannot hide a later call from the check.
+- A spec that relies on an external tool's exit codes, output format or failure
+  handling is written from results measured on the pinned version, not from
+  documentation or memory. State the version and the measurement in the spec
+  (m14-cli: only exit 2 or a deny output blocks a PreToolUse hook).
 - Before naming a function in a spec, read its code and confirm its behavior matches
   the spec's intent.
 - When a test expects a result from an existing module, such as a classification or
