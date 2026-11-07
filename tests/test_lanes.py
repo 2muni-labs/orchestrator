@@ -86,6 +86,10 @@ def test_lane_b_command_is_exact(agents: Config) -> None:
         str(agents.codex_path),
         "exec",
         "--json",
+        "--disable",
+        "hooks",
+        "--disable",
+        "plugins",
         "-C",
         str(Path("/", "w", "feat-x")),
         "-m",
@@ -617,3 +621,102 @@ def test_modules_import_only_the_standard_library_and_orch(module: object) -> No
             imported.add(node.module.split(".")[0])
     assert imported - {"orch"} <= sys.stdlib_module_names
     assert "subprocess" not in imported
+
+
+# Codex review command (m12-review-core)
+
+
+def build_review(
+    config: Config, environ: dict[str, str] | None = None, effort: str = "high"
+) -> LaneCommand:
+    return codex.build_review_command(
+        worktree=Path("/", "w", "feat-x"),
+        prompt="Review this.\n",
+        output_path=Path("/", "o", "logs", "review", "feat-x.1.out"),
+        model="gpt-6.1-sol",
+        effort=effort,
+        config=config,
+        environ=environ if environ is not None else {"PATH": "/usr/bin"},
+    )
+
+
+def test_review_command_is_exact(agents: Config) -> None:
+    command = build_review(agents)
+    assert command.provider == "codex"
+    assert command.argv == (
+        str(agents.codex_path),
+        "exec",
+        "--json",
+        "--disable",
+        "hooks",
+        "--disable",
+        "plugins",
+        "-C",
+        str(Path("/", "w", "feat-x")),
+        "-m",
+        "gpt-6.1-sol",
+        "-c",
+        "model_reasoning_effort=high",
+        "--sandbox",
+        "read-only",
+        "-o",
+        str(Path("/", "o", "logs", "review", "feat-x.1.out")),
+        "-",
+    )
+    assert command.cwd == Path("/", "w", "feat-x")
+    assert command.stdin_text == "Review this.\n"
+    assert "Review this." not in " ".join(command.argv)
+
+
+def test_review_command_never_writes_outside_its_output(agents: Config) -> None:
+    argv = build_review(agents).argv
+    assert "workspace-write" not in argv
+    assert "--add-dir" not in argv
+    assert "--output-schema" not in argv
+
+
+@pytest.mark.parametrize("effort", ["", "max", "HIGH"])
+def test_review_command_refuses_an_unknown_effort(agents: Config, effort: str) -> None:
+    with pytest.raises(LaneError):
+        build_review(agents, effort=effort)
+
+
+def test_review_command_passes_only_the_allowed_environment(agents: Config) -> None:
+    environ = {
+        "PATH": "/usr/bin",
+        "HOME": "/h",
+        "CODEX_HOME": "/h/.codex",
+        "GH_TOKEN": "x",
+        "GITHUB_TOKEN": "y",
+        "OPENAI_API_KEY": "z",
+    }
+    assert dict(build_review(agents, environ).env) == {
+        "PATH": "/usr/bin",
+        "HOME": "/h",
+        "CODEX_HOME": "/h/.codex",
+    }
+
+
+def test_review_command_uses_the_fake_agent_in_fake_mode(
+    agents: Config, tmp_path: Path
+) -> None:
+    environ = {"PATH": "/usr/bin", "ORCH_FAKE_AGENTS": "1", "ORCH_HUB": str(tmp_path)}
+    command = build_review(agents, environ)
+    assert command.argv[0] == str(tmp_path / "tests" / "fake_agents" / "codex")
+
+
+# Isolation from the user's Codex hooks and plugin MCP servers
+
+
+def test_isolation_arguments_are_the_measured_ones() -> None:
+    """Measured on codex-cli 0.160.0: these two flags remove hooks and plugin MCP.
+
+    An unknown feature name is not rejected, so a typo would silently do nothing.
+    """
+    assert codex.ISOLATION_ARGS == ("--disable", "hooks", "--disable", "plugins")
+
+
+def test_both_codex_commands_carry_the_isolation_arguments(agents: Config) -> None:
+    for argv in (build(make_spec(), agents).argv, build_review(agents).argv):
+        start = argv.index("--json") + 1
+        assert argv[start : start + 4] == codex.ISOLATION_ARGS

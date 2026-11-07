@@ -29,6 +29,30 @@ def worktree_from_args(args):
     return os.getcwd()
 
 
+def output_from_args(args):
+    if "-o" in args:
+        position = args.index("-o") + 1
+        if position < len(args):
+            return args[position]
+    return None
+
+
+def review_task_id(prompt):
+    match = re.search(r'^Task id: "([^"]+)"', prompt, re.MULTILINE)
+    return match.group(1) if match else "unknown-task"
+
+
+def write_review(path, task_id, verdict="PASS", findings=()):
+    data = {
+        "task_id": task_id,
+        "reviewer": "codex-review",
+        "verdict": verdict,
+        "findings": list(findings),
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(data, ensure_ascii=False))
+
+
 def task_id_from_spec(spec):
     match = re.search(r'^id\s*=\s*"([^"]+)"', spec, re.MULTILINE)
     return match.group(1) if match else "unknown-task"
@@ -79,7 +103,10 @@ def start_child(**options):
 def main():
     scenario = os.environ.get("ORCH_FAKE_SCENARIO", "success")
     worktree = worktree_from_args(sys.argv[1:])
-    task_id = task_id_from_spec(sys.stdin.read())
+    stdin_text = sys.stdin.read()
+    task_id = task_id_from_spec(stdin_text)
+    output = output_from_args(sys.argv[1:])
+    review_id = review_task_id(stdin_text)
 
     if scenario == "success":
         touch(worktree, CHANGED_FILE)
@@ -149,6 +176,43 @@ def main():
     elif scenario == "detached_child":
         start_child(start_new_session=True)
         sleep_forever()
+    elif scenario == "review_pass":
+        write_review(output, review_id)
+    elif scenario == "review_block":
+        finding = {"severity": "P1", "path": "src/app.py", "summary": "결함 지적"}
+        write_review(output, review_id, verdict="BLOCK", findings=[finding])
+    elif scenario == "review_invalid":
+        with open(output, "w", encoding="utf-8") as handle:
+            handle.write("hello")
+    elif scenario == "review_bad_bytes":
+        with open(output, "wb") as handle:
+            handle.write(b"\xff\xfe not utf-8")
+    elif scenario == "review_wrong_task":
+        write_review(output, "another-task")
+    elif scenario == "review_no_output":
+        print("finished without a final message", flush=True)
+    elif scenario == "review_fail":
+        print("boom", file=sys.stderr, flush=True)
+        return 1
+    elif scenario == "review_usage_limit":
+        print(USAGE_LIMIT_MESSAGE, flush=True)
+        return 1
+    elif scenario == "review_noisy":
+        print("SECRET-LOG-MARKER read from a file", flush=True)
+        print("SECRET-LOG-MARKER on stderr", file=sys.stderr, flush=True)
+        write_review(output, review_id)
+    elif scenario == "review_args":
+        with open(os.environ["ORCH_FAKE_ARGS_FILE"], "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "argv": sys.argv[1:],
+                    "stdin": stdin_text,
+                    "env": sorted(os.environ),
+                    "cwd": os.getcwd(),
+                },
+                handle,
+            )
+        write_review(output, review_id)
     else:
         print("unknown scenario: " + scenario, file=sys.stderr)
         return 64

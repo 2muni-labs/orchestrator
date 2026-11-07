@@ -15,9 +15,12 @@ from orch.lanes.base import (
     matches_limit,
     resolve_agent,
 )
+from orch.models import Effort
 from orch.taskfile import TaskSpec
 
 PROVIDER = "codex"
+# Turn off the user's hooks and plugin MCP servers (measured on codex-cli 0.160.0).
+ISOLATION_ARGS: tuple[str, ...] = ("--disable", "hooks", "--disable", "plugins")
 
 
 def build_command(
@@ -39,6 +42,7 @@ def build_command(
             str(agent),
             "exec",
             "--json",
+            *ISOLATION_ARGS,
             "-C",
             str(worktree),
             "-m",
@@ -52,6 +56,47 @@ def build_command(
         cwd=worktree,
         env=child_env(environ),
         stdin_text=build_prompt(spec_text, task_id=spec.id, log_label=log_label),
+    )
+
+
+def build_review_command(
+    *,
+    worktree: Path,
+    prompt: str,
+    output_path: Path,
+    model: str,
+    effort: str,
+    config: Config,
+    environ: Mapping[str, str],
+) -> LaneCommand:
+    """codex exec in a read-only sandbox; the final message goes to output_path."""
+    try:
+        Effort(effort)
+    except ValueError as exc:
+        raise LaneError("Invalid Codex review effort") from exc
+    agent = resolve_agent(PROVIDER, config.codex_path, environ)
+    return LaneCommand(
+        provider=PROVIDER,
+        argv=(
+            str(agent),
+            "exec",
+            "--json",
+            *ISOLATION_ARGS,
+            "-C",
+            str(worktree),
+            "-m",
+            model,
+            "-c",
+            f"model_reasoning_effort={effort}",
+            "--sandbox",
+            "read-only",
+            "-o",
+            str(output_path),
+            "-",
+        ),
+        cwd=worktree,
+        env=child_env(environ),
+        stdin_text=prompt,
     )
 
 
