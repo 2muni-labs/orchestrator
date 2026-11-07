@@ -147,6 +147,7 @@ class Run:
     exit_code: int | None = None
     outcome: Outcome | None = None
     failure_reason: FailureReason | None = None
+    kill_requested_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -219,7 +220,12 @@ TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
             {TaskState.PR_OPEN, TaskState.CONFLICT, TaskState.JUDGING}
         ),
         TaskState.CONFLICT: frozenset(
-            {TaskState.PR_OPEN, TaskState.DISCARDED, TaskState.JUDGING}
+            {
+                TaskState.PR_OPEN,
+                TaskState.CLOSED,
+                TaskState.DISCARDED,
+                TaskState.JUDGING,
+            }
         ),
         TaskState.PR_OPEN: frozenset(
             {TaskState.CONFLICT, TaskState.CLOSED, TaskState.DISCARDED}

@@ -260,7 +260,7 @@ def close_task(
     task = store.get_task(conn, task_id)
     if task is None:
         raise PullRequestFlowError(f"Task not found: {task_id}")
-    if task.state != TaskState.PR_OPEN or not task.pr_url:
+    if task.state not in (TaskState.PR_OPEN, TaskState.CONFLICT) or not task.pr_url:
         raise PullRequestFlowError(f"Task needs an open pull request: {task_id}")
 
     status = github.pull_request_status(url=task.pr_url, token=token)
@@ -279,4 +279,4 @@ def close_task(
         pass
     else:
         gitops.delete_branch(target.path, branch)
-    store.transition(conn, task_id, TaskState.PR_OPEN, TaskState.CLOSED, actor="orch")
+    store.transition(conn, task_id, task.state, TaskState.CLOSED, actor="orch")

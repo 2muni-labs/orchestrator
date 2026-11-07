@@ -1,15 +1,37 @@
-"""orch prepare, retry, resume and discard, and the move of a blocked run to blocked."""
+"""orch prepare, retry, resume, discard and kill, and moving a blocked run."""
 
 import os
 import sqlite3
 import tempfile
+import time
+from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orch import gate, github, gitops, models, results, scheduler, store, taskfile
+from orch import (
+    gate,
+    github,
+    gitops,
+    models,
+    results,
+    runner,
+    scheduler,
+    store,
+    taskfile,
+)
 from orch.config import Limits, Target, TargetPaths
-from orch.models import GateResult, Outcome, Review, Severity, Task, TaskState, Verdict
+from orch.models import (
+    FailureReason,
+    GateResult,
+    Outcome,
+    Review,
+    Severity,
+    Task,
+    TaskState,
+    Verdict,
+)
 from orch.scheduler import Decision
 
 
@@ -354,3 +376,120 @@ def discard_task(
     except gitops.GitError as exc:
         raise LifecycleError(str(exc)) from exc
     store.transition(conn, task_id, task.state, TaskState.DISCARDED, actor="orch")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KillReport:
+    """How orch kill ended a running task."""
+
+    task_id: str
+    state: TaskState
+    outcome: Outcome
+    failure_reason: FailureReason | None
+    finished_by: str
+    signalled: bool
+
+
+def kill_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    paths: TargetPaths,
+    environ: Mapping[str, str],
+    settle_sec: float = 30.0,
+    grace_sec: float = runner.TERM_GRACE_SEC,
+    poll_sec: float = 0.2,
+    alive: Callable[[int, str], bool] = runner.process_alive,
+) -> KillReport:
+    """Stop a running task and record FAILED/aborted exactly once."""
+    task = _get_task(conn, task_id)
+    if task.state != TaskState.RUNNING:
+        raise LifecycleError(f"Kill needs a running task: {task_id}")
+    run = store.latest_run(conn, task_id)
+    if run is None or run.ended_at is not None:
+        raise LifecycleError(f"No unfinished run to kill: {task_id}")
+    run_id = run.run_id
+    if run_id is None:
+        raise LifecycleError(f"Run has no id: {task_id}")
+
+    signalled = False
+    finished_by = "runner"
+    if store.request_kill(conn, run_id, at=datetime.now(UTC).isoformat()):
+        if run.pid is not None and run.pid_started_at:
+            signalled = runner.stop_pid(
+                run.pid,
+                run.pid_started_at,
+                alive=alive,
+                grace_sec=grace_sec,
+                poll_sec=poll_sec,
+            )
+        deadline = time.monotonic() + settle_sec
+        while True:
+            run = store.get_run(conn, run_id)
+            if run is not None and run.ended_at is not None:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with store.transaction(conn):
+                    run = store.get_run(conn, run_id)
+                    if run is not None and run.ended_at is None:
+                        log_path = runner.latest_log_path(paths.logs, task_id)
+                        rejected = runner.rejected_path(
+                            log_path or paths.logs / f"{task_id}.1.log"
+                        )
+                        if task.worktree:
+                            runner._reject_report(
+                                Path(task.worktree) / ".orch-result.json", rejected
+                            )
+                        try:
+                            _, spec = _read_spec(paths.tasks / f"{task_id}.md")
+                            verify = spec.verify
+                        except LifecycleError:
+                            verify = ""
+                        result = results.substitute_result(
+                            task_id=task_id,
+                            status=Outcome.FAILED,
+                            failure_reason=FailureReason.ABORTED,
+                            summary=runner.KILL_SUMMARY,
+                            verification_command=verify,
+                            log_path=(
+                                runner.log_label(log_path, environ)
+                                if log_path is not None
+                                else ""
+                            ),
+                        )
+                        results.write_result(paths.results / f"{task_id}.json", result)
+                        ended_at = datetime.now(UTC).isoformat()
+                        store.finish_run(
+                            conn,
+                            run_id,
+                            ended_at=ended_at,
+                            exit_code=None,
+                            outcome=Outcome.FAILED,
+                            failure_reason=FailureReason.ABORTED,
+                        )
+                        store.transition(
+                            conn,
+                            task_id,
+                            TaskState.RUNNING,
+                            TaskState.JUDGING,
+                            actor="orch",
+                            note="kill",
+                            at=ended_at,
+                        )
+                        finished_by = "kill"
+                break
+            time.sleep(min(poll_sec, remaining))
+
+    run = store.get_run(conn, run_id)
+    task = _get_task(conn, task_id)
+    if run is None or run.ended_at is None or run.outcome is None:
+        raise LifecycleError(f"Run did not finish: {task_id}")
+    return KillReport(
+        task_id=task_id,
+        state=task.state,
+        outcome=run.outcome,
+        failure_reason=run.failure_reason,
+        finished_by=finished_by,
+        signalled=signalled,
+    )

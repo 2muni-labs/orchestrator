@@ -6,6 +6,7 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from orch.results import TaskResult
 from orch.taskfile import TaskFileError, parse_task
 
 TERM_GRACE_SEC = 10
+KILL_SUMMARY = "orch kill로 중단했습니다."
 
 
 class RunError(Exception):
@@ -36,6 +38,29 @@ def next_log_path(logs: Path, task_id: str) -> Path:
     except FileNotFoundError:
         pass
     return logs / f"{task_id}.{highest + 1}.log"
+
+
+def rejected_path(log_path: Path) -> Path:
+    """<dir>/<id>.<n>.log -> <dir>/<id>.<n>.rejected-result.json."""
+    return log_path.with_suffix(".rejected-result.json")
+
+
+def latest_log_path(logs: Path, task_id: str) -> Path | None:
+    """The highest numbered <id>.<n>.log of this task, or None."""
+    pattern = re.compile(rf"{re.escape(task_id)}\.(\d+)\.log")
+    latest: Path | None = None
+    highest = -1
+    try:
+        with os.scandir(logs) as entries:
+            for entry in entries:
+                if (match := pattern.fullmatch(entry.name)) and entry.is_file():
+                    number = int(match[1])
+                    if number > highest:
+                        highest = number
+                        latest = logs / entry.name
+    except FileNotFoundError:
+        pass
+    return latest
 
 
 def log_label(log_path: Path, environ: Mapping[str, str]) -> str:
@@ -114,6 +139,40 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
+def process_alive(pid: int, started_at: str) -> bool:
+    """True only if started_at is non-empty and equals process_started_at(pid)."""
+    return bool(started_at) and started_at == process_started_at(pid)
+
+
+def stop_pid(
+    pid: int,
+    started_at: str,
+    *,
+    alive: Callable[[int, str], bool] = process_alive,
+    grace_sec: float = TERM_GRACE_SEC,
+    poll_sec: float = 0.1,
+) -> bool:
+    """Stop a recorded agent that this process did not start.
+
+    If alive(pid, started_at) is false, send nothing and return False. Otherwise
+    take descendants(pid), send SIGTERM to the group pid and those descendants,
+    poll alive every poll_sec until grace_sec passes, and if it is still alive,
+    send SIGKILL the same way. Return True.
+    """
+    if not alive(pid, started_at):
+        return False
+    pids = descendants(pid)
+    _send(pid, pids, signal.SIGTERM)
+    deadline = time.monotonic() + grace_sec
+    while alive(pid, started_at):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _send(pid, pids, signal.SIGKILL)
+            break
+        time.sleep(min(poll_sec, remaining))
+    return True
+
+
 def _reject_report(source: Path, rejected: Path) -> None:
     """Preserve a report that cannot be used for this run, including symlinks."""
     if os.path.lexists(source):
@@ -130,19 +189,25 @@ def _finish_run(
     exit_code: int | None,
     substitute: Callable[[FailureReason | None, str], TaskResult],
 ) -> TaskResult:
-    """Persist the report, then finish the run together with its state change."""
-    try:
-        results.write_result(destination, result)
-    except Exception:
-        try:
-            destination.unlink(missing_ok=True)
-        except Exception:
-            pass
-        result = substitute(
-            FailureReason.REPORT_MISSING, "결과 파일을 저장하지 못했습니다."
-        )
-    ended_at = datetime.now(UTC).isoformat()
+    """Persist and finish only if another process has not already done so."""
     with store.transaction(conn):
+        run = store.get_run(conn, run_id)
+        if run is not None and run.ended_at is not None:
+            try:
+                return results.load_result(destination, task_id)
+            except results.ReportError:
+                return substitute(FailureReason.ABORTED, KILL_SUMMARY)
+        try:
+            results.write_result(destination, result)
+        except Exception:
+            try:
+                destination.unlink(missing_ok=True)
+            except Exception:
+                pass
+            result = substitute(
+                FailureReason.REPORT_MISSING, "결과 파일을 저장하지 못했습니다."
+            )
+        ended_at = datetime.now(UTC).isoformat()
         store.finish_run(
             conn,
             run_id,
@@ -219,7 +284,7 @@ def run_task(
 
     source = worktree / ".orch-result.json"
     destination = paths.results / f"{task_id}.json"
-    rejected = paths.logs / f"{task_id}.rejected-result.json"
+    rejected = rejected_path(log_path)
     started_at = datetime.now(UTC).isoformat()
     attempt = max(task.attempt, 1)
     with store.transaction(conn):
@@ -293,69 +358,95 @@ def run_task(
         else:
             _send(process.pid, set(), signal.SIGKILL)
 
-        try:
-            if timed_out:
-                _reject_report(source, rejected)
-                result = substitute(
-                    FailureReason.TIMEOUT, "작업 시간 상한을 초과했습니다."
+        # Collection moves a valid report, so serialize it with kill's finish too.
+        with store.transaction(conn):
+            run = store.get_run(conn, run_id)
+            if run is None:
+                raise store.RunNotFoundError(run_id)
+            if run.ended_at is not None:
+                if run.kill_requested_at is not None:
+                    _reject_report(source, rejected)
+                return _finish_run(
+                    conn,
+                    run_id,
+                    task_id,
+                    destination,
+                    substitute(FailureReason.ABORTED, KILL_SUMMARY),
+                    process.returncode,
+                    substitute,
                 )
-            elif process.returncode < 0:
-                _reject_report(source, rejected)
-                result = substitute(
-                    FailureReason.KILLED, "에이전트가 신호로 종료되었습니다."
-                )
-            else:
-                try:
-                    result = results.collect_result(
-                        source, destination, rejected, task_id
+            try:
+                if run.kill_requested_at is not None:
+                    _reject_report(source, rejected)
+                    result = substitute(FailureReason.ABORTED, KILL_SUMMARY)
+                elif timed_out:
+                    _reject_report(source, rejected)
+                    result = substitute(
+                        FailureReason.TIMEOUT, "작업 시간 상한을 초과했습니다."
                     )
-                except results.ReportError:
-                    if lanes.hit_usage_limit(
-                        spec.lane,
-                        log_path,
-                        spec_text=spec_text,
-                        config=config,
-                        environ=environ,
-                    ):
-                        result = substitute(
-                            None,
-                            "에이전트 사용량 한도에 도달했습니다.",
-                            Outcome.BLOCKED_QUOTA,
-                        )
-                    else:
-                        result = substitute(
-                            FailureReason.REPORT_MISSING,
-                            "유효한 결과 보고서를 받지 못했습니다.",
-                        )
+                elif process.returncode < 0:
+                    _reject_report(source, rejected)
+                    result = substitute(
+                        FailureReason.KILLED, "에이전트가 신호로 종료되었습니다."
+                    )
                 else:
-                    if result.status is Outcome.DONE:
-                        violations = gate.check_scope(
-                            worktree,
-                            since=task.test_sha,
-                            main_ref=f"origin/{target.default_branch}",
-                            modify=spec.modify,
-                            shared_paths=target.shared_paths,
+                    try:
+                        result = results.collect_result(
+                            source, destination, rejected, task_id
                         )
-                        if violations:
-                            result = replace(
-                                result,
-                                status=Outcome.FAILED,
-                                failure_reason=FailureReason.OUT_OF_SCOPE,
-                                out_of_scope_changes=tuple(
-                                    sorted(
-                                        set(violations.test_file_changed)
-                                        | set(violations.shared_file_changed)
-                                        | set(violations.out_of_scope)
-                                    )
-                                ),
+                    except results.ReportError:
+                        if lanes.hit_usage_limit(
+                            spec.lane,
+                            log_path,
+                            spec_text=spec_text,
+                            config=config,
+                            environ=environ,
+                        ):
+                            result = substitute(
+                                None,
+                                "에이전트 사용량 한도에 도달했습니다.",
+                                Outcome.BLOCKED_QUOTA,
                             )
-        except Exception:
-            result = substitute(
-                FailureReason.REPORT_MISSING, "실행 결과를 분류하지 못했습니다."
+                        else:
+                            result = substitute(
+                                FailureReason.REPORT_MISSING,
+                                "유효한 결과 보고서를 받지 못했습니다.",
+                            )
+                    else:
+                        if result.status is Outcome.DONE:
+                            violations = gate.check_scope(
+                                worktree,
+                                since=task.test_sha,
+                                main_ref=f"origin/{target.default_branch}",
+                                modify=spec.modify,
+                                shared_paths=target.shared_paths,
+                            )
+                            if violations:
+                                result = replace(
+                                    result,
+                                    status=Outcome.FAILED,
+                                    failure_reason=FailureReason.OUT_OF_SCOPE,
+                                    out_of_scope_changes=tuple(
+                                        sorted(
+                                            set(violations.test_file_changed)
+                                            | set(violations.shared_file_changed)
+                                            | set(violations.out_of_scope)
+                                        )
+                                    ),
+                                )
+            except Exception:
+                result = substitute(
+                    FailureReason.REPORT_MISSING, "실행 결과를 분류하지 못했습니다."
+                )
+            return _finish_run(
+                conn,
+                run_id,
+                task_id,
+                destination,
+                result,
+                process.returncode,
+                substitute,
             )
-        return _finish_run(
-            conn, run_id, task_id, destination, result, process.returncode, substitute
-        )
     except BaseException as exc:
         try:
             if process is not None:

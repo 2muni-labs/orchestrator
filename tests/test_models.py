@@ -40,7 +40,7 @@ EXPECTED_TRANSITIONS = {
     "gating": {"reviewing", "ready", "judging"},
     "reviewing": {"ready", "judging"},
     "ready": {"pr_open", "conflict", "judging"},
-    "conflict": {"pr_open", "discarded", "judging"},
+    "conflict": {"pr_open", "discarded", "judging", "closed"},
     "pr_open": {"conflict", "closed", "discarded"},
     "closed": set(),
     "blocked": {"reserved", "queued", "discarded"},
@@ -208,6 +208,7 @@ def test_run_fields_match_the_runs_table() -> None:
         "exit_code",
         "outcome",
         "failure_reason",
+        "kill_requested_at",
     }
 
 
