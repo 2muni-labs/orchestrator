@@ -1,16 +1,17 @@
-"""orch review save: store a review verdict and validate a BLOCK triage."""
+"""orch review: run a Codex review, store a review verdict, validate a triage."""
 
 import os
 import sqlite3
 import tempfile
 import tomllib
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from orch import config, results, store
-from orch.config import TargetPaths
+from orch.config import Config, Target, TargetPaths
 from orch.models import Review, Severity, Task, TaskState, Verdict
 from orch.redact import RedactionError, redact
 
@@ -260,3 +261,54 @@ def save_review(
         note="; ".join(notes) or None,
     )
     return next_state
+
+
+class ReviewOutcome(StrEnum):
+    """How a Codex review run ended."""
+
+    SAVED = "saved"
+    INVALID = "invalid"
+    FAILED = "failed"
+    QUOTA = "quota"
+    TIMEOUT = "timeout"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewRun:
+    """The result of one Codex review run. It never holds log contents."""
+
+    task_id: str
+    outcome: ReviewOutcome
+    state: TaskState
+    exit_code: int | None
+    log_path: Path
+    output_path: Path
+    diff_path: Path
+
+
+def review_prompt(task_id: str, *, spec_path: Path, diff_path: Path) -> str:
+    """Return the English prompt for a Codex review."""
+    raise NotImplementedError
+
+
+def next_review_log(logs: Path, task_id: str) -> Path:
+    """Return logs/review/<id>.<n>.log for the next review, without creating it."""
+    raise NotImplementedError
+
+
+def run_codex_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    target: Target,
+    config: Config,
+    paths: TargetPaths,
+    environ: Mapping[str, str],
+    model: str,
+    effort: str,
+    home: Path,
+    orch_home: Path,
+    timeout_sec: int | None = None,
+) -> ReviewRun:
+    """Review a Claude implementation with codex exec and save a valid review."""
+    raise NotImplementedError

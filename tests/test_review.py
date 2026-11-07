@@ -641,3 +641,44 @@ def test_triage_refuses_a_personal_path_in_the_body(
         tmp_path, triage_text(WRONG, body="\nSee /Users/someone/notes.\n")
     )
     assert_refused(conn, paths, review_text(finding("P0", "src/app.py")), file)
+
+
+# Triage paths are checked before the pull request (m12-review-core, backlog P2)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/abs/app.py",
+        "~/app.py",
+        "src\\\\app.py",
+        "src/../app.py",
+        "..",
+        "src/a`b.py",
+        "src/앱.py",
+        "src/a\\tb.py",
+    ],
+)
+def test_parse_refuses_a_triage_path_that_is_not_plain_and_relative(path: str) -> None:
+    table = WRONG.replace('path = "src/app.py"', f'path = "{path}"')
+    assert table != WRONG
+    with pytest.raises(ReviewFlowError):
+        parse_triage(triage_text(table))
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "a/b-c_d.e/f.py", "tests/x.py"])
+def test_parse_keeps_a_plain_relative_triage_path(path: str) -> None:
+    table = WRONG.replace('path = "src/app.py"', f'path = "{path}"')
+    assert parse_triage(triage_text(table)).decisions[0].path == path
+
+
+@pytest.mark.parametrize(
+    "path", ["src/Users/someone/app.py", "src/" + TOKEN + ".py", "a/private/tmp/b.py"]
+)
+def test_triage_refuses_a_path_that_could_not_leave_this_machine(
+    conn: sqlite3.Connection, paths: TargetPaths, tmp_path: Path, path: str
+) -> None:
+    add_task(conn)
+    table = WRONG.replace('path = "src/app.py"', f'path = "{path}"')
+    file = write_triage(tmp_path, triage_text(table))
+    assert_refused(conn, paths, review_text(finding("P0", path)), file)

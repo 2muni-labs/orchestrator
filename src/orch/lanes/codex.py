@@ -18,6 +18,8 @@ from orch.lanes.base import (
 from orch.taskfile import TaskSpec
 
 PROVIDER = "codex"
+# Turn off the user's hooks and plugin MCP servers (measured on codex-cli 0.160.0).
+ISOLATION_ARGS: tuple[str, ...] = ()
 
 
 def build_command(
@@ -53,6 +55,20 @@ def build_command(
         env=child_env(environ),
         stdin_text=build_prompt(spec_text, task_id=spec.id, log_label=log_label),
     )
+
+
+def build_review_command(
+    *,
+    worktree: Path,
+    prompt: str,
+    output_path: Path,
+    model: str,
+    effort: str,
+    config: Config,
+    environ: Mapping[str, str],
+) -> LaneCommand:
+    """codex exec in a read-only sandbox; the final message goes to output_path."""
+    raise NotImplementedError
 
 
 def _json_object(line: str) -> dict[str, object] | None:
