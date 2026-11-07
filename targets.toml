@@ -5,5 +5,5 @@ default_branch = "main"
 setup_command = "uv sync --frozen"
 test_command = ".venv/bin/python -m pytest"
 lint_command = ".venv/bin/python -m ruff check . && .venv/bin/python -m ruff format --check ."
-safety_paths = ["CLAUDE.md", "AGENTS.md", "targets.toml", ".claude/**", "scripts/**", "src/orch/redact.py", "src/orch/credentials.py", "src/orch/github.py", "src/orch/gitops.py", "src/orch/gate.py", "src/orch/review.py", "src/orch/notify.py", "src/orch/lanes/base.py", "src/orch/launcher.py", "src/orch/hooks.py", "src/orch/guard.py", "config/**"]
+safety_paths = ["CLAUDE.md", "AGENTS.md", "targets.toml", ".claude/**", "scripts/**", "src/orch/redact.py", "src/orch/credentials.py", "src/orch/github.py", "src/orch/gitops.py", "src/orch/gate.py", "src/orch/review.py", "src/orch/notify.py", "src/orch/lanes/base.py", "src/orch/lanes/codex.py", "src/orch/lanes/claude.py", "src/orch/launcher.py", "src/orch/hooks.py", "src/orch/guard.py", "config/**"]
 shared_paths = ["pyproject.toml", "uv.lock", ".gitignore", "AGENTS.md", "CLAUDE.md", "targets.toml", ".claude/**", ".github/**", "docs/**", "schemas/**", "scripts/**", "templates/**", "config/**"]
