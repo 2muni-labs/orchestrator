@@ -127,16 +127,21 @@ def open_pull_request(
     store.update_task(conn, spec.id, base_sha=base, test_sha=test_sha)
 
     head = gitops.rev_parse(worktree, "HEAD")
-    detail = gate.run_tests(spec, target, worktree, log_path)
-    if gitops.rev_parse(worktree, "HEAD") != head:
-        detail = "G2 실행 중 커밋이 생겼습니다"
+    skipped = task.gated_sha is not None and head == task.gated_sha
+    detail = None
+    if not skipped:
+        detail = gate.run_tests(spec, target, worktree, log_path)
+        if gitops.rev_parse(worktree, "HEAD") != head:
+            detail = "G2 실행 중 커밋이 생겼습니다"
+        if detail is None:
+            store.update_task(conn, spec.id, gated_sha=head)
     store.record_gate_result(
         conn,
         spec.id,
         task.attempt,
         Gate.G2_PRE_PR,
         passed=detail is None,
-        detail=detail,
+        detail="skipped" if skipped else detail,
     )
     if detail is not None:
         store.transition(conn, spec.id, task.state, TaskState.JUDGING, actor="orch")

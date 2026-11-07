@@ -79,6 +79,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
     ),
     ("ALTER TABLE tasks ADD COLUMN pushed_sha TEXT",),
+    ("ALTER TABLE tasks ADD COLUMN gated_sha TEXT",),
 )
 
 
@@ -169,8 +170,8 @@ def insert_task(conn: sqlite3.Connection, task: Task) -> None:
         """INSERT INTO tasks (
             id, target, title, grade, lane, model, effort, state, attempt,
             timeout_sec, base_sha, test_sha, depends_on, worktree, pr_url,
-            slot_expires_at, created_at, updated_at, pushed_sha
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            slot_expires_at, created_at, updated_at, pushed_sha, gated_sha
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             task.id,
             task.target,
@@ -191,6 +192,7 @@ def insert_task(conn: sqlite3.Connection, task: Task) -> None:
             task.created_at,
             task.updated_at,
             task.pushed_sha,
+            task.gated_sha,
         ),
     )
 
@@ -278,6 +280,7 @@ def update_task(
         "worktree",
         "pr_url",
         "pushed_sha",
+        "gated_sha",
         "slot_expires_at",
     )
     if not fields or any(name not in allowed for name in fields):

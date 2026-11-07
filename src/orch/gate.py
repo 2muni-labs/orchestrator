@@ -311,6 +311,7 @@ def gate_task(
             gitops.commit(
                 worktree, task.title, paths=paths, home=home, orch_home=orch_home
             )
+        store.update_task(conn, spec.id, gated_sha=gitops.rev_parse(worktree, "HEAD"))
         next_state = (
             TaskState.REVIEWING
             if review_required(task.grade, flag=spec.review)
