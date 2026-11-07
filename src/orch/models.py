@@ -126,6 +126,7 @@ class Task:
     worktree: str | None = None
     pr_url: str | None = None
     pushed_sha: str | None = None
+    gated_sha: str | None = None
     slot_expires_at: str | None = None
 
 

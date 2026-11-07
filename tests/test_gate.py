@@ -35,6 +35,7 @@ from orch.store import (
     insert_run,
     insert_task,
     latest_run,
+    update_task,
 )
 from orch.taskfile import TaskSpec
 
@@ -686,6 +687,57 @@ def test_passing_task_with_no_changes_makes_no_commit(
     assert run_flow(conn, log_path).passed is True
     assert git(worktree, "rev-parse", "HEAD") == test_sha
     assert state_of(conn) is TaskState.READY
+
+
+def gated_of(conn: sqlite3.Connection) -> str | None:
+    task = get_task(conn, "feat-x")
+    assert task is not None
+    return task.gated_sha
+
+
+def test_a_passing_gate_records_the_committed_head_as_gated(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "new.py")
+    assert run_flow(conn, log_path).passed is True
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != test_sha
+    assert gated_of(conn) == head
+
+
+@pytest.mark.parametrize("grade", [Grade.L3, Grade.L3R])
+def test_a_passing_gate_before_review_records_the_gated_head(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    grade: Grade,
+) -> None:
+    add_judged_task(conn, worktree, test_sha, grade=grade)
+    write(worktree / "src" / "new.py")
+    assert run_flow(conn, log_path).passed is True
+    assert state_of(conn) is TaskState.REVIEWING
+    assert gated_of(conn) == git(worktree, "rev-parse", "HEAD")
+
+
+def test_a_passing_gate_without_changes_records_the_test_commit_as_gated(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    assert run_flow(conn, log_path).passed is True
+    assert gated_of(conn) == test_sha
+
+
+def test_a_failing_gate_leaves_the_gated_commit_alone(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    update_task(conn, "feat-x", gated_sha="f" * 40)
+    write(worktree / "src" / "new.py")
+    report = run_flow(conn, log_path, make_target(test_command="exit 1"))
+    assert report.passed is False
+    assert gated_of(conn) == "f" * 40
 
 
 def test_failing_task_returns_to_judging_without_a_commit(

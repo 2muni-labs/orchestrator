@@ -164,6 +164,7 @@ def test_task_fields_match_the_tasks_table() -> None:
         "worktree",
         "pr_url",
         "pushed_sha",
+        "gated_sha",
         "slot_expires_at",
         "created_at",
         "updated_at",
@@ -181,6 +182,7 @@ def test_task_defaults() -> None:
         "worktree",
         "pr_url",
         "pushed_sha",
+        "gated_sha",
         "slot_expires_at",
     ):
         assert getattr(task, name) is None
