@@ -15,6 +15,7 @@ from orch import config, guard, notify, runner, scheduler, store
 from orch.models import TaskState
 
 Alive = Callable[[int, str], bool]
+RecoverErrorHandler = Callable[[str, Exception], None]
 
 
 def process_alive(pid: int, started_at: str) -> bool:
@@ -22,29 +23,33 @@ def process_alive(pid: int, started_at: str) -> bool:
 
 
 def recover(
-    conn: sqlite3.Connection, *, now: datetime, alive: Alive = process_alive
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+    alive: Alive = process_alive,
+    on_error: RecoverErrorHandler | None = None,
 ) -> tuple[str, ...]:
     orphaned: list[str] = []
     for task in store.list_tasks(conn, states=[TaskState.RUNNING]):
-        run = store.latest_run(conn, task.id)
-        if (
-            run is not None
-            and run.pid is None
-            and run.started_at is not None
-            and timedelta(0)
-            <= now - datetime.fromisoformat(run.started_at)
-            <= timedelta(seconds=60)
-        ):
-            # orch run records the run before it can record its process.
-            continue
-        if (
-            run is not None
-            and run.pid
-            and run.pid_started_at
-            and alive(run.pid, run.pid_started_at)
-        ):
-            continue
         try:
+            run = store.latest_run(conn, task.id)
+            if (
+                run is not None
+                and run.pid is None
+                and run.started_at is not None
+                and timedelta(0)
+                <= now - datetime.fromisoformat(run.started_at)
+                <= timedelta(seconds=60)
+            ):
+                # orch run records the run before it can record its process.
+                continue
+            if (
+                run is not None
+                and run.pid
+                and run.pid_started_at
+                and alive(run.pid, run.pid_started_at)
+            ):
+                continue
             store.transition(
                 conn,
                 task.id,
@@ -56,8 +61,16 @@ def recover(
             )
         except store.StateMismatchError:
             continue
+        except Exception as exc:
+            if on_error is not None:
+                on_error(task.id, exc)
+            continue
         orphaned.append(task.id)
-    scheduler.expire_reservations(conn, now=now)
+    try:
+        scheduler.expire_reservations(conn, now=now)
+    except Exception as exc:
+        if on_error is not None:
+            on_error("reservations", exc)
     return tuple(orphaned)
 
 
@@ -123,7 +136,14 @@ def handle_session_start(
         if not path.exists():
             return ""
         with closing(store.connect(path)) as conn:
-            orphaned = recover(conn, now=now, alive=alive)
+            orphaned = recover(
+                conn,
+                now=now,
+                alive=alive,
+                on_error=lambda key, exc: _log(
+                    environ, now, "session-start", f"{key} {type(exc).__name__}"
+                ),
+            )
             target = environ.get("ORCH_TARGET")
             context = summary(conn, target=target, orphaned=orphaned) if target else ""
         if not context:
