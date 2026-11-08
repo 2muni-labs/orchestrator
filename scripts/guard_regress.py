@@ -18,7 +18,10 @@ reason. No transcript data is committed; the transcripts are read at run time.
 
 --show also prints each denied or asked command, truncated, so that a denial can
 be sorted into legitimate or false positive. Every printed line goes through
-redact; a line that holds a secret is replaced by a placeholder.
+redact. Before that, a command's Claude Code session temporary directory prefix,
+such as /private/tmp/claude-<uid>/<project>/<session>, becomes <session-tmp>.
+A command that redact still refuses is printed only as the kind of cause (secret
+or residual path) and the names of the executables it runs.
 
 The default DIR is the transcript directory of the hub clone: $ORCH_HUB when it is
 set, as in a session that orch open started, otherwise the repository this script
@@ -35,10 +38,17 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from orch import config
-from orch.guard import judge
-from orch.redact import RedactionError, redact
+from orch.guard import _commands, _executable_index, judge
+from orch.redact import RedactionError, SecretFoundError, redact
 
 SHOW_LIMIT = 300
+WITHHELD = "[withheld by redact]"
+SESSION_TMP = re.compile(
+    r"(?<![A-Za-z0-9_.\-/])(?:/private)?/tmp/claude-[0-9]+/[A-Za-z0-9._-]+"
+    r"(?:/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?"
+    r"(?![A-Za-z0-9._-])"
+)
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,39}")
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -87,7 +97,46 @@ def safe(text: str, *, home: Path, orch_home: Path) -> str:
     try:
         return redact(text, home=home, orch_home=orch_home)
     except RedactionError:
-        return "[withheld by redact]"
+        return WITHHELD
+
+
+def replace_session_tmp(text: str) -> str:
+    """Replace Claude Code session temporary directory prefixes."""
+    return SESSION_TMP.sub("<session-tmp>", text)
+
+
+def executables(command: str) -> list[str]:
+    """Return the executable names a command runs, in order, without repeats.
+
+    A name that is not a plain short file name is printed as "?". A command the
+    guard cannot parse gives ["(unparsable)"].
+    """
+    try:
+        commands, _ = _commands(command)
+    except ValueError, RecursionError:
+        return ["(unparsable)"]
+    names: list[str] = []
+    for words in commands:
+        index = _executable_index(words)
+        if index == len(words):
+            continue
+        name = os.path.basename(words[index])
+        name = name if _NAME.fullmatch(name) else "?"
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def show_command(command: str, *, home: Path, orch_home: Path) -> str:
+    """Return one flagged command for --show, or its cause and executables."""
+    text = replace_session_tmp(command)
+    try:
+        shown = redact(text, home=home, orch_home=orch_home)
+    except RedactionError as exc:
+        cause = "secret" if isinstance(exc, SecretFoundError) else "residual path"
+        line = f"[withheld: {cause}] executables: " + ", ".join(executables(command))
+        return safe(line, home=home, orch_home=orch_home)
+    return shown if len(shown) <= SHOW_LIMIT else shown[:SHOW_LIMIT] + "…"
 
 
 def report(
@@ -111,12 +160,14 @@ def report(
     ]
     for (decision, reason), count in sorted(reasons.items()):
         lines.append(f"  {decision} x{count}: {reason}")
+    lines = [safe(line, home=home, orch_home=orch_home) for line in lines]
     if show:
         for decision, reason, command in flagged:
-            text = command if len(command) <= SHOW_LIMIT else command[:SHOW_LIMIT] + "…"
-            lines.append(f"--- {decision}: {reason}")
-            lines.append(text)
-    return [safe(line, home=home, orch_home=orch_home) for line in lines]
+            lines.append(
+                safe(f"--- {decision}: {reason}", home=home, orch_home=orch_home)
+            )
+            lines.append(show_command(command, home=home, orch_home=orch_home))
+    return lines
 
 
 def main(argv: Sequence[str] | None = None) -> int:

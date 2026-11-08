@@ -218,7 +218,7 @@ def test_show_withholds_lines_with_secrets(
     code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
     assert code == 0
     assert token not in out
-    assert out.splitlines()[-1] == "[withheld by redact]"
+    assert out.splitlines()[-1] == "[withheld: secret] executables: codex"
     assert "--- deny: Codex 직접 실행은 차단합니다. orch를 사용하세요." in out
 
 
@@ -303,3 +303,85 @@ def test_default_directory_without_orch_hub_is_the_script_repository(
     code, out, _ = _run(capsys, [])
     assert code == 0
     assert out.splitlines()[0] == "commands: 1, unique: 1"
+
+
+SESSION = "0123abcd-4567-89ab-cdef-0123456789ab"
+
+
+@pytest.mark.parametrize("prefix", ["/private/tmp", "/tmp"])
+def test_show_replaces_the_session_temporary_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], prefix: str
+) -> None:
+    directory = tmp_path / "t"
+    scratch = f"{prefix}/claude-501/-Users-someone-Repositories-x/{SESSION}"
+    _write(directory, "a.jsonl", [_bash(f"codex exec < {scratch}/scratchpad/p.md")])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == "codex exec < <session-tmp>/scratchpad/p.md"
+    assert "someone" not in out
+
+
+def test_show_replaces_a_prefix_without_a_session_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = tmp_path / "t"
+    command = "codex exec < /private/tmp/claude-501/-Users-someone-x/tasks/b.output"
+    _write(directory, "a.jsonl", [_bash(command)])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == "codex exec < <session-tmp>/tasks/b.output"
+
+
+def test_show_does_not_replace_other_temporary_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = tmp_path / "t"
+    command = "codex exec < /private/tmp/claude-x/notes.md && /usr/bin/env cat q"
+    _write(directory, "a.jsonl", [_bash(command)])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == ("[withheld: residual path] executables: codex, env")
+    assert "notes" not in out
+
+
+def test_show_names_executables_of_a_withheld_command_once_by_base_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = tmp_path / "t"
+    command = (
+        "cat /var/folders/ab/x | /Users/someone/.local/bin/codex exec - ; "
+        "A=1 cat y; ./we$ird z"
+    )
+    _write(directory, "a.jsonl", [_bash(command)])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == (
+        "[withheld: residual path] executables: cat, codex, ?"
+    )
+    assert "someone" not in out and "folders" not in out
+
+
+def test_show_marks_an_unparsable_withheld_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = tmp_path / "t"
+    _write(directory, "a.jsonl", [_bash("cat '/var/folders/x")])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == (
+        "[withheld: residual path] executables: (unparsable)"
+    )
+
+
+def test_show_redacts_before_truncating(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = tmp_path / "t"
+    # Cut before redact, the line would end inside the home path and be withheld.
+    padding = "a" * (gr.SHOW_LIMIT - 40)
+    command = f"codex exec {padding} {isolated}/tail"
+    assert len(command) > gr.SHOW_LIMIT
+    _write(directory, "a.jsonl", [_bash(command)])
+    code, out, _ = _run(capsys, ["--transcripts", str(directory), "--show"])
+    assert code == 0
+    assert out.splitlines()[-1] == f"codex exec {padding} ~/tail"
