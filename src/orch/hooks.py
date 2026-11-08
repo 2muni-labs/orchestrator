@@ -15,6 +15,7 @@ from orch import config, guard, notify, runner, scheduler, store
 from orch.models import TaskState
 
 Alive = Callable[[int, str], bool]
+RecoverErrorHandler = Callable[[str, Exception], None]
 
 
 def process_alive(pid: int, started_at: str) -> bool:
@@ -22,7 +23,11 @@ def process_alive(pid: int, started_at: str) -> bool:
 
 
 def recover(
-    conn: sqlite3.Connection, *, now: datetime, alive: Alive = process_alive
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+    alive: Alive = process_alive,
+    on_error: RecoverErrorHandler | None = None,
 ) -> tuple[str, ...]:
     orphaned: list[str] = []
     for task in store.list_tasks(conn, states=[TaskState.RUNNING]):

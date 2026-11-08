@@ -235,6 +235,166 @@ def test_recover_returns_expired_reservations(conn: sqlite3.Connection) -> None:
     assert state(conn, "bb") is TaskState.RESERVED
 
 
+# recover: boundaries and per-task isolation
+
+
+def recorder() -> tuple[list[tuple[str, Exception]], hooks.RecoverErrorHandler]:
+    seen: list[tuple[str, Exception]] = []
+
+    def on_error(key: str, exc: Exception) -> None:
+        seen.append((key, exc))
+
+    return seen, on_error
+
+
+def test_recover_skips_a_run_at_exactly_sixty_seconds(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None, started_at=NOW - timedelta(seconds=60))
+    assert recover(conn, now=NOW, alive=dead) == ()
+
+
+def test_recover_skips_a_run_started_this_instant(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None, started_at=NOW)
+    assert recover(conn, now=NOW, alive=dead) == ()
+
+
+def test_recover_orphans_a_run_without_a_pid_started_in_the_future(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None, started_at=NOW + timedelta(seconds=1))
+    assert recover(conn, now=NOW, alive=dead) == ("a",)
+
+
+def test_recover_isolates_a_start_time_without_a_time_zone(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None, started_at=NOW.replace(tzinfo=None))
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb")
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=dead, on_error=on_error) == ("bb",)
+    assert state(conn, "a") is TaskState.RUNNING
+    assert state(conn, "bb") is TaskState.ORPHANED
+    assert [(key, type(exc)) for key, exc in seen] == [("a", TypeError)]
+
+
+def test_recover_isolates_a_malformed_start_time(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None)
+    conn.execute("UPDATE runs SET started_at = 'yesterday' WHERE task_id = 'a'")
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb")
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=dead, on_error=on_error) == ("bb",)
+    assert [(key, type(exc)) for key, exc in seen] == [("a", ValueError)]
+
+
+def test_recover_isolates_a_failing_liveness_check(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=1)
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb", pid=2)
+
+    def alive(pid: int, started_at: str) -> bool:
+        if pid == 1:
+            raise OSError("ps failed")
+        return False
+
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=alive, on_error=on_error) == ("bb",)
+    assert [(key, type(exc)) for key, exc in seen] == [("a", OSError)]
+
+
+def test_recover_isolates_a_failing_transition(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a")
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb")
+    real = store.transition
+
+    def transition(
+        conn: sqlite3.Connection, task_id: str, *args: object, **kwargs: object
+    ) -> None:
+        if task_id == "a":
+            raise sqlite3.OperationalError("database is locked")
+        real(conn, task_id, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hooks.store, "transition", transition)
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=dead, on_error=on_error) == ("bb",)
+    assert [(key, type(exc)) for key, exc in seen] == [("a", sqlite3.OperationalError)]
+    assert state(conn, "a") is TaskState.RUNNING
+
+
+def test_recover_is_isolated_without_an_error_handler(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=None, started_at=NOW.replace(tzinfo=None))
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb")
+    assert recover(conn, now=NOW, alive=dead) == ("bb",)
+
+
+def test_recover_does_not_report_a_task_that_moved_meanwhile(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a")
+
+    def finished_meanwhile(pid: int, started_at: str) -> bool:
+        store.transition(conn, "a", TaskState.RUNNING, TaskState.JUDGING, actor="orch")
+        return False
+
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=finished_meanwhile, on_error=on_error) == ()
+    assert seen == []
+
+
+def test_recover_does_not_swallow_an_interrupt(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a")
+
+    def interrupted(pid: int, started_at: str) -> bool:
+        raise KeyboardInterrupt
+
+    seen, on_error = recorder()
+    with pytest.raises(KeyboardInterrupt):
+        recover(conn, now=NOW, alive=interrupted, on_error=on_error)
+    assert seen == []
+
+
+def test_recover_keeps_orphans_when_reservation_expiry_fails(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a")
+    add_task(conn, "expired", TaskState.RESERVED)
+    store.update_task(
+        conn, "expired", slot_expires_at=(NOW - timedelta(minutes=1)).isoformat()
+    )
+    add_task(conn, "no-zone-task", TaskState.RESERVED)
+    store.update_task(
+        conn,
+        "no-zone-task",
+        slot_expires_at=NOW.replace(tzinfo=None).isoformat(),
+    )
+    seen, on_error = recorder()
+    assert recover(conn, now=NOW, alive=dead, on_error=on_error) == ("a",)
+    assert [(key, type(exc)) for key, exc in seen] == [("reservations", TypeError)]
+    assert not conn.in_transaction
+    # expire_reservations rolls back as a whole; the next healthy pass handles it.
+    assert state(conn, "expired") is TaskState.RESERVED
+    assert state(conn, "a") is TaskState.ORPHANED
+
+
 # summary
 
 
@@ -317,6 +477,48 @@ def test_session_start_fails_open_and_logs(
     assert line.endswith("\n")
     assert len(line.splitlines()) == 1
     assert "not a database" not in line
+
+
+def test_session_start_logs_each_recovery_failure_and_still_summarises(
+    conn: sqlite3.Connection, orch_home: Path, environ: dict[str, str]
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=1)
+    add_task(conn, "bb", TaskState.RUNNING)
+    add_run(conn, "bb", pid=2)
+
+    def alive(pid: int, started_at: str) -> bool:
+        if pid == 1:
+            raise RuntimeError("private detail")
+        return False
+
+    text = handle_session_start("{}", environ, now=NOW, alive=alive)
+    assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == summary(
+        conn, target="orchestrator", orphaned=["bb"]
+    )
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} session-start a RuntimeError\n"
+    )
+
+
+def test_session_start_logs_a_reservation_expiry_failure(
+    conn: sqlite3.Connection, orch_home: Path, environ: dict[str, str]
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a")
+    add_task(conn, "no-zone-task", TaskState.RESERVED)
+    store.update_task(
+        conn,
+        "no-zone-task",
+        slot_expires_at=NOW.replace(tzinfo=None).isoformat(),
+    )
+    text = handle_session_start("{}", environ, now=NOW, alive=dead)
+    assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == summary(
+        conn, target="orchestrator", orphaned=["a"]
+    )
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} session-start reservations TypeError\n"
+    )
 
 
 # handle_subagent_stop
