@@ -218,6 +218,76 @@ def test_ask_for_resume(command: str) -> None:
     assert verdict.reason
 
 
+RESUME_REASON = "작업을 재개하려면 사용자 확인이 필요합니다."
+KILL_REASON = "작업을 중단하려면 사용자 확인이 필요합니다."
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch kill m13-x",
+        "orch kill m13-x; ls",
+        "cd /x && orch kill a",
+        "~/.local/bin/orch kill a",
+        # ask passes through wrappers
+        "env orch kill 3",
+        "env FOO=1 orch kill 3",
+        "env -u GH_TOKEN orch kill 3",
+        "exec orch kill 3",
+        "nohup orch kill 3",
+        "command orch kill 3",
+        "time orch kill 3",
+        "bash -c 'orch kill 3'",
+    ],
+)
+def test_ask_for_kill(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("ask", KILL_REASON), command
+
+
+def test_kill_and_resume_give_different_reasons() -> None:
+    assert judge("orch resume a", home=HOME) == Verdict("ask", RESUME_REASON)
+    assert judge("orch kill a", home=HOME) == Verdict("ask", KILL_REASON)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch status",
+        "orch status --human",
+        "orch next",
+        "orch watch --once",
+        "orch run a",
+        "orch review a --by codex",
+        "orch review save a",
+        "orch close a",
+        "kill 123",
+        "kill -9 123",
+        "pkill -f orch",
+        "echo orch kill a",
+        "grep -n 'orch kill' docs/x.md",
+    ],
+)
+def test_other_orch_commands_and_shell_kill_are_allowed(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow"), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch kill a; codex exec",
+        "env orch kill 3 && git push -f origin x",
+    ],
+)
+def test_deny_wins_over_the_kill_ask(command: str) -> None:
+    assert judge(command, home=HOME).decision == "deny"
+
+
+def test_handle_asks_for_kill() -> None:
+    inner = output(handle(payload("orch kill a"), {"HOME": HOME}))
+    assert inner["permissionDecision"] == "ask"
+    assert inner["permissionDecisionReason"] == KILL_REASON
+
+
 @pytest.mark.parametrize(
     "command",
     [
