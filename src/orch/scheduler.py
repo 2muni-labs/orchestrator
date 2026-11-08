@@ -190,6 +190,7 @@ def _judge(
     now: datetime,
 ) -> Decision:
     """Apply dependency, lock and slot rules inside the caller's transaction."""
+    paused = tuple(f"paused:{pause.reason}" for pause in store.list_pauses(conn))
     dependencies = []
     discarded = []
     for task_id in task.depends_on:
@@ -211,7 +212,7 @@ def _judge(
         )
         return Decision(state=TaskState.BLOCKED, waiting_for=waiting_for)
     if dependencies:
-        return _queue(conn, task, tuple(sorted(dependencies)), now=now)
+        return _queue(conn, task, tuple(sorted(dependencies)) + paused, now=now)
 
     conflicts = {
         f"lock:{lock.task_id}"
@@ -220,7 +221,7 @@ def _judge(
         and any(globs_overlap(path, lock.path_glob) for path in modify)
     }
     if conflicts:
-        return _queue(conn, task, tuple(sorted(conflicts)), now=now)
+        return _queue(conn, task, tuple(sorted(conflicts)) + paused, now=now)
 
     store.add_locks(conn, task.target, task.id, modify)
     active = [
@@ -235,8 +236,8 @@ def _judge(
         waiting_for.append("slot:total")
     if task.lane == Lane.B and sum(t.lane == Lane.B for t in active) >= limits.lane_b:
         waiting_for.append("slot:B")
-    if waiting_for:
-        return _queue(conn, task, tuple(waiting_for), now=now)
+    if waiting_for or paused:
+        return _queue(conn, task, tuple(waiting_for) + paused, now=now)
 
     store.transition(
         conn, task.id, task.state, TaskState.RESERVED, actor="orch", at=now.isoformat()
@@ -360,6 +361,7 @@ def next_reservations(
     reserved: list[str] = []
     newly_blocked: list[str] = []
     with store.transaction(conn):
+        paused = tuple(pause.reason for pause in store.list_pauses(conn))
         expire_reservations(conn, now=now)
         for task in store.list_tasks(conn, states=[TaskState.QUEUED]):
             decision = _judge(
@@ -376,5 +378,8 @@ def next_reservations(
                 newly_blocked.append(task.id)
         chains = blocked_chains(conn)
     return NextReport(
-        reserved=tuple(reserved), newly_blocked=tuple(newly_blocked), chains=chains
+        reserved=tuple(reserved),
+        newly_blocked=tuple(newly_blocked),
+        chains=chains,
+        paused=paused,
     )
