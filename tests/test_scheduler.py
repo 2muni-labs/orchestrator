@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import scheduler
+from orch import scheduler, store
 from orch.config import Limits
 from orch.models import Grade, Lane, Task, TaskState
 from orch.scheduler import (
@@ -1329,3 +1329,278 @@ def test_next_chains_cover_every_target(conn: sqlite3.Connection) -> None:
     add_task(conn, "c", TaskState.BLOCKED, target="two")
     add_task(conn, "d", TaskState.QUEUED, depends_on=("c",), target="two")
     assert [chain.task_id for chain in judge_all(conn).chains] == ["b", "d"]
+
+
+# Dispatch pause (technical design 4.2 step 5)
+
+
+def pause(conn: sqlite3.Connection, *reasons: str) -> None:
+    for reason in reasons:
+        store.add_pause(conn, reason, since="t")
+
+
+def paused_next(conn: sqlite3.Connection) -> NextReport:
+    return scheduler.next_reservations(
+        conn,
+        modify_of=lambda task: (f"{task.id}/**",),
+        limits=LIMITS,
+        ttl_min=TTL,
+        now=NOW,
+    )
+
+
+def test_a_pause_queues_a_ready_task_and_keeps_its_lock(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a")
+    pause(conn, "disk")
+    assert reserve(conn, "a") == Decision(
+        state=TaskState.QUEUED, waiting_for=("paused:disk",)
+    )
+    assert holders(conn) == {"a"}
+
+
+def test_every_pause_reason_is_listed_in_order(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    pause(conn, "disk", "claude_auth")
+    assert reserve(conn, "a").waiting_for == ("paused:claude_auth", "paused:disk")
+
+
+def test_a_paused_task_with_an_unmet_dependency_takes_no_lock(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "x", TaskState.RUNNING)
+    add_task(conn, "a", depends_on=("x",))
+    pause(conn, "disk")
+    assert reserve(conn, "a") == Decision(
+        state=TaskState.QUEUED, waiting_for=("dep:x", "paused:disk")
+    )
+    assert holders(conn) == set()
+
+
+def test_a_paused_task_with_a_lock_conflict_takes_no_lock(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "o", TaskState.RUNNING)
+    store.add_locks(conn, TARGET, "o", ["src/**"])
+    add_task(conn, "a")
+    pause(conn, "disk")
+    assert reserve(conn, "a") == Decision(
+        state=TaskState.QUEUED, waiting_for=("lock:o", "paused:disk")
+    )
+    assert holders(conn) == {"o"}
+
+
+def test_a_paused_task_without_a_slot_lists_both_reasons(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "o", TaskState.RUNNING)
+    add_task(conn, "a")
+    pause(conn, "disk")
+    decision = reserve(conn, "a", limits=Limits(total=1, lane_b=2))
+    assert decision == Decision(
+        state=TaskState.QUEUED, waiting_for=("slot:total", "paused:disk")
+    )
+    assert holders(conn) == {"a"}
+
+
+def test_a_discarded_dependency_still_blocks_during_a_pause(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "x", TaskState.DISCARDED)
+    add_task(conn, "a", depends_on=("x",))
+    pause(conn, "disk")
+    assert reserve(conn, "a") == Decision(
+        state=TaskState.BLOCKED, waiting_for=("dep:x",)
+    )
+
+
+@pytest.mark.parametrize(
+    "expected", [TaskState.JUDGING, TaskState.BLOCKED, TaskState.ORPHANED]
+)
+def test_retry_and_resume_states_are_queued_during_a_pause(
+    conn: sqlite3.Connection, expected: TaskState
+) -> None:
+    add_task(conn, "a", expected)
+    pause(conn, "codex_auth")
+    assert reserve(conn, "a", expected=expected) == Decision(
+        state=TaskState.QUEUED, waiting_for=("paused:codex_auth",)
+    )
+    assert state_of(conn, "a") is TaskState.QUEUED
+
+
+def test_dispatch_during_a_pause_records_the_test_commit_and_queues(
+    conn: sqlite3.Connection, repo: Path
+) -> None:
+    base = git(repo, "rev-parse", "HEAD")
+    only = commit(repo, "test.txt")
+    add_task(conn, "a", worktree=str(repo), base_sha=base)
+    pause(conn, "disk")
+    assert run_dispatch(conn, make_spec()) == Decision(
+        state=TaskState.QUEUED, waiting_for=("paused:disk",)
+    )
+    task = get_task(conn, "a")
+    assert task is not None
+    assert task.test_sha == only
+    assert holders(conn) == {"a"}
+
+
+def test_a_pause_leaves_existing_reservations_and_running_tasks(
+    conn: sqlite3.Connection,
+) -> None:
+    later = (NOW + timedelta(minutes=5)).isoformat()
+    add_task(conn, "r", TaskState.RESERVED, slot_expires_at=later)
+    add_task(conn, "u", TaskState.RUNNING)
+    pause(conn, "disk")
+    report = paused_next(conn)
+    assert report.reserved == ()
+    assert state_of(conn, "r") is TaskState.RESERVED
+    assert state_of(conn, "u") is TaskState.RUNNING
+
+
+def test_an_expired_reservation_is_not_reserved_again_during_a_pause(
+    conn: sqlite3.Connection,
+) -> None:
+    earlier = (NOW - timedelta(minutes=1)).isoformat()
+    add_task(conn, "a", TaskState.RESERVED, slot_expires_at=earlier)
+    pause(conn, "disk")
+    assert paused_next(conn).reserved == ()
+    assert state_of(conn, "a") is TaskState.QUEUED
+
+
+def test_next_reserves_nothing_and_reports_the_reasons_during_a_pause(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    add_task(conn, "b", TaskState.QUEUED)
+    pause(conn, "disk", "claude_auth")
+    report = paused_next(conn)
+    assert report.reserved == ()
+    assert report.paused == ("claude_auth", "disk")
+    assert state_of(conn, "a") is TaskState.QUEUED
+    assert state_of(conn, "b") is TaskState.QUEUED
+    assert holders(conn) == {"a", "b"}
+
+
+def test_next_reports_no_reasons_without_a_pause(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    report = paused_next(conn)
+    assert report.reserved == ("a",)
+    assert report.paused == ()
+
+
+def test_next_during_a_pause_records_no_same_state_transition(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    pause(conn, "disk")
+    paused_next(conn)
+    paused_next(conn)
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_next_still_finds_blocked_tasks_and_chains_during_a_pause(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "x", TaskState.DISCARDED)
+    add_task(conn, "a", TaskState.QUEUED, depends_on=("x",))
+    add_task(conn, "b", TaskState.QUEUED, depends_on=("a",))
+    pause(conn, "disk")
+    report = paused_next(conn)
+    assert report.newly_blocked == ("a",)
+    assert report.paused == ("disk",)
+    assert [chain.task_id for chain in report.chains] == ["a", "b"]
+
+
+def test_one_cleared_reason_does_not_end_the_pause(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    pause(conn, "disk", "claude_auth")
+    store.remove_pause(conn, "disk")
+    report = paused_next(conn)
+    assert report.reserved == ()
+    assert report.paused == ("claude_auth",)
+
+
+def test_next_reserves_as_usual_after_every_reason_clears(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a", TaskState.QUEUED)
+    pause(conn, "disk")
+    paused_next(conn)
+    store.remove_pause(conn, "disk")
+    report = paused_next(conn)
+    assert report.reserved == ("a",)
+    assert report.paused == ()
+    assert state_of(conn, "a") is TaskState.RESERVED
+    assert holders(conn) == {"a"}
+
+
+def test_a_pause_from_another_connection_is_seen_by_the_next_judgement(
+    conn: sqlite3.Connection, db_path: Path
+) -> None:
+    other = connect(db_path)
+    store.add_pause(other, "disk", since="t")
+    other.close()
+    add_task(conn, "a")
+    assert reserve(conn, "a").waiting_for == ("paused:disk",)
+
+
+def test_no_reservation_is_made_when_a_pause_races_with_reservations(
+    db_path: Path,
+) -> None:
+    """The pause is read inside the judging transaction: a task reserved after the
+    pause commits would break it. Every reservation must come before the pause."""
+    setup = connect(db_path)
+    for index in range(40):
+        add_task(setup, f"t{index:02d}", target=f"target{index:02d}")
+    setup.close()
+    barrier = threading.Barrier(2)
+    decisions: list[tuple[str, Decision]] = []
+    roomy = Limits(total=1000, lane_b=1000)
+
+    def judge_all_tasks() -> None:
+        conn = connect(db_path)
+        barrier.wait()
+        for index in range(40):
+            task_id = f"t{index:02d}"
+            decisions.append(
+                (
+                    task_id,
+                    try_reserve(
+                        conn,
+                        task_id,
+                        TaskState.PREPARED,
+                        modify=(f"{task_id}/**",),
+                        limits=roomy,
+                        ttl_min=TTL,
+                        now=NOW,
+                    ),
+                )
+            )
+        conn.close()
+
+    def pause_midway() -> None:
+        conn = connect(db_path)
+        barrier.wait()
+        store.add_pause(conn, "disk", since="t")
+        conn.close()
+
+    threads = [
+        threading.Thread(target=judge_all_tasks),
+        threading.Thread(target=pause_midway),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    states = [decision.state for _, decision in decisions]
+    assert len(states) == 40
+    first_queued = (
+        states.index(TaskState.QUEUED) if TaskState.QUEUED in states else len(states)
+    )
+    assert all(state is TaskState.RESERVED for state in states[:first_queued])
+    assert all(state is TaskState.QUEUED for state in states[first_queued:])
+    assert all(
+        decision.waiting_for == ("paused:disk",)
+        for _, decision in decisions[first_queued:]
+    )

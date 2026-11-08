@@ -190,6 +190,34 @@ class GateResult:
     detail: str | None = None
 
 
+class CheckLevel(StrEnum):
+    """Result of one doctor check."""
+
+    OK = "ok"
+    WARN = "warn"
+    FAIL = "fail"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Pause:
+    """One row of the pauses table."""
+
+    reason: str
+    since: str
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DoctorCheck:
+    """One row of the doctor_checks table."""
+
+    target: str
+    item: str
+    level: CheckLevel
+    at: str
+    detail: str | None = None
+
+
 # The single definition of allowed state transitions.
 TRANSITIONS: Mapping[TaskState, frozenset[TaskState]] = MappingProxyType(
     {

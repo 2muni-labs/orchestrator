@@ -13,6 +13,8 @@ import pytest
 
 from orch import models, store
 from orch.models import (
+    CheckLevel,
+    DoctorCheck,
     Effort,
     FailureReason,
     Gate,
@@ -21,6 +23,7 @@ from orch.models import (
     Lane,
     Lock,
     Outcome,
+    Pause,
     Run,
     Task,
     TaskState,
@@ -56,6 +59,8 @@ from orch.store import (
 THREADS = 8
 
 EXPECTED_COLUMNS = {
+    "pauses": {"reason", "since", "note"},
+    "doctor_checks": {"target", "item", "level", "detail", "at"},
     "tasks": {
         "id",
         "target",
@@ -1142,3 +1147,209 @@ def test_module_keeps_no_copy_of_the_transition_rules() -> None:
     source = inspect.getsource(store)
     assert "frozenset" not in source
     assert "TRANSITIONS" not in source
+
+
+# Schema v5: pauses and doctor checks
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> list[tuple[str, int]]:
+    """Return each column's name and primary key position."""
+    return [(row[1], row[5]) for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def test_the_v5_tables_match_the_design(conn: sqlite3.Connection) -> None:
+    assert table_columns(conn, "pauses") == [("reason", 1), ("since", 0), ("note", 0)]
+    assert table_columns(conn, "doctor_checks") == [
+        ("target", 1),
+        ("item", 2),
+        ("level", 0),
+        ("detail", 0),
+        ("at", 0),
+    ]
+
+
+def test_a_v4_database_gains_the_v5_tables_and_keeps_its_data(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statements in store.MIGRATIONS[:4]:
+        for statement in statements:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 4")
+    old.execute(
+        """INSERT INTO tasks (id, target, title, grade, lane, model, state,
+        timeout_sec, created_at, updated_at)
+        VALUES ('kept', 't', 'T', 'L2', 'B', 'm', 'closed', 60, 'c', 'u')"""
+    )
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == len(store.MIGRATIONS)
+    assert get_task(conn, "kept") is not None
+    assert store.list_pauses(conn) == ()
+    assert store.list_doctor_checks(conn) == ()
+
+
+def test_add_pause_records_a_new_reason(conn: sqlite3.Connection) -> None:
+    assert store.add_pause(conn, "disk", since="t1", note="1 GB left") is True
+    assert store.list_pauses(conn) == (
+        Pause(reason="disk", since="t1", note="1 GB left"),
+    )
+
+
+def test_add_pause_keeps_the_existing_row(conn: sqlite3.Connection) -> None:
+    store.add_pause(conn, "disk", since="t1", note="first")
+    assert store.add_pause(conn, "disk", since="t2", note="second") is False
+    assert store.list_pauses(conn) == (Pause(reason="disk", since="t1", note="first"),)
+
+
+def test_a_pause_note_is_optional(conn: sqlite3.Connection) -> None:
+    store.add_pause(conn, "disk", since="t1")
+    assert store.list_pauses(conn) == (Pause(reason="disk", since="t1"),)
+
+
+def test_remove_pause_reports_whether_a_row_was_removed(
+    conn: sqlite3.Connection,
+) -> None:
+    store.add_pause(conn, "disk", since="t1")
+    assert store.remove_pause(conn, "disk") is True
+    assert store.remove_pause(conn, "disk") is False
+    assert store.list_pauses(conn) == ()
+
+
+def test_removing_one_pause_leaves_the_others(conn: sqlite3.Connection) -> None:
+    store.add_pause(conn, "disk", since="t1")
+    store.add_pause(conn, "codex_auth", since="t2")
+    store.remove_pause(conn, "disk")
+    assert [pause.reason for pause in store.list_pauses(conn)] == ["codex_auth"]
+
+
+def test_pauses_are_ordered_by_reason(conn: sqlite3.Connection) -> None:
+    store.add_pause(conn, "disk", since="t1")
+    store.add_pause(conn, "claude_auth", since="t2")
+    store.add_pause(conn, "codex_auth", since="t3")
+    assert [pause.reason for pause in store.list_pauses(conn)] == [
+        "claude_auth",
+        "codex_auth",
+        "disk",
+    ]
+
+
+def test_pause_writes_join_the_callers_transaction(conn: sqlite3.Connection) -> None:
+    store.add_pause(conn, "kept", since="t0")
+    with pytest.raises(RuntimeError), transaction(conn):
+        store.add_pause(conn, "disk", since="t1")
+        store.remove_pause(conn, "kept")
+        raise RuntimeError
+    assert [pause.reason for pause in store.list_pauses(conn)] == ["kept"]
+
+
+def test_only_one_of_several_connections_adds_a_pause(db_path: Path) -> None:
+    connect(db_path).close()
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+
+    def add() -> None:
+        conn = connect(db_path)
+        barrier.wait()
+        results.append(store.add_pause(conn, "disk", since="t"))
+        conn.close()
+
+    threads = [threading.Thread(target=add) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == [False] * 7 + [True]
+
+
+def record_check(
+    conn: sqlite3.Connection,
+    level: CheckLevel,
+    *,
+    target: str = "",
+    item: str = "disk",
+    detail: str | None = None,
+    at: str = "t",
+) -> CheckLevel | None:
+    return store.record_doctor_check(
+        conn, target=target, item=item, level=level, detail=detail, at=at
+    )
+
+
+def test_the_first_doctor_check_has_no_previous_level(
+    conn: sqlite3.Connection,
+) -> None:
+    assert record_check(conn, CheckLevel.OK) is None
+
+
+def test_a_doctor_check_returns_the_previous_level_as_an_enum(
+    conn: sqlite3.Connection,
+) -> None:
+    record_check(conn, CheckLevel.WARN)
+    previous = record_check(conn, CheckLevel.FAIL)
+    assert previous is CheckLevel.WARN
+    assert record_check(conn, CheckLevel.OK) is CheckLevel.FAIL
+
+
+def test_a_doctor_check_replaces_the_row(conn: sqlite3.Connection) -> None:
+    record_check(conn, CheckLevel.WARN, detail="9 GB", at="t1")
+    record_check(conn, CheckLevel.OK, detail=None, at="t2")
+    assert store.list_doctor_checks(conn) == (
+        DoctorCheck(target="", item="disk", level=CheckLevel.OK, at="t2"),
+    )
+
+
+def test_doctor_checks_are_keyed_by_target_and_item(conn: sqlite3.Connection) -> None:
+    record_check(conn, CheckLevel.FAIL, target="one", item="main_session")
+    assert record_check(conn, CheckLevel.OK, target="two", item="main_session") is None
+    assert record_check(conn, CheckLevel.OK, target="one", item="other") is None
+    assert (
+        record_check(conn, CheckLevel.OK, target="one", item="main_session")
+        is CheckLevel.FAIL
+    )
+
+
+def test_doctor_checks_are_ordered_by_target_then_item(
+    conn: sqlite3.Connection,
+) -> None:
+    record_check(conn, CheckLevel.OK, target="two", item="a")
+    record_check(conn, CheckLevel.OK, target="one", item="b")
+    record_check(conn, CheckLevel.OK, target="one", item="a")
+    record_check(conn, CheckLevel.OK, target="", item="z")
+    assert [(c.target, c.item) for c in store.list_doctor_checks(conn)] == [
+        ("", "z"),
+        ("one", "a"),
+        ("one", "b"),
+        ("two", "a"),
+    ]
+
+
+def test_a_doctor_check_joins_the_callers_transaction(
+    conn: sqlite3.Connection,
+) -> None:
+    record_check(conn, CheckLevel.OK)
+    with pytest.raises(RuntimeError), transaction(conn):
+        record_check(conn, CheckLevel.FAIL)
+        raise RuntimeError
+    assert store.list_doctor_checks(conn)[0].level is CheckLevel.OK
+
+
+def test_concurrent_doctor_checks_each_see_a_distinct_previous_row(
+    db_path: Path,
+) -> None:
+    """Exactly one writer finds no row: the read and write are one transaction."""
+    connect(db_path).close()
+    results: list[CheckLevel | None] = []
+    barrier = threading.Barrier(8)
+
+    def write() -> None:
+        conn = connect(db_path)
+        barrier.wait()
+        results.append(record_check(conn, CheckLevel.WARN))
+        conn.close()
+
+    threads = [threading.Thread(target=write) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results.count(None) == 1
+    assert results.count(CheckLevel.WARN) == 7

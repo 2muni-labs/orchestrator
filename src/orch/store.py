@@ -10,6 +10,8 @@ from pathlib import Path
 
 from orch import models
 from orch.models import (
+    CheckLevel,
+    DoctorCheck,
     Effort,
     FailureReason,
     Gate,
@@ -18,6 +20,7 @@ from orch.models import (
     Lane,
     Lock,
     Outcome,
+    Pause,
     Run,
     Task,
     TaskState,
@@ -81,6 +84,21 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     ("ALTER TABLE tasks ADD COLUMN pushed_sha TEXT",),
     ("ALTER TABLE tasks ADD COLUMN gated_sha TEXT",),
     ("ALTER TABLE runs ADD COLUMN kill_requested_at TEXT",),
+    (
+        """CREATE TABLE pauses (
+            reason TEXT PRIMARY KEY,
+            since TEXT NOT NULL,
+            note TEXT
+        )""",
+        """CREATE TABLE doctor_checks (
+            target TEXT NOT NULL,
+            item TEXT NOT NULL,
+            level TEXT NOT NULL,
+            detail TEXT,
+            at TEXT NOT NULL,
+            PRIMARY KEY (target, item)
+        )""",
+    ),
 )
 
 
@@ -519,4 +537,71 @@ def gate_results(
             at=at,
         )
         for task_id, attempt, gate, passed, detail, at in rows
+    )
+
+
+def add_pause(
+    conn: sqlite3.Connection, reason: str, *, since: str, note: str | None = None
+) -> bool:
+    """Record a pause reason. True: new row. False: already paused, row unchanged."""
+    with transaction(conn):
+        cursor = conn.execute(
+            """INSERT INTO pauses (reason, since, note) VALUES (?, ?, ?)
+            ON CONFLICT (reason) DO NOTHING""",
+            (reason, since, note),
+        )
+        return cursor.rowcount > 0
+
+
+def remove_pause(conn: sqlite3.Connection, reason: str) -> bool:
+    """Remove a pause reason. Returns whether a row was removed."""
+    with transaction(conn):
+        cursor = conn.execute("DELETE FROM pauses WHERE reason = ?", (reason,))
+        return cursor.rowcount > 0
+
+
+def list_pauses(conn: sqlite3.Connection) -> tuple[Pause, ...]:
+    """Return pause reasons ordered by reason."""
+    rows = conn.execute("SELECT reason, since, note FROM pauses ORDER BY reason")
+    return tuple(
+        Pause(reason=reason, since=since, note=note) for reason, since, note in rows
+    )
+
+
+def record_doctor_check(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    item: str,
+    level: CheckLevel,
+    detail: str | None,
+    at: str,
+) -> CheckLevel | None:
+    """Store a check's latest level atomically and return the previous one, or None."""
+    with transaction(conn):
+        previous = conn.execute(
+            "SELECT level FROM doctor_checks WHERE target = ? AND item = ?",
+            (target, item),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO doctor_checks (target, item, level, detail, at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (target, item) DO UPDATE SET
+                level = excluded.level, detail = excluded.detail, at = excluded.at""",
+            (target, item, level.value, detail, at),
+        )
+        return None if previous is None else CheckLevel(previous[0])
+
+
+def list_doctor_checks(conn: sqlite3.Connection) -> tuple[DoctorCheck, ...]:
+    """Return stored checks ordered by target, then item."""
+    rows = conn.execute(
+        """SELECT target, item, level, detail, at FROM doctor_checks
+        ORDER BY target, item"""
+    )
+    return tuple(
+        DoctorCheck(
+            target=target, item=item, level=CheckLevel(level), detail=detail, at=at
+        )
+        for target, item, level, detail, at in rows
     )
