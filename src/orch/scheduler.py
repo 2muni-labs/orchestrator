@@ -40,6 +40,7 @@ class NextReport:
     reserved: tuple[str, ...] = ()
     newly_blocked: tuple[str, ...] = ()
     chains: tuple[BlockedChain, ...] = ()
+    paused: tuple[str, ...] = ()
 
 
 def globs_overlap(first: str, second: str) -> bool:

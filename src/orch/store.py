@@ -10,6 +10,8 @@ from pathlib import Path
 
 from orch import models
 from orch.models import (
+    CheckLevel,
+    DoctorCheck,
     Effort,
     FailureReason,
     Gate,
@@ -18,6 +20,7 @@ from orch.models import (
     Lane,
     Lock,
     Outcome,
+    Pause,
     Run,
     Task,
     TaskState,
@@ -520,3 +523,38 @@ def gate_results(
         )
         for task_id, attempt, gate, passed, detail, at in rows
     )
+
+
+def add_pause(
+    conn: sqlite3.Connection, reason: str, *, since: str, note: str | None = None
+) -> bool:
+    """Record a pause reason. True: new row. False: already paused, row unchanged."""
+    raise NotImplementedError
+
+
+def remove_pause(conn: sqlite3.Connection, reason: str) -> bool:
+    """Remove a pause reason. Returns whether a row was removed."""
+    raise NotImplementedError
+
+
+def list_pauses(conn: sqlite3.Connection) -> tuple[Pause, ...]:
+    """Return pause reasons ordered by reason."""
+    raise NotImplementedError
+
+
+def record_doctor_check(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    item: str,
+    level: CheckLevel,
+    detail: str | None,
+    at: str,
+) -> CheckLevel | None:
+    """Store a check's latest level atomically and return the previous one, or None."""
+    raise NotImplementedError
+
+
+def list_doctor_checks(conn: sqlite3.Connection) -> tuple[DoctorCheck, ...]:
+    """Return stored checks ordered by target, then item."""
+    raise NotImplementedError
