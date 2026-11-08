@@ -215,6 +215,36 @@ def test_a_required_review_that_went_missing_stops_the_pull_request(
     assert sandbox.gh_calls() == []
 
 
+def test_a_claude_implementation_is_reviewed_by_codex_and_opened(
+    sandbox: Sandbox,
+) -> None:
+    sandbox.reviewing(TASK, lane="C")
+
+    result = sandbox.orch(
+        "review", TASK, "--by", "codex", env={"ORCH_FAKE_SCENARIO": "review_pass"}
+    )
+    assert result.code == 0, result
+    data = result.data
+    assert (data["outcome"], data["state"], data["exit_code"]) == ("saved", "ready", 0)
+    logs = sandbox.orch_home / TARGET / "logs" / "review"
+    assert data["log_path"] == str(logs / f"{TASK}.1.log")
+    assert Path(data["log_path"]).is_file()
+    assert data["diff_path"] == str(
+        sandbox.orch_home / TARGET / "reviews" / f"{TASK}.diff"
+    )
+    assert CHANGED in Path(data["diff_path"]).read_text(encoding="utf-8")
+    saved = json.loads(
+        (sandbox.orch_home / TARGET / "reviews" / f"{TASK}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (saved["reviewer"], saved["verdict"]) == ("codex-review", "PASS")
+    assert sandbox.state(TASK) == "ready"
+
+    opened = sandbox.ok("pr", TASK)
+    assert opened["state"] == "pr_open", opened
+
+
 # Fake mode needs an explicit, separate ORCH_HOME
 
 
