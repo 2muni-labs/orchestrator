@@ -29,6 +29,7 @@ DESTINATIONS: dict[str, frozenset[TaskState]] = {
     "discard": frozenset({TaskState.DISCARDED}),
     "retry": frozenset({TaskState.RESERVED, TaskState.QUEUED}),
     "resume": frozenset({TaskState.RESERVED, TaskState.QUEUED}),
+    "kill": frozenset({TaskState.JUDGING}),
 }
 
 

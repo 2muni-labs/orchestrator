@@ -20,6 +20,7 @@ from orch import (
     config,
     credentials,
     github,
+    lifecycle,
     notify,
     prflow,
     render,
@@ -32,7 +33,16 @@ from orch.cli import main
 from orch.gate import GateReport, GateStatus
 from orch.github import GitHubError, PullRequestStatus
 from orch.gitops import GitError, LeaseRejectedError
-from orch.models import Effort, Grade, Lane, Task, TaskState
+from orch.models import (
+    Effort,
+    FailureReason,
+    Grade,
+    Lane,
+    Outcome,
+    Run,
+    Task,
+    TaskState,
+)
 from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
 from transitions import check_call
 
@@ -418,6 +428,8 @@ def test_help_exits_zero() -> None:
         ("target", "add"),
         ("status", "extra"),
         ("resume", TASK, "--nosuch"),
+        ("kill",),
+        ("kill", TASK, "extra"),
     ],
 )
 def test_bad_arguments_are_a_usage_error(orch: Call, args: tuple[str, ...]) -> None:
@@ -3094,3 +3106,192 @@ def test_watch_panels_accepts_the_main_pane_as_anchor(
     terminal = run_panels_tick(env, monkeypatch, terminals, "%0")
     splits = [call for call in terminal.calls if call[0] == "split"]
     assert [call[2] for call in splits] == ["%0"]
+
+
+# Kill
+
+
+def make_running(env: Env, *, finished: bool = False) -> int:
+    """Insert a running task with one run, finished or not, and no process."""
+    config.ensure_target(env.orch_home, TARGET, "owner/sample")
+    insert(env, state=TaskState.RUNNING)
+    conn = connect(env)
+    try:
+        with store.transaction(conn):
+            run_id = store.insert_run(
+                conn,
+                Run(
+                    task_id=TASK,
+                    attempt=1,
+                    lane=Lane.B,
+                    model="gpt-6.1-sol",
+                    started_at="2026-01-01T00:00:00+00:00",
+                ),
+            )
+        if finished:
+            store.finish_run(
+                conn,
+                run_id,
+                ended_at="2026-01-01T00:01:00+00:00",
+                exit_code=0,
+                outcome=Outcome.DONE,
+                failure_reason=None,
+            )
+    finally:
+        conn.close()
+    return run_id
+
+
+@pytest.fixture
+def kill_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record each kill_task call and run the real one with a short settle."""
+    calls: list[dict[str, object]] = []
+    real = lifecycle.kill_task
+
+    def short(
+        conn: sqlite3.Connection, task_id: str, **options: object
+    ) -> lifecycle.KillReport:
+        calls.append({"task_id": task_id, **options})
+        return real(conn, task_id, **{**options, "settle_sec": 0.2, "poll_sec": 0.05})
+
+    monkeypatch.setattr(lifecycle, "kill_task", short)
+    return calls
+
+
+def test_kill_ends_a_run_without_a_runner_and_reports_the_abort(
+    orch: Call,
+    env: Env,
+    kill_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_running(env)
+    # Kill reads no target configuration and issues no token.
+    monkeypatch.delenv("ORCH_HUB")
+
+    def no_token(*args: object, **kwargs: object) -> str:
+        raise AssertionError("kill must not issue a token")
+
+    monkeypatch.setattr(credentials, "issue_token", no_token)
+    code, data = orch("kill", TASK)
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "task_id": TASK,
+        "state": "judging",
+        "outcome": "FAILED",
+        "failure_reason": "aborted",
+        "finished_by": "kill",
+        "signalled": False,
+    }
+    assert state_of(env) == TaskState.JUDGING
+    report = json.loads(
+        (env.paths.results / f"{TASK}.json").read_text(encoding="utf-8")
+    )
+    assert (report["status"], report["failure_reason"]) == ("FAILED", "aborted")
+    assert todo_state(env) == "judging"
+    # The command passes exactly the paths and the environment, no timing options.
+    assert len(kill_calls) == 1
+    call = kill_calls[0]
+    assert set(call) == {"task_id", "paths", "environ"}
+    assert call["task_id"] == TASK
+    assert call["paths"] == env.paths
+    assert call["environ"] is os.environ
+
+
+def test_kill_reports_what_the_runner_recorded(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_running(env)
+
+    def runner_won(
+        conn: sqlite3.Connection, task_id: str, **options: object
+    ) -> lifecycle.KillReport:
+        return lifecycle.KillReport(
+            task_id=task_id,
+            state=TaskState.JUDGING,
+            outcome=Outcome.DONE,
+            failure_reason=None,
+            finished_by="runner",
+            signalled=True,
+        )
+
+    monkeypatch.setattr(lifecycle, "kill_task", runner_won)
+    code, data = orch("kill", TASK, unchecked=True)
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "task_id": TASK,
+        "state": "judging",
+        "outcome": "DONE",
+        "failure_reason": None,
+        "finished_by": "runner",
+        "signalled": True,
+    }
+
+
+def test_kill_passes_the_failure_reason_as_text(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_running(env)
+
+    def timed_out(
+        conn: sqlite3.Connection, task_id: str, **options: object
+    ) -> lifecycle.KillReport:
+        return lifecycle.KillReport(
+            task_id=task_id,
+            state=TaskState.JUDGING,
+            outcome=Outcome.FAILED,
+            failure_reason=FailureReason.TIMEOUT,
+            finished_by="runner",
+            signalled=False,
+        )
+
+    monkeypatch.setattr(lifecycle, "kill_task", timed_out)
+    code, data = orch("kill", TASK, unchecked=True)
+    assert code == 0, data
+    assert (data["outcome"], data["failure_reason"]) == ("FAILED", "timeout")
+
+
+def test_kill_refuses_a_task_that_is_not_running(
+    orch: Call, env: Env, kill_calls: list[dict[str, object]]
+) -> None:
+    config.ensure_target(env.orch_home, TARGET, "owner/sample")
+    insert(env, state=TaskState.JUDGING)
+    assert_error(orch("kill", TASK, unchecked=True), USAGE, "refused")
+    assert state_of(env) == TaskState.JUDGING
+    assert todo_state(env) == "judging"
+
+
+def test_kill_refuses_a_running_task_whose_run_finished(
+    orch: Call, env: Env, kill_calls: list[dict[str, object]]
+) -> None:
+    run_id = make_running(env, finished=True)
+    assert_error(orch("kill", TASK, unchecked=True), USAGE, "refused")
+    assert state_of(env) == TaskState.RUNNING
+    conn = connect(env)
+    try:
+        run = store.get_run(conn, run_id)
+    finally:
+        conn.close()
+    assert run is not None and run.kill_requested_at is None
+    assert not (env.paths.results / f"{TASK}.json").exists()
+
+
+def test_kill_refuses_an_unknown_task(
+    orch: Call, env: Env, kill_calls: list[dict[str, object]]
+) -> None:
+    assert_error(orch("kill", "missing", unchecked=True), USAGE, "refused")
+    assert kill_calls == []
+
+
+def test_kill_refuses_a_task_of_another_session_target(
+    orch: Call,
+    env: Env,
+    kill_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_running(env)
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    assert_error(orch("kill", TASK, unchecked=True), USAGE, "refused")
+    assert kill_calls == []
+    assert state_of(env) == TaskState.RUNNING
