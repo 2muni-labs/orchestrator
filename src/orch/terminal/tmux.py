@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from orch.terminal.base import (
+    MainPaneStatus,
     PaneRecord,
     TerminalError,
     _record_lock,
@@ -155,3 +156,6 @@ class TmuxTerminal:
             ["list-panes", "-s", "-t", f"={self.session}", "-F", "#{pane_id}"]
         )
         return frozenset(result.stdout.splitlines())
+
+    def main_pane_status(self, claude: Path | str) -> MainPaneStatus:
+        raise NotImplementedError
