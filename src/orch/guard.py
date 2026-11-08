@@ -214,6 +214,8 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
         subcommand = next((arg for arg in args if not arg.startswith("-")), None)
         if subcommand == "resume":
             return Verdict("ask", "작업을 재개하려면 사용자 확인이 필요합니다.")
+        if subcommand == "kill":
+            return Verdict("ask", "작업을 중단하려면 사용자 확인이 필요합니다.")
     if executable in {"bash", "sh", "zsh"}:
         for index, arg in enumerate(args[:-1]):
             if arg.startswith("-") and not arg.startswith("--") and "c" in arg:
