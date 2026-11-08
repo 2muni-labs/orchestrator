@@ -3,6 +3,7 @@
 from orch.terminal.base import (
     MainPaneStatus,
     PaneRecord,
+    SessionProbe,
     TerminalError,
     load_record,
     record_path,
@@ -13,6 +14,7 @@ from orch.terminal.tmux import TmuxTerminal
 __all__ = [
     "MainPaneStatus",
     "PaneRecord",
+    "SessionProbe",
     "TerminalError",
     "TmuxTerminal",
     "load_record",

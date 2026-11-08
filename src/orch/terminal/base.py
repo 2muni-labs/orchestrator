@@ -28,6 +28,14 @@ class MainPaneStatus(StrEnum):
     NOT_CLAUDE = "not_claude"
 
 
+class SessionProbe(StrEnum):
+    """Whether a session exists. UNAVAILABLE means tmux could not answer."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True)
 class PaneRecord:
     session: str

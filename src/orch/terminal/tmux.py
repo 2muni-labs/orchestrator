@@ -9,6 +9,7 @@ from pathlib import Path
 from orch.terminal.base import (
     MainPaneStatus,
     PaneRecord,
+    SessionProbe,
     TerminalError,
     _record_lock,
     _valid_pane,
@@ -75,6 +76,9 @@ class TmuxTerminal:
             )
         except OSError, subprocess.SubprocessError:
             return False
+
+    def probe_session(self) -> SessionProbe:
+        raise NotImplementedError
 
     def open_session(
         self, *, cwd: Path, env: Mapping[str, str], command: Sequence[str]
