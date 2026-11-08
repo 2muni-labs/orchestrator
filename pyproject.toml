@@ -1,6 +1,6 @@
 [project]
 name = "orch"
-version = "0.7.0"
+version = "0.8.0"
 description = "Global orchestrator CLI for Claude Code and Codex sub-agents"
 requires-python = ">=3.14"
 dependencies = []
