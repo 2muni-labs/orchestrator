@@ -46,6 +46,7 @@ _REFRESH_COMMANDS = {
     "discard",
     "retry",
     "resume",
+    "kill",
     "next",
 }
 
@@ -383,7 +384,8 @@ def _kill(
     conn: sqlite3.Connection, task_id: str, paths: config.TargetPaths
 ) -> dict[str, object]:
     """Stop a running task through lifecycle.kill_task and return its report."""
-    raise NotImplementedError
+    report = lifecycle.kill_task(conn, task_id, paths=paths, environ=os.environ)
+    return asdict(report)
 
 
 def _command(
