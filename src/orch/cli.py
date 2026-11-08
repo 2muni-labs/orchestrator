@@ -46,6 +46,7 @@ _REFRESH_COMMANDS = {
     "discard",
     "retry",
     "resume",
+    "kill",
     "next",
 }
 
@@ -108,6 +109,7 @@ def _parser() -> argparse.ArgumentParser:
         "discard",
         "retry",
         "resume",
+        "kill",
     ):
         command = commands.add_parser(name)
         command.add_argument("id")
@@ -378,6 +380,14 @@ def _execute(
                 _refresh_todos(conn, orch_home, secrets)
 
 
+def _kill(
+    conn: sqlite3.Connection, task_id: str, paths: config.TargetPaths
+) -> dict[str, object]:
+    """Stop a running task through lifecycle.kill_task and return its report."""
+    report = lifecycle.kill_task(conn, task_id, paths=paths, environ=os.environ)
+    return asdict(report)
+
+
 def _command(
     conn: sqlite3.Connection,
     args: argparse.Namespace,
@@ -510,6 +520,8 @@ def _command(
         )
         code = 0 if report.merged else 50 if report.pr_state == "CLOSED" else 60
         return code, asdict(report)
+    if command == "kill":
+        return 0, _kill(conn, task_id, paths)
     if command in {"dispatch", "retry", "resume"}:
         if command == "dispatch":
             decision = scheduler.dispatch(

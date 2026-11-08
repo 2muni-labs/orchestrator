@@ -1,7 +1,9 @@
-"""Failures: usage limits, timeouts, scope, discarded dependencies and open PRs."""
+"""Failures: usage limits, timeouts, kill, scope, discarded dependencies, open PRs."""
 
+import contextlib
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import time
@@ -10,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import CHANGED, TARGET, Sandbox
+from transitions import check_call
 
 TASK = "fault-task"
 INTEGRATION_FAILED = "Integration check failed against the latest main. Do not merge."
@@ -47,6 +50,14 @@ def wait_until_gone(pid: int) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+def require_ps() -> None:
+    """Skip where ps is not allowed, as in the agent sandbox; G2 runs it outside."""
+    try:
+        subprocess.run(["ps", "-o", "pid=", "-p", "1"], capture_output=True)
+    except PermissionError:
+        pytest.skip("ps is not allowed here")
 
 
 def comments(sandbox: Sandbox, url: str) -> list[str]:
@@ -195,6 +206,7 @@ def test_a_timeout_stops_the_agent_and_rejects_its_report(
 
 
 def test_a_timeout_also_stops_a_child_in_another_session(sandbox: Sandbox) -> None:
+    require_ps()
     # The limit must cover the agent's start, since the agent writes the child's pid.
     sandbox.reserve(TASK)
     set_timeout(sandbox, TASK, AGENT_WAIT_SEC)
@@ -210,6 +222,89 @@ def test_a_timeout_also_stops_a_child_in_another_session(sandbox: Sandbox) -> No
     assert result.data["failure_reason"] == "timeout", result
     child = int(pid_file.read_text(encoding="utf-8"))
     assert wait_until_gone(child)
+
+
+# Kill
+
+
+def wait_for_agent(sandbox: Sandbox, task_id: str = TASK) -> int:
+    """Return the agent's pid once orch run has recorded it with its start time."""
+    deadline = time.monotonic() + AGENT_WAIT_SEC
+    while time.monotonic() < deadline:
+        rows = sandbox.query(
+            "SELECT pid, pid_started_at FROM runs"
+            " WHERE task_id = ? AND ended_at IS NULL",
+            task_id,
+        )
+        if rows and rows[0]["pid"] is not None and rows[0]["pid_started_at"]:
+            return int(rows[0]["pid"])
+        time.sleep(0.05)
+    pytest.fail("orch run did not record the agent process")
+
+
+def test_kill_stops_a_running_agent_and_keeps_the_worktree(sandbox: Sandbox) -> None:
+    require_ps()
+    worktree = sandbox.reserve(TASK)
+    args = ("run", TASK)
+    check_call(sandbox.orch_home / "state.db", args)
+    run = subprocess.Popen(
+        [str(sandbox.orch_command), *args],
+        env={**sandbox.env, "ORCH_FAKE_SCENARIO": "timeout"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    agent = None
+    try:
+        agent = wait_for_agent(sandbox)
+        killed = sandbox.orch("kill", TASK)
+        # A failed kill leaves the agent running: stop here instead of waiting on it.
+        assert killed.code == 0, killed
+        out, _ = run.communicate(timeout=RUN_BOUND_SEC)
+    finally:
+        if run.poll() is None:
+            run.kill()
+            run.wait()
+            if agent is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(agent, signal.SIGKILL)
+
+    # The runner, still alive, records the abort; kill only requested and signalled.
+    assert killed.data == {
+        "ok": True,
+        "task_id": TASK,
+        "state": "judging",
+        "outcome": "FAILED",
+        "failure_reason": "aborted",
+        "finished_by": "runner",
+        "signalled": True,
+    }
+    assert run.returncode == 20, out
+    ran = json.loads(out)
+    assert (ran["status"], ran["failure_reason"], ran["state"]) == (
+        "FAILED",
+        "aborted",
+        "judging",
+    )
+    assert wait_until_gone(agent)
+
+    report = result_file(sandbox)
+    assert (report["status"], report["failure_reason"]) == ("FAILED", "aborted")
+    rows = sandbox.query(
+        "SELECT outcome, failure_reason, kill_requested_at FROM runs WHERE task_id = ?",
+        TASK,
+    )
+    assert len(rows) == 1
+    assert (rows[0]["outcome"], rows[0]["failure_reason"]) == ("FAILED", "aborted")
+    assert rows[0]["kill_requested_at"] is not None
+    assert sandbox.state(TASK) == "judging"
+    assert worktree.is_dir()
+
+    # A second kill finds nothing to stop; the aborted task can retry.
+    again = sandbox.orch("kill", TASK, unchecked=True)
+    assert again.code == 64 and again.data["error"] == "refused"
+    assert sandbox.ok("retry", TASK)["state"] == "reserved"
+    assert sandbox.status(TASK)["attempt"] == 2
 
 
 # Out of scope
