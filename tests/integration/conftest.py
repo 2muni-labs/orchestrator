@@ -379,8 +379,15 @@ class Sandbox:
         depends_on: Iterable[str] = (),
         modify: str = "src/**",
         title: str = "Add the fake change",
+        lane: str = "B",
     ) -> Path:
-        effort = {"L2": "medium", "L3": "high"}[grade]
+        if lane == "B":
+            effort = {"L2": "medium", "L3": "high"}[grade]
+            agent = ['model = "gpt-6.1-sol"', f'effort = "{effort}"']
+        else:
+            agent = ['model = "claude-sonnet-5-5"']
+            if grade == "L3":
+                agent.append('effort = "high"')
         dependencies = ", ".join(f'"{item}"' for item in depends_on)
         path = self.drafts / f"{task_id}.md"
         self.write(
@@ -392,9 +399,8 @@ class Sandbox:
                     f'title = "{title}"',
                     f'target = "{TARGET}"',
                     f'grade = "{grade}"',
-                    'lane = "B"',
-                    'model = "gpt-6.1-sol"',
-                    f'effort = "{effort}"',
+                    f'lane = "{lane}"',
+                    *agent,
                     "timeout_min = 5",
                     f'modify = ["{modify}"]',
                     'read = ["src/**"]',

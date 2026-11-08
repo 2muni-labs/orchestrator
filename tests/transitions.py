@@ -37,7 +37,8 @@ def task_of(args: Sequence[str]) -> tuple[str, str] | None:
     """Return the command and task id of a state-changing call, or None."""
     if not args or args[0] not in DESTINATIONS:
         return None
-    index = 2 if args[0] == "review" else 1
+    # review has two forms: review save <id> and review <id> --by codex.
+    index = 2 if tuple(args[:2]) == ("review", "save") else 1
     if len(args) <= index or args[index].startswith("-"):
         return None
     return args[0], args[index]

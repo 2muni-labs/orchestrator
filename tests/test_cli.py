@@ -24,6 +24,7 @@ from orch import (
     notify,
     prflow,
     render,
+    review,
     scheduler,
     store,
     waiter,
@@ -66,17 +67,22 @@ def spec_text(
     depends_on: tuple[str, ...] = (),
     review: bool = False,
     modify: str = "src/**",
+    lane: str = "B",
 ) -> str:
     dependencies = ", ".join(f'"{item}"' for item in depends_on)
+    agent = (
+        ['model = "gpt-6.1-sol"', 'effort = "medium"']
+        if lane == "B"
+        else ['model = "claude-sonnet-5-5"']
+    )
     lines = [
         "+++",
         f'id = "{task_id}"',
         f'title = "{TITLE}"',
         f'target = "{target}"',
         'grade = "L2"',
-        'lane = "B"',
-        'model = "gpt-6.1-sol"',
-        'effort = "medium"',
+        f'lane = "{lane}"',
+        *agent,
         "timeout_min = 5",
         f'modify = ["{modify}"]',
         'read = ["src/**"]',
@@ -430,6 +436,11 @@ def test_help_exits_zero() -> None:
         ("resume", TASK, "--nosuch"),
         ("kill",),
         ("kill", TASK, "extra"),
+        ("review", TASK),
+        ("review", TASK, "--by"),
+        ("review", TASK, "--by", "claude"),
+        ("review", "--by", "codex"),
+        ("review", TASK, "--by", "codex", "extra"),
     ],
 )
 def test_bad_arguments_are_a_usage_error(orch: Call, args: tuple[str, ...]) -> None:
@@ -481,6 +492,7 @@ NEEDS_HUB = [
     ("update", TASK),
     ("close", TASK),
     ("discard", TASK),
+    ("review", TASK, "--by", "codex"),
 ]
 
 
@@ -939,6 +951,247 @@ def test_review_save_needs_a_reviewing_task(orch: Call, env: Env) -> None:
         USAGE,
         "refused",
     )
+
+
+# review --by codex
+
+
+def make_codex_reviewing(orch: Call, env: Env) -> Path:
+    """A Claude implementation (lane C) waiting for its cross-review."""
+    worktree = judge(orch, env, spec_text(review=True, lane="C"))
+    code, data = orch("gate", TASK)
+    assert code == 0, data
+    assert data["state"] == "reviewing"
+    return worktree
+
+
+def review_paths(env: Env) -> dict[str, str]:
+    logs = env.paths.logs / "review"
+    return {
+        "log_path": str(logs / f"{TASK}.1.log"),
+        "output_path": str(logs / f"{TASK}.1.out"),
+        "diff_path": str(env.paths.reviews / f"{TASK}.diff"),
+    }
+
+
+def test_the_review_model_is_policy_in_review_py() -> None:
+    assert (review.REVIEW_MODEL, review.REVIEW_EFFORT) == ("gpt-6.1-sol", "medium")
+
+
+@pytest.mark.usefixtures("target")
+def test_a_codex_pass_is_saved_and_moves_to_ready(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+
+    def no_token(*args: object, **kwargs: object) -> str:
+        raise AssertionError("review must not issue a token")
+
+    monkeypatch.setattr(credentials, "issue_token", no_token)
+    code, data = orch("review", TASK, "--by", "codex")
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "task_id": TASK,
+        "outcome": "saved",
+        "state": "ready",
+        "exit_code": 0,
+        **review_paths(env),
+    }
+    assert state_of(env) is TaskState.READY
+    saved = json.loads(env.paths.review_path(TASK).read_text(encoding="utf-8"))
+    assert (saved["reviewer"], saved["verdict"]) == ("codex-review", "PASS")
+    assert todo_state(env) == "ready"
+
+
+@pytest.mark.usefixtures("target")
+def test_a_codex_block_is_saved_with_exit_zero_and_moves_to_judging(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_block")
+    code, data = orch("review", TASK, "--by", "codex")
+    assert code == 0, data
+    assert (data["outcome"], data["state"]) == ("saved", "judging")
+    assert state_of(env) is TaskState.JUDGING
+    assert todo_state(env) == "judging"
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("scenario", "outcome", "expected"),
+    [
+        ("review_invalid", "invalid", 20),
+        ("review_fail", "failed", 20),
+        ("review_usage_limit", "quota", 40),
+    ],
+)
+def test_a_review_that_is_not_saved_keeps_reviewing(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    outcome: str,
+    expected: int,
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", scenario)
+    code, data = orch("review", TASK, "--by", "codex", unchecked=True)
+    assert code == expected, data
+    assert data["ok"] is True
+    assert (data["outcome"], data["state"]) == (outcome, "reviewing")
+    assert state_of(env) is TaskState.REVIEWING
+    assert not env.paths.review_path(TASK).exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_the_review_runs_codex_with_the_policy_model_and_effort(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_codex_reviewing(orch, env)
+    args_file = env.home / "review-args.json"
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_args")
+    monkeypatch.setenv("ORCH_FAKE_ARGS_FILE", str(args_file))
+    code, data = orch("review", TASK, "--by", "codex")
+    assert code == 0, data
+    argv = json.loads(args_file.read_text(encoding="utf-8"))["argv"]
+    assert argv[argv.index("-m") + 1] == "gpt-6.1-sol"
+    assert "model_reasoning_effort=medium" in argv
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        ("saved", 0),
+        ("invalid", 20),
+        ("failed", 20),
+        ("timeout", 20),
+        ("quota", 40),
+    ],
+)
+def test_each_outcome_has_its_exit_code_and_the_call_is_exact(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    expected: int,
+) -> None:
+    make_codex_reviewing(orch, env)
+    calls: list[dict[str, object]] = []
+
+    def fake(
+        conn: sqlite3.Connection, task_id: str, **options: object
+    ) -> review.ReviewRun:
+        calls.append({"task_id": task_id, **options})
+        paths = env.paths
+        return review.ReviewRun(
+            task_id=task_id,
+            outcome=review.ReviewOutcome(outcome),
+            state=TaskState.REVIEWING,
+            exit_code=None if outcome == "timeout" else 1,
+            log_path=paths.logs / "review" / f"{task_id}.1.log",
+            output_path=paths.logs / "review" / f"{task_id}.1.out",
+            diff_path=paths.reviews / f"{task_id}.diff",
+        )
+
+    monkeypatch.setattr(review, "run_codex_review", fake)
+    code, data = orch("review", TASK, "--by", "codex", unchecked=True)
+    assert code == expected, data
+    assert data == {
+        "ok": True,
+        "task_id": TASK,
+        "outcome": outcome,
+        "state": "reviewing",
+        "exit_code": None if outcome == "timeout" else 1,
+        **review_paths(env),
+    }
+    assert len(calls) == 1
+    call = calls[0]
+    assert set(call) == {
+        "task_id",
+        "target",
+        "config",
+        "paths",
+        "environ",
+        "model",
+        "effort",
+        "home",
+        "orch_home",
+    }
+    assert call["task_id"] == TASK
+    assert call["model"] == review.REVIEW_MODEL
+    assert call["effort"] == review.REVIEW_EFFORT
+    assert call["paths"] == env.paths
+    assert call["environ"] is os.environ
+    assert call["home"] == env.home
+    assert call["orch_home"] == env.orch_home
+    assert call["target"].name == TARGET
+    assert isinstance(call["config"], config.Config)
+
+
+@pytest.mark.usefixtures("target")
+def test_codex_does_not_review_a_codex_implementation(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+    assert_error(
+        orch("review", TASK, "--by", "codex", unchecked=True), USAGE, "refused"
+    )
+    assert state_of(env) is TaskState.REVIEWING
+    assert not (env.paths.logs / "review").exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_codex_review_needs_a_reviewing_task(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judge(orch, env, spec_text(review=True, lane="C"))
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+    assert_error(
+        orch("review", TASK, "--by", "codex", unchecked=True), USAGE, "refused"
+    )
+    assert state_of(env) is TaskState.JUDGING
+
+
+@pytest.mark.usefixtures("target")
+def test_codex_review_without_the_hub_runs_nothing(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("review", TASK, "--by", "codex", unchecked=True), USAGE, "usage")
+    assert state_of(env) is TaskState.REVIEWING
+    assert not (env.paths.logs / "review").exists()
+    assert not (env.paths.reviews / f"{TASK}.diff").exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_review_save_still_works_without_the_hub(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_reviewing(orch, env)
+    monkeypatch.delenv("ORCH_HUB")
+    code, data = orch("review", "save", TASK, stdin=review_text())
+    assert code == 0, data
+    assert data == {"ok": True, "task_id": TASK, "state": "ready"}
+
+
+@pytest.mark.usefixtures("target")
+def test_codex_review_refuses_a_task_of_another_session_target(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    assert_error(
+        orch("review", TASK, "--by", "codex", unchecked=True), USAGE, "refused"
+    )
+    assert state_of(env) is TaskState.REVIEWING
 
 
 # retry and resume

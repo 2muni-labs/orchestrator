@@ -117,13 +117,14 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--resolution")
         elif name == "resume":
             command.add_argument("--keep", action="store_true")
-    save = (
-        commands.add_parser("review")
-        .add_subparsers(dest="review_command", required=True)
-        .add_parser("save")
+    review_parser = commands.add_parser(
+        "review",
+        usage="orch review ID --by codex | orch review save ID [--triage FILE]",
     )
-    save.add_argument("id")
-    save.add_argument("--triage", type=Path)
+    review_parser.add_argument("id", metavar="ID|save")
+    review_parser.add_argument("save_id", metavar="ID", nargs="?")
+    review_parser.add_argument("--by", choices=("codex",))
+    review_parser.add_argument("--triage", type=Path, metavar="FILE")
     wait = commands.add_parser("wait")
     wait.add_argument("id")
     wait.add_argument("--merged", action="store_true")
@@ -153,7 +154,9 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _environment(command: str) -> tuple[Path, Path | None]:
+def _environment(
+    command: str, *, require_hub: bool = False
+) -> tuple[Path, Path | None]:
     try:
         orch_home = config.orch_home()
     except config.ConfigError as exc:
@@ -166,7 +169,7 @@ def _environment(command: str) -> tuple[Path, Path | None]:
         ):
             raise _UsageError("Fake agents require an explicit, separate ORCH_HOME")
     hub = None
-    if command in {
+    if require_hub or command in {
         "target",
         "open",
         "prepare",
@@ -273,7 +276,18 @@ def _refresh_todos(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
-    orch_home, hub = _environment(args.command)
+    if args.command == "review":
+        if args.id == "save":
+            if args.save_id is None or args.by is not None:
+                raise _UsageError("review save requires an id and does not accept --by")
+            args.id = args.save_id
+        elif args.save_id is not None or args.by is None or args.triage is not None:
+            raise _UsageError(
+                "review requires an id and --by codex; --triage is for save"
+            )
+    orch_home, hub = _environment(
+        args.command, require_hub=args.command == "review" and args.by == "codex"
+    )
     home = Path.home()
     if args.command == "open":
         assert hub is not None
@@ -586,6 +600,32 @@ def _command(
             **asdict(report),
         }
     if command == "review":
+        if args.by == "codex":
+            report = review.run_codex_review(
+                conn,
+                task_id,
+                target=target,
+                config=settings,
+                paths=paths,
+                environ=os.environ,
+                model=review.REVIEW_MODEL,
+                effort=review.REVIEW_EFFORT,
+                home=home,
+                orch_home=orch_home,
+            )
+            code = {
+                review.ReviewOutcome.SAVED: 0,
+                review.ReviewOutcome.INVALID: 20,
+                review.ReviewOutcome.FAILED: 20,
+                review.ReviewOutcome.QUOTA: 40,
+                review.ReviewOutcome.TIMEOUT: 20,
+            }[report.outcome]
+            return code, {
+                **asdict(report),
+                "log_path": str(report.log_path),
+                "output_path": str(report.output_path),
+                "diff_path": str(report.diff_path),
+            }
         try:
             text = sys.stdin.read()
         except (OSError, UnicodeError) as exc:

@@ -19,6 +19,10 @@ from orch.models import Lane, Review, Severity, Task, TaskState, Verdict
 from orch.redact import RedactionError, redact
 
 OVERRIDE_LABEL = "review-overridden"
+# The model and effort of a Codex cross-review (requirements, chapter 4). This is
+# policy: changing it changes who reviews Claude implementations.
+REVIEW_MODEL = "gpt-6.1-sol"
+REVIEW_EFFORT = "medium"
 OVERRIDE_HEADING = "## Review BLOCK overridden"
 
 
