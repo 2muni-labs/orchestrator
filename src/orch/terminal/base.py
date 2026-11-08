@@ -8,11 +8,24 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 
 
 class TerminalError(Exception):
     """A terminal call failed or targeted a pane orch does not own."""
+
+
+class MainPaneStatus(StrEnum):
+    """What a check of the recorded main pane found. Only ALIVE is healthy."""
+
+    ALIVE = "alive"
+    NO_RECORD = "no_record"
+    NO_SESSION = "no_session"
+    UNAVAILABLE = "unavailable"
+    PANE_GONE = "pane_gone"
+    PANE_DEAD = "pane_dead"
+    NOT_CLAUDE = "not_claude"
 
 
 @dataclass(frozen=True)

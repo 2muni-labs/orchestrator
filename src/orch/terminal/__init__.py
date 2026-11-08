@@ -1,6 +1,7 @@
 """Terminal adapters. tmux is the only backend."""
 
 from orch.terminal.base import (
+    MainPaneStatus,
     PaneRecord,
     TerminalError,
     load_record,
@@ -10,6 +11,7 @@ from orch.terminal.base import (
 from orch.terminal.tmux import TmuxTerminal
 
 __all__ = [
+    "MainPaneStatus",
     "PaneRecord",
     "TerminalError",
     "TmuxTerminal",

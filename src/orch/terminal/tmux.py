@@ -1,11 +1,13 @@
 """tmux backend. Every call goes through an injected runner, never a shell."""
 
+import shlex
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from orch.terminal.base import (
+    MainPaneStatus,
     PaneRecord,
     TerminalError,
     _record_lock,
@@ -155,3 +157,40 @@ class TmuxTerminal:
             ["list-panes", "-s", "-t", f"={self.session}", "-F", "#{pane_id}"]
         )
         return frozenset(result.stdout.splitlines())
+
+    def main_pane_status(self, claude: Path | str) -> MainPaneStatus:
+        try:
+            record = self._load()
+        except TerminalError:
+            return MainPaneStatus.NO_RECORD
+        if not self.has_session():
+            return MainPaneStatus.NO_SESSION
+        try:
+            result = self._run(
+                [
+                    "list-panes",
+                    "-s",
+                    "-t",
+                    f"={self.session}",
+                    "-F",
+                    "#{pane_id}|#{pane_dead}|#{pane_start_command}",
+                ]
+            )
+        except TerminalError:
+            return MainPaneStatus.UNAVAILABLE
+        for line in result.stdout.splitlines():
+            fields = line.split("|", 2)
+            if fields[0] != record.main_pane:
+                continue
+            if len(fields) != 3:
+                return MainPaneStatus.NOT_CLAUDE
+            if fields[1] != "0":
+                return MainPaneStatus.PANE_DEAD
+            try:
+                command = shlex.split(fields[2])
+            except ValueError:
+                return MainPaneStatus.NOT_CLAUDE
+            if not command or command[0] != str(claude):
+                return MainPaneStatus.NOT_CLAUDE
+            return MainPaneStatus.ALIVE
+        return MainPaneStatus.PANE_GONE

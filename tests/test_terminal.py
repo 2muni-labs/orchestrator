@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from orch.config import Target
+from orch.launcher import build_plan
 from orch.terminal import (
+    MainPaneStatus,
     PaneRecord,
     TerminalError,
     TmuxTerminal,
@@ -424,3 +427,230 @@ def test_run_tmux_passes_an_argument_list_without_a_shell(
     assert seen["text"] is True
     assert seen["check"] is False
     assert seen["timeout"] == 10
+
+
+# main_pane_status. Output formats measured on tmux 3.8 and Claude Code 2.1.319.
+
+CLAUDE = "/abs/bin/claude"
+
+
+def panes_output(*lines: str) -> str:
+    return "".join(line + "\n" for line in lines)
+
+
+def test_a_live_main_pane_running_claude_is_alive(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(
+        f"%1|0|{CLAUDE} --model claude-opus-5-5 --settings /abs/settings.json",
+        "%2|0|orch watch --panels",
+    )
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.ALIVE
+
+
+def test_main_pane_status_asks_for_the_measured_fields(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{CLAUDE}")
+    terminal.main_pane_status(CLAUDE)
+    assert fake.calls == [
+        ["/opt/tmux", "has-session", "-t", f"={SESSION}"],
+        [
+            "/opt/tmux",
+            "list-panes",
+            "-s",
+            "-t",
+            f"={SESSION}",
+            "-F",
+            "#{pane_id}|#{pane_dead}|#{pane_start_command}",
+        ],
+    ]
+
+
+def test_main_pane_status_accepts_a_path_object(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{CLAUDE} --model x")
+    assert terminal.main_pane_status(Path(CLAUDE)) is MainPaneStatus.ALIVE
+
+
+def test_a_quoted_claude_path_with_a_space_is_alive(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output('%1|0|"/abs/my dir/claude" --model x')
+    assert terminal.main_pane_status("/abs/my dir/claude") is MainPaneStatus.ALIVE
+
+
+def test_a_start_command_containing_the_separator_is_kept_whole(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f'%1|0|{CLAUDE} --x "a|b"')
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.ALIVE
+
+
+def test_a_missing_record_is_reported(fake: FakeTmux, record: Path) -> None:
+    terminal = TmuxTerminal(SESSION, record, runner=fake, tmux="/opt/tmux")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NO_RECORD
+    assert fake.calls == []
+
+
+def test_a_broken_record_is_reported_without_raising(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    record.write_text("not json", encoding="utf-8")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NO_RECORD
+
+
+def test_a_record_of_another_session_is_reported(fake: FakeTmux, record: Path) -> None:
+    save_record(record, PaneRecord("orch-other", "%1"))
+    terminal = TmuxTerminal(SESSION, record, runner=fake, tmux="/opt/tmux")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NO_RECORD
+
+
+def test_a_missing_session_is_reported(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.fail["has-session"] = (1, "can't find session")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NO_SESSION
+
+
+def test_a_failed_pane_listing_is_unavailable(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.fail["list-panes"] = (1, "no server running")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.UNAVAILABLE
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("t", 1)])
+def test_a_raising_pane_listing_is_unavailable(
+    fake: FakeTmux, record: Path, error: Exception
+) -> None:
+    terminal = opened(fake, record)
+
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if argv[1] == "list-panes":
+            raise error
+        return fake(argv)
+
+    terminal.runner = runner
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.UNAVAILABLE
+
+
+def test_a_main_pane_that_is_gone_is_reported(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output("%2|0|orch watch --panels")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.PANE_GONE
+
+
+def test_a_pane_id_prefix_is_not_the_main_pane(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%10|0|{CLAUDE}")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.PANE_GONE
+
+
+def test_a_dead_main_pane_is_reported(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|1|{CLAUDE} --model x")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.PANE_DEAD
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        "",  # measured: a pane started as a plain shell
+        "   ",  # shlex.split returns an empty list
+        '/bin/sh -c "sleep 60" "a b"',  # measured
+        f"{CLAUDE}-old --model x",
+        f"/other{CLAUDE}",
+        f"/bin/sh {CLAUDE}",
+        '"/abs/bin/claude',  # unbalanced quote: shlex raises ValueError
+    ],
+)
+def test_a_main_pane_running_something_else_is_reported(
+    fake: FakeTmux, record: Path, start: str
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{start}")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NOT_CLAUDE
+
+
+def test_a_main_pane_line_without_fields_is_not_claude(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output("%1|0")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.NOT_CLAUDE
+
+
+def test_a_malformed_other_line_is_ignored(fake: FakeTmux, record: Path) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output("garbage", f"%1|0|{CLAUDE}")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.ALIVE
+
+
+def test_main_pane_status_does_not_change_the_record(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{CLAUDE}")
+    before = record.read_bytes()
+    terminal.main_pane_status(CLAUDE)
+    assert record.read_bytes() == before
+
+
+def launched_argv(tmp_path: Path, claude: Path) -> tuple[str, ...]:
+    hub = tmp_path / "hub"
+    (hub / "config").mkdir(parents=True)
+    (hub / "config" / "settings.json").write_text("{}", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    return build_plan(
+        target=Target(
+            name="orchestrator",
+            path=repo,
+            github="o/r",
+            default_branch="main",
+            setup_command="true",
+            test_command="true",
+            lint_command="true",
+        ),
+        hub=hub,
+        orch_home=tmp_path / "orch",
+        default_orch_home=tmp_path / "orch",
+        claude=claude,
+        claude_version="2.1.319",
+        dirty=False,
+    ).argv
+
+
+def tmux_start_command(argv: Sequence[str]) -> str:
+    """Format argv as measured: tmux double-quotes an argument with a space."""
+    return " ".join(f'"{word}"' if " " in word else word for word in argv)
+
+
+@pytest.mark.parametrize("directory", ["bin", "my dir"])
+def test_the_path_orch_open_launches_with_is_alive(
+    fake: FakeTmux, record: Path, tmp_path: Path, directory: str
+) -> None:
+    claude = tmp_path / directory / "claude"
+    argv = launched_argv(tmp_path, claude)
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{tmux_start_command(argv)}")
+    assert argv[0] == str(claude)
+    assert terminal.main_pane_status(claude) is MainPaneStatus.ALIVE
+
+
+def test_a_symlinked_claude_path_is_compared_without_resolving_it(
+    fake: FakeTmux, record: Path, tmp_path: Path
+) -> None:
+    """Measured: the configured claude path is a symlink and tmux shows the link."""
+    real = tmp_path / "versions" / "2.1.319"
+    real.parent.mkdir()
+    real.write_text("", encoding="utf-8")
+    link = tmp_path / "claude"
+    link.symlink_to(real)
+    terminal = opened(fake, record)
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{link} --model x")
+    assert terminal.main_pane_status(link) is MainPaneStatus.ALIVE
+    fake.stdout["list-panes"] = panes_output(f"%1|0|{real} --model x")
+    assert terminal.main_pane_status(link) is MainPaneStatus.NOT_CLAUDE
