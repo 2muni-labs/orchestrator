@@ -109,7 +109,9 @@ You run tasks through the installed `orch`. `R` below stands for
 - Run only the installed `orch` (`~/.local/bin/orch`), never a worktree's
   `.venv/bin/orch`. Changed code runs only after a merge, a new tag and an upgrade the
   user approves: confirm that `orch status` shows no running task, back up
-  `~/.orch/state.db`, then `uv tool install --reinstall` the new tag.
+  `~/.orch/state.db` with `sqlite3 ~/.orch/state.db ".backup <file>"`, then
+  `uv tool install --reinstall` the new tag. A plain `cp` misses the write-ahead
+  log and leaves a stale copy.
 - The user creates a version tag only after the version pull request merges, on
   the resulting `main` commit. Never ask for a tag before that merge.
 - `orch open` sets `ORCH_HUB` and `ORCH_TARGET` for the main session.
