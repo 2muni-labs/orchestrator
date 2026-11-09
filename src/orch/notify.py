@@ -52,7 +52,7 @@ def dedup_key(
     if event == "quota":
         return "quota"
     if event.startswith("doctor_"):
-        return f"{target}|{event}"
+        return f"{target}|{event}|{task_id}|{level}"
     return f"{target}|{event}|{task_id}"
 
 
@@ -161,7 +161,7 @@ def send(
             return Outcome.REFUSED_PERMISSIONS
 
         if dedup:
-            key = dedup_key(event, target=target, task_id=task_id)
+            key = dedup_key(event, target=target, task_id=task_id, level=level)
             state = load_state(config.notify_state_path(orch_home))
             if not should_send(state, key, now):
                 return Outcome.SUPPRESSED
