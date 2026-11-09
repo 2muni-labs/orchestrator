@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -12,6 +13,7 @@ import tomllib
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,8 @@ import pytest
 from orch import (
     config,
     credentials,
+    doctor,
+    gc,
     github,
     lifecycle,
     notify,
@@ -26,15 +30,20 @@ from orch import (
     render,
     review,
     scheduler,
+    service,
     store,
     waiter,
     watch,
 )
 from orch.cli import main
+from orch.doctor import DoctorReport
 from orch.gate import GateReport, GateStatus
+from orch.gc import GcReport
 from orch.github import GitHubError, PullRequestStatus
 from orch.gitops import GitError, LeaseRejectedError
 from orch.models import (
+    CheckLevel,
+    DoctorCheck,
     Effort,
     FailureReason,
     Grade,
@@ -45,6 +54,7 @@ from orch.models import (
     TaskState,
 )
 from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
+from orch.service import RestoreReport, ServiceReport
 from transitions import check_call
 
 HUB_SOURCE = Path(__file__).resolve().parents[1]
@@ -1653,6 +1663,7 @@ def test_next_reserves_a_queued_task_when_its_lock_clears(orch: Call, env: Env) 
         "reserved": ["feat-y"],
         "newly_blocked": [],
         "blocked_chains": [],
+        "paused": [],
     }
     assert state_of(env, "feat-y") is TaskState.RESERVED
 
@@ -1727,7 +1738,10 @@ def test_next_and_status_without_a_session_target_show_all(
 
 
 def test_status_on_a_new_home_is_empty(orch: Call) -> None:
-    assert orch("status") == (0, {"ok": True, "tasks": [], "blocked_chains": []})
+    assert orch("status") == (
+        0,
+        {"ok": True, "tasks": [], "blocked_chains": [], "paused": []},
+    )
 
 
 def test_status_lists_each_task(orch: Call, env: Env) -> None:
@@ -2970,6 +2984,7 @@ def test_notify_needs_the_test_subcommand(orch: Call, args: tuple[str, ...]) -> 
 from orch import cli as cli_module  # noqa: E402
 from orch import launcher  # noqa: E402
 from orch.terminal import (  # noqa: E402
+    MainPaneStatus,
     PaneRecord,
     TerminalError,
     record_path,
@@ -2987,6 +3002,7 @@ class FakeTerminal:
         self.calls: list[tuple[object, ...]] = []
         self.next_id = 1
         self.fail_open = False
+        self.pane_status = MainPaneStatus.ALIVE
 
     def _pane(self) -> str:
         pane = f"%{self.next_id}"
@@ -3014,6 +3030,10 @@ class FakeTerminal:
         self.calls.append(("split", list(command), target, vertical, percent))  # type: ignore[call-overload]
         return self._pane()
 
+    def main_pane_status(self, claude: object) -> MainPaneStatus:
+        self.calls.append(("main_pane_status", claude))
+        return self.pane_status
+
     def close_pane(self, pane: str) -> None:
         self.calls.append(("close", pane))
 
@@ -3031,6 +3051,7 @@ class Terminals(list[FakeTerminal]):
     def __init__(self) -> None:
         super().__init__()
         self.options: dict[str, bool] = {"exists": False, "fail_open": False}
+        self.pane_status = MainPaneStatus.ALIVE
 
 
 @pytest.fixture
@@ -3040,6 +3061,7 @@ def terminals(monkeypatch: pytest.MonkeyPatch) -> Terminals:
     def factory(session: str, record: Path) -> FakeTerminal:
         terminal = FakeTerminal(session, record, exists=made.options["exists"])
         terminal.fail_open = made.options["fail_open"]
+        terminal.pane_status = made.pane_status
         made.append(terminal)
         return terminal
 
@@ -3119,7 +3141,11 @@ def test_open_reattaches_to_an_existing_session(
     code, data = orch("open", TARGET)
     assert code == 0, data
     assert data["opened"] is False
-    assert terminals[0].calls == [("has_session",)]
+    assert data["warnings"] == []
+    assert terminals[0].calls == [
+        ("has_session",),
+        ("main_pane_status", Path(CLAUDE_BIN)),
+    ]
 
 
 @pytest.mark.usefixtures("openable")
@@ -3548,3 +3574,618 @@ def test_kill_refuses_a_task_of_another_session_target(
     assert_error(orch("kill", TASK, unchecked=True), USAGE, "refused")
     assert kill_calls == []
     assert state_of(env) == TaskState.RUNNING
+
+
+# doctor
+
+TOPIC = "abcdefghijklmnopqrstuvwxyz012345"
+NO_REPORT = {"checks": [], "killed": [], "paused": [], "errors": [], "gc": None}
+
+
+def fake_doctor(
+    monkeypatch: pytest.MonkeyPatch, report: DoctorReport | None = None
+) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def run(conn: sqlite3.Connection, **kwargs: object) -> DoctorReport:
+        calls.append(kwargs)
+        return DoctorReport() if report is None else report
+
+    monkeypatch.setattr(doctor, "run_doctor", run)
+    return calls
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_hands_over_settings_targets_and_thresholds(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(env.orch_home / "config", "[doctor]\ndisk_warn_gb = 20\ndisk_fail_gb = 5\n")
+    calls = fake_doctor(monkeypatch)
+    assert orch("doctor") == (0, {"ok": True, **NO_REPORT})
+    [call] = calls
+    settings = call["settings"]
+    assert isinstance(settings, config.Config)
+    assert settings.disk_warn_gb == 20
+    assert list(call["targets"]) == [TARGET]  # type: ignore[call-overload]
+    assert call["orch_home"] == env.orch_home
+    assert call["home"] == env.home
+    assert call["environ"] is os.environ
+    assert call["disk_warn_gb"] == 20
+    assert call["disk_fail_gb"] == 5
+    assert call["terminal"] is cli_module._terminal
+    now = call["now"]
+    assert isinstance(now, datetime)
+    assert now.utcoffset() is not None
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_uses_the_default_thresholds(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = fake_doctor(monkeypatch)
+    assert orch("doctor")[0] == 0
+    assert (calls[0]["disk_warn_gb"], calls[0]["disk_fail_gb"]) == (10, 2)
+
+
+def test_doctor_needs_the_hub(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_doctor(monkeypatch)
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("doctor"), USAGE, "usage")
+    assert calls == []
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_refuses_an_invalid_threshold(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = fake_doctor(monkeypatch)
+    write(env.orch_home / "config", "[doctor]\ndisk_warn_gb = 0\n")
+    assert_error(orch("doctor"), USAGE, "refused")
+    assert calls == []
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize("value", ["relative/tailscale", "./tailscale", "", "   "])
+def test_doctor_refuses_a_tailscale_path_that_is_not_absolute(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    calls = fake_doctor(monkeypatch)
+    write(env.orch_home / "config", f'[doctor]\ntailscale = "{value}"\n')
+    assert_error(orch("doctor"), USAGE, "refused")
+    assert calls == []
+
+
+@pytest.mark.usefixtures("target")
+def test_a_missing_tailscale_file_only_warns_on_network(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is not checked in config: the check itself reports it, with exit 0."""
+    tools = env.home / "tools"
+    claude = add_script(tools / "claude", output='{"loggedIn": true}')
+    codex = add_script(tools / "codex")
+    add_token_script(env)
+    write(
+        env.orch_home / "config",
+        f'[agents]\nclaude = "{claude}"\ncodex = "{codex}"\n'
+        "[doctor]\ndisk_warn_gb = 1\ndisk_fail_gb = 1\n"
+        f'tailscale = "{tools / "no-such-tailscale"}"\n',
+    )
+    code, data = orch("doctor")
+    assert code == 0, data
+    levels = {
+        check["item"]: (check["level"], check["detail"])
+        for check in data["checks"]  # type: ignore[attr-defined]
+    }
+    assert levels["network"] == ("warn", "FileNotFoundError")
+    assert levels["codex_auth"] == ("ok", None)
+    assert data["paused"] == []
+    assert data["errors"] == []
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_checks_every_target_inside_a_session(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = fake_doctor(monkeypatch)
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    assert orch("doctor")[0] == 0
+    assert list(calls[0]["targets"]) == [TARGET]  # type: ignore[call-overload]
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failing_check_is_not_a_doctor_failure(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = DoctorCheck(
+        target="", item="codex_auth", level=CheckLevel.FAIL, detail="exit=1", at="t"
+    )
+    fake_doctor(monkeypatch, DoctorReport(checks=(check,), paused=("codex_auth",)))
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert data["ok"] is True
+    assert data["paused"] == ["codex_auth"]
+    assert data["checks"] == [
+        {
+            "target": "",
+            "item": "codex_auth",
+            "level": "fail",
+            "detail": "exit=1",
+            "at": "t",
+        }
+    ]
+
+
+@pytest.mark.usefixtures("target")
+def test_an_error_inside_doctor_exits_70_and_keeps_the_report(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = DoctorCheck(
+        target="", item="network", level=CheckLevel.OK, detail=None, at="t"
+    )
+    fake_doctor(monkeypatch, DoctorReport(checks=(check,), errors=("disk OSError",)))
+    result = orch("doctor")
+    assert_error(result, INTERNAL, "internal")
+    assert result[1]["errors"] == ["disk OSError"]
+    assert len(result[1]["checks"]) == 1  # type: ignore[arg-type]
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_output_is_redacted(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(env.orch_home / "config", f'[notify]\nmethod = "ntfy"\ntopic = "{TOPIC}"\n')
+    fake_doctor(monkeypatch, DoctorReport(paused=(TOPIC,)))
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert TOPIC not in json.dumps(data)
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_refreshes_todo_only_after_a_kill(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.ensure_target(env.orch_home, TARGET, "owner/sample")
+    insert(env)
+    fake_doctor(monkeypatch)
+    assert orch("doctor")[0] == 0
+    assert not env.paths.todo.exists()
+    fake_doctor(monkeypatch, DoctorReport(killed=(TASK,)))
+    assert orch("doctor")[0] == 0
+    assert TASK in env.paths.todo.read_text(encoding="utf-8")
+
+
+def healthy_run(argv: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], 0, "{}", "")
+
+
+@pytest.mark.usefixtures("target")
+def test_a_real_doctor_kill_moves_the_task_and_refreshes_todo(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_running(env)
+    real = doctor.run_doctor
+    fast_kill = functools.partial(
+        lifecycle.kill_task, settle_sec=0, grace_sec=0, poll_sec=0
+    )
+
+    def run(conn: sqlite3.Connection, **kwargs: object) -> DoctorReport:
+        return real(
+            conn,
+            run=healthy_run,
+            free_bytes=lambda path: 50 * 10**9,
+            kill=fast_kill,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(doctor, "run_doctor", run)
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert data["killed"] == [TASK]
+    assert state_of(env) is TaskState.JUDGING
+    assert "judging" in env.paths.todo.read_text(encoding="utf-8")
+
+
+def add_script(path: Path, *, output: str = "", code: int = 0) -> Path:
+    write(path, f"#!/bin/sh\nprintf '%s' '{output}'\nexit {code}\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+@pytest.mark.usefixtures("target")
+def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
+    orch: Call, env: Env
+) -> None:
+    """Commands run for real through config paths; only the disk limits are lowered."""
+    tools = env.home / "tools"
+    claude = add_script(tools / "claude", output='{"loggedIn": true}')
+    codex = add_script(tools / "codex", code=1)
+    tailscale = add_script(
+        tools / "tailscale",
+        output='{"BackendState": "Running", "Self": {"Online": true}}',
+    )
+    add_token_script(env)
+    write(
+        env.orch_home / "config",
+        f'[agents]\nclaude = "{claude}"\ncodex = "{codex}"\n'
+        f'[doctor]\ndisk_warn_gb = 1\ndisk_fail_gb = 1\ntailscale = "{tailscale}"\n',
+    )
+
+    code, data = orch("doctor")
+    assert code == 0, data
+    levels = {check["item"]: check["level"] for check in data["checks"]}  # type: ignore[attr-defined]
+    assert levels == {
+        "claude_auth": "ok",
+        "codex_auth": "fail",
+        "github_app": "ok",
+        "disk": "ok",
+        "network": "ok",
+    }
+    assert data["paused"] == ["codex_auth"]
+    assert TOKEN not in json.dumps(data)
+    assert orch("next")[1]["paused"] == ["codex_auth"]
+    [pause] = orch("status")[1]["paused"]  # type: ignore[misc]
+    assert (pause["reason"], pause["note"]) == ("codex_auth", "exit=1")
+
+    add_script(codex)
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert data["paused"] == []
+    assert orch("next")[1]["paused"] == []
+    assert orch("status")[1]["paused"] == []
+
+
+# gc
+
+
+def fake_collect(
+    monkeypatch: pytest.MonkeyPatch, report: GcReport | None = None
+) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def collect(conn: sqlite3.Connection, **kwargs: object) -> GcReport:
+        calls.append(kwargs)
+        return GcReport(dry_run=False) if report is None else report
+
+    monkeypatch.setattr(gc, "collect", collect)
+    return calls
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("args", "dry_run"), [((), False), (("--dry-run",), True)], ids=["real", "dry"]
+)
+def test_gc_hands_over_targets_and_retention(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    args: tuple[str, ...],
+    dry_run: bool,
+) -> None:
+    write(env.orch_home / "config", "retention_days = 7\n")
+    report = GcReport(dry_run=dry_run, removed_files=("sample/logs/a.1.log",))
+    calls = fake_collect(monkeypatch, report)
+    code, data = orch("gc", *args)
+    assert code == 0, data
+    assert data["ok"] is True
+    assert data["dry_run"] is dry_run
+    assert data["removed_files"] == ["sample/logs/a.1.log"]
+    [call] = calls
+    assert list(call["targets"]) == [TARGET]  # type: ignore[call-overload]
+    assert call["orch_home"] == env.orch_home
+    assert call["retention_days"] == 7
+    assert call["dry_run"] is dry_run
+    now = call["now"]
+    assert isinstance(now, datetime)
+    assert now.utcoffset() is not None
+
+
+def test_gc_needs_the_hub(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_collect(monkeypatch)
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("gc"), USAGE, "usage")
+    assert calls == []
+
+
+@pytest.mark.usefixtures("target")
+def test_a_gc_error_exits_70_and_keeps_the_report(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_collect(monkeypatch, GcReport(dry_run=False, errors=("sample OSError",)))
+    result = orch("gc")
+    assert_error(result, INTERNAL, "internal")
+    assert result[1]["errors"] == ["sample OSError"]
+
+
+@pytest.mark.usefixtures("target")
+def test_a_real_gc_dry_run_finds_nothing_on_a_new_home(orch: Call) -> None:
+    code, data = orch("gc", "--dry-run")
+    assert code == 0, data
+    assert data["dry_run"] is True
+    assert data["removed_files"] == []
+    assert data["errors"] == []
+
+
+# service
+
+
+ORCH_BIN = "/abs/tool/orch"
+TMUX_BIN = "/abs/ports/tmux"
+
+
+class Services:
+    """Replaces every service function, so no test reaches launchctl or tmux."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        self.install = ServiceReport(ok=True, done=service.LABELS)
+        self.uninstall = ServiceReport(ok=True, done=service.LABELS)
+        self.restore = RestoreReport(opened=(TARGET,))
+        self.found: dict[str, str | None] = {"orch": ORCH_BIN, "tmux": TMUX_BIN}
+        self.lookups: list[str] = []
+
+    def which(self, name: str, *args: object, **kwargs: object) -> str | None:
+        self.lookups.append(name)
+        return self.found[name]
+
+
+@pytest.fixture
+def services(monkeypatch: pytest.MonkeyPatch) -> Services:
+    fake = Services()
+
+    def recorder(name: str) -> Callable[..., object]:
+        def call(*args: object, **kwargs: object) -> object:
+            fake.calls.append((name, args, kwargs))
+            return getattr(fake, name)
+
+        return call
+
+    for name in ("install", "uninstall", "restore"):
+        monkeypatch.setattr(service, name, recorder(name))
+    monkeypatch.setattr(shutil, "which", fake.which)
+    return fake
+
+
+def test_service_install_hands_over_absolute_paths(
+    orch: Call, env: Env, services: Services
+) -> None:
+    code, data = orch("service", "install")
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "done": list(service.LABELS),
+        "failed": [],
+    }
+    assert services.calls == [
+        (
+            "install",
+            (),
+            {
+                "orch": Path(ORCH_BIN),
+                "tmux": Path(TMUX_BIN),
+                "hub": env.hub,
+                "home": env.home,
+                "orch_home": env.orch_home,
+                "uid": os.getuid(),
+                "custom_orch_home": True,
+            },
+        )
+    ]
+    assert not config.state_db_path(env.orch_home).exists()
+
+
+def test_service_install_marks_the_default_home_as_not_custom(
+    orch: Call, env: Env, services: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_HOME")
+    monkeypatch.delenv("ORCH_FAKE_AGENTS")
+    code, data = orch("service", "install")
+    assert code == 0, data
+    assert services.calls[0][2]["custom_orch_home"] is False
+    assert services.calls[0][2]["orch_home"] == env.home / ".orch"
+
+
+@pytest.mark.parametrize("command", ["install", "restore"])
+def test_service_commands_that_read_the_hub_need_it(
+    orch: Call,
+    services: Services,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("service", command), USAGE, "usage")
+    assert services.calls == []
+
+
+def test_service_uninstall_needs_neither_the_hub_nor_a_lookup(
+    orch: Call, env: Env, services: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    code, data = orch("service", "uninstall")
+    assert code == 0, data
+    assert services.calls == [("uninstall", (), {"home": env.home, "uid": os.getuid()})]
+    assert services.lookups == []
+
+
+@pytest.mark.usefixtures("target")
+def test_service_restore_hands_over_targets_and_terminal(
+    orch: Call, env: Env, services: Services
+) -> None:
+    code, data = orch("service", "restore")
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "opened": [TARGET],
+        "already_open": [],
+        "failed": [],
+    }
+    [(name, args, kwargs)] = services.calls
+    assert name == "restore"
+    assert [list(args[0])] == [[TARGET]]  # type: ignore[call-overload]
+    assert kwargs == {
+        "orch": Path(ORCH_BIN),
+        "orch_home": env.orch_home,
+        "terminal": cli_module._terminal,
+    }
+    assert services.lookups == ["orch"]
+    assert not config.state_db_path(env.orch_home).exists()
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("command", "name", "value"),
+    [
+        ("install", "orch", None),
+        ("install", "tmux", None),
+        ("install", "orch", "relative/orch"),
+        ("install", "tmux", "relative/tmux"),
+        ("restore", "orch", None),
+        ("restore", "orch", "relative/orch"),
+    ],
+)
+def test_service_refuses_a_program_it_cannot_locate(
+    orch: Call, services: Services, command: str, name: str, value: str | None
+) -> None:
+    services.found[name] = value
+    assert_error(orch("service", command), USAGE, "refused")
+    assert services.calls == []
+
+
+def test_a_located_path_is_not_resolved(
+    orch: Call, env: Env, services: Services, tmp_path: Path
+) -> None:
+    real = tmp_path / "real-orch"
+    write(real)
+    link = tmp_path / "link-orch"
+    link.symlink_to(real)
+    services.found["orch"] = str(link)
+    assert orch("service", "install")[0] == 0
+    assert services.calls[0][2]["orch"] == link
+
+
+@pytest.mark.parametrize("command", ["install", "uninstall"])
+def test_a_failed_service_change_exits_20_with_the_report(
+    orch: Call, services: Services, command: str
+) -> None:
+    failed = ServiceReport(
+        ok=False, done=("orch.session",), failed=("orch.doctor bootstrap exit=5",)
+    )
+    setattr(services, command, failed)
+    result = orch("service", command)
+    assert_error(result, 20, "service_failed")
+    assert result[1]["done"] == ["orch.session"]
+    assert result[1]["failed"] == ["orch.doctor bootstrap exit=5"]
+
+
+@pytest.mark.usefixtures("target")
+def test_a_failed_restore_exits_20_with_the_report(
+    orch: Call, services: Services
+) -> None:
+    services.restore = RestoreReport(opened=("a",), failed=("b unavailable",))
+    result = orch("service", "restore")
+    assert_error(result, 20, "service_failed")
+    assert result[1]["opened"] == ["a"]
+    assert result[1]["failed"] == ["b unavailable"]
+
+
+def test_service_without_a_subcommand_is_a_usage_error(
+    orch: Call, services: Services
+) -> None:
+    assert_error(orch("service"), USAGE, "usage")
+    assert services.calls == []
+
+
+# Pause reasons
+
+
+def add_pauses(env: Env, *reasons: str) -> None:
+    conn = connect(env)
+    try:
+        for reason in reasons:
+            store.add_pause(conn, reason, since="2026-11-09T00:00:00+00:00", note="n")
+    finally:
+        conn.close()
+
+
+def test_next_reports_pause_reasons_in_any_session(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_pauses(env, "disk", "claude_auth")
+    assert orch("next")[1]["paused"] == ["claude_auth", "disk"]
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    assert orch("next")[1]["paused"] == ["claude_auth", "disk"]
+
+
+def test_status_reports_pause_reasons_in_any_session(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_pauses(env, "disk")
+    expected = [{"reason": "disk", "since": "2026-11-09T00:00:00+00:00", "note": "n"}]
+    assert orch("status")[1]["paused"] == expected
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    assert orch("status")[1]["paused"] == expected
+
+
+def test_status_human_starts_with_the_pause_reasons(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    add_pauses(env, "disk", "claude_auth")
+    assert main(["status", "--human"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "새 배분 중단: claude_auth, disk"
+    assert lines[1].startswith(f"{TASK} pr_open")
+
+
+# orch open reusing a session
+
+
+@pytest.mark.usefixtures("openable")
+@pytest.mark.parametrize(
+    "status",
+    [status for status in MainPaneStatus if status is not MainPaneStatus.ALIVE],
+)
+def test_open_warns_when_the_existing_main_pane_is_not_alive(
+    orch: Call, terminals: Terminals, status: MainPaneStatus
+) -> None:
+    open_options(terminals)["exists"] = True
+    terminals.pane_status = status
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data["opened"] is False
+    assert data["warnings"] == [f"기존 세션의 메인 창 상태: {status.value}"]
+    assert [call[0] for call in terminals[0].calls] == [
+        "has_session",
+        "main_pane_status",
+    ]
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_adds_the_pane_warning_after_the_others(
+    orch: Call, repo: Path, terminals: Terminals
+) -> None:
+    open_options(terminals)["exists"] = True
+    terminals.pane_status = MainPaneStatus.PANE_DEAD
+    write(repo / "scratch.txt")
+    data = orch("open", TARGET)[1]
+    warnings = data["warnings"]
+    assert isinstance(warnings, list) and len(warnings) == 2
+    assert warnings[1] == "기존 세션의 메인 창 상태: pane_dead"
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_output_is_redacted(
+    orch: Call,
+    env: Env,
+    terminals: Terminals,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write(
+        env.orch_home / "config",
+        f'[agents]\nclaude = "{CLAUDE_BIN}"\n'
+        f'[notify]\nmethod = "ntfy"\ntopic = "{TOPIC}"\n',
+    )
+    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: TOPIC)
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert TOPIC not in json.dumps(data, ensure_ascii=False)
+    assert data["warnings"]

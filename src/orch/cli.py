@@ -143,6 +143,13 @@ def _parser() -> argparse.ArgumentParser:
     open_parser.add_argument("name")
     open_parser.add_argument("--no-attach", action="store_true")
     commands.add_parser("hook").add_argument("name", choices=_HOOK_NAMES)
+    commands.add_parser("doctor")
+    commands.add_parser("gc").add_argument("--dry-run", action="store_true")
+    service_commands = commands.add_parser("service").add_subparsers(
+        dest="service_command", required=True
+    )
+    for name in ("install", "uninstall", "restore"):
+        service_commands.add_parser(name)
     return parser
 
 
@@ -276,6 +283,8 @@ def _refresh_todos(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command in {"doctor", "gc", "service"}:
+        raise NotImplementedError
     if args.command == "review":
         if args.id == "save":
             if args.save_id is None or args.by is not None:

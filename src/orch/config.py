@@ -90,6 +90,9 @@ class Config:
     codex_path: Path | None = None
     claude_path: Path | None = None
     usage_limit_patterns: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    disk_warn_gb: int = 10
+    disk_fail_gb: int = 2
+    tailscale_path: Path | None = None
 
 
 def _absolute_path(value: object) -> Path:
