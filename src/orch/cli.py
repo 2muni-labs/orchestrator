@@ -4,6 +4,7 @@ import argparse
 import importlib.metadata
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import traceback
@@ -15,7 +16,9 @@ from pathlib import Path
 from orch import (
     config,
     credentials,
+    doctor,
     gate,
+    gc,
     gitops,
     hooks,
     launcher,
@@ -26,13 +29,20 @@ from orch import (
     review,
     runner,
     scheduler,
+    service,
     store,
     taskfile,
     waiter,
     watch,
 )
 from orch.models import Task, TaskState
-from orch.terminal import TerminalError, TmuxTerminal, load_record, record_path
+from orch.terminal import (
+    MainPaneStatus,
+    TerminalError,
+    TmuxTerminal,
+    load_record,
+    record_path,
+)
 
 _REFRESH_COMMANDS = {
     "prepare",
@@ -161,6 +171,13 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _which_absolute(name: str) -> Path:
+    value = shutil.which(name)
+    if value is None or not Path(value).is_absolute():
+        raise config.ConfigError(f"Cannot locate an absolute path for {name}")
+    return Path(value)
+
+
 def _environment(
     command: str, *, require_hub: bool = False
 ) -> tuple[Path, Path | None]:
@@ -283,8 +300,6 @@ def _refresh_todos(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
-    if args.command in {"doctor", "gc", "service"}:
-        raise NotImplementedError
     if args.command == "review":
         if args.id == "save":
             if args.save_id is None or args.by is not None:
@@ -295,14 +310,54 @@ def _execute(
                 "review requires an id and --by codex; --triage is for save"
             )
     orch_home, hub = _environment(
-        args.command, require_hub=args.command == "review" and args.by == "codex"
+        args.command,
+        require_hub=(
+            args.command in {"doctor", "gc"}
+            or (args.command == "review" and args.by == "codex")
+            or (args.command == "service" and args.service_command != "uninstall")
+        ),
     )
     home = Path.home()
+    if args.command == "service":
+        if args.service_command == "uninstall":
+            report = service.uninstall(home=home, uid=os.getuid())
+            ok = report.ok
+        elif args.service_command == "install":
+            assert hub is not None
+            report = service.install(
+                orch=_which_absolute("orch"),
+                tmux=_which_absolute("tmux"),
+                hub=hub,
+                home=home,
+                orch_home=orch_home,
+                uid=os.getuid(),
+                custom_orch_home=orch_home != config.orch_home({}),
+            )
+            ok = report.ok
+        else:
+            assert hub is not None
+            report = service.restore(
+                config.load_targets(hub / "targets.toml"),
+                orch=_which_absolute("orch"),
+                orch_home=orch_home,
+                terminal=_terminal,
+            )
+            ok = not report.failed
+        if ok:
+            return 0, {"ok": True, **asdict(report)}
+        return 20, {
+            **asdict(report),
+            "ok": False,
+            "error": "service_failed",
+            "message": "서비스 명령을 완료하지 못했습니다.",
+        }
     if args.command == "open":
         assert hub is not None
         target = _target(hub, args.name)
         paths = config.ensure_target(orch_home, target.name, target.github)
         settings = config.load_config(orch_home)
+        if settings.notify_topic:
+            secrets.append(settings.notify_topic)
         if settings.claude_path is None:
             raise config.ConfigError("Claude Code path is not configured")
         try:
@@ -322,6 +377,7 @@ def _execute(
         session = f"orch-{target.name}"
         terminal = _terminal(session, record_path(paths.root))
         opened = not terminal.has_session()
+        warnings = list(plan.warnings)
         if opened:
             main_pane = terminal.open_session(
                 cwd=plan.cwd, env=plan.env, command=plan.argv
@@ -335,16 +391,22 @@ def _execute(
                 vertical=True,
                 percent=30,
             )
+        else:
+            status = terminal.main_pane_status(settings.claude_path)
+            if status is not MainPaneStatus.ALIVE:
+                warnings.append(f"기존 세션의 메인 창 상태: {status.value}")
         attach = not args.no_attach and _interactive()
         output = {
             "ok": True,
             "target": target.name,
             "session": session,
             "opened": opened,
-            "warnings": list(plan.warnings),
+            "warnings": warnings,
             "attach": attach,
         }
-        print(json.dumps(output, ensure_ascii=False))
+        print(
+            credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
+        )
         if attach:
             sys.stdout.flush()
             argv = terminal.attach_argv(os.environ)
@@ -490,12 +552,17 @@ def _command(
     if command == "status":
         tasks = store.list_tasks(conn, target=session_target)
         chains = scheduler.blocked_chains(conn, target=session_target)
+        pauses = store.list_pauses(conn)
         now = datetime.now(UTC)
         if args.human:
-            return 0, {"lines": render.status_lines(tasks, chains, now)}
+            lines = render.status_lines(tasks, chains, now)
+            if pauses:
+                lines.insert(0, "새 배분 중단: " + ", ".join(p.reason for p in pauses))
+            return 0, {"lines": lines}
         return 0, {
             "tasks": [render.status_row(task, now) for task in tasks],
             "blocked_chains": [asdict(chain) for chain in chains],
+            "paused": [asdict(pause) for pause in pauses],
         }
 
     # Check task ownership before loading target configuration or issuing a token.
@@ -509,6 +576,48 @@ def _command(
     settings = config.load_config(orch_home)
     if settings.notify_topic:
         secrets.append(settings.notify_topic)
+    if command == "doctor":
+        assert hub is not None
+        report = doctor.run_doctor(
+            conn,
+            settings=settings,
+            targets=config.load_targets(hub / "targets.toml"),
+            orch_home=orch_home,
+            home=home,
+            now=datetime.now(UTC),
+            environ=os.environ,
+            disk_warn_gb=settings.disk_warn_gb,
+            disk_fail_gb=settings.disk_fail_gb,
+            terminal=_terminal,
+        )
+        if report.killed:
+            _refresh_todos(conn, orch_home, secrets)
+        if report.errors:
+            return 70, {
+                "ok": False,
+                "error": "internal",
+                "message": "상태 점검 중 내부 오류가 발생했습니다.",
+                **asdict(report),
+            }
+        return 0, {"ok": True, **asdict(report)}
+    if command == "gc":
+        assert hub is not None
+        report = gc.collect(
+            conn,
+            targets=config.load_targets(hub / "targets.toml"),
+            orch_home=orch_home,
+            now=datetime.now(UTC),
+            retention_days=settings.retention_days,
+            dry_run=args.dry_run,
+        )
+        if report.errors:
+            return 70, {
+                "ok": False,
+                "error": "internal",
+                "message": "정리 중 내부 오류가 발생했습니다.",
+                **asdict(report),
+            }
+        return 0, {"ok": True, **asdict(report)}
     scheduling = {"limits": settings.limits, "ttl_min": settings.reservation_ttl_min}
     if command == "next":
 
@@ -528,6 +637,7 @@ def _command(
         return 0, {
             "reserved": [item for item in report.reserved if visible(item)],
             "newly_blocked": [item for item in report.newly_blocked if visible(item)],
+            "paused": list(report.paused),
             "blocked_chains": [
                 asdict(item) for item in report.chains if visible(item.task_id)
             ],
