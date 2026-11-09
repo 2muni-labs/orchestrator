@@ -1585,3 +1585,25 @@ def test_a_pass_after_a_failed_write_finishes_the_job(
     assert report.errors == ()
     assert stored(conn, "codex_auth") is CheckLevel.FAIL
     assert pauses(conn) == ["codex_auth"]
+
+
+def test_the_configured_tailscale_path_replaces_the_constant(h: Harness) -> None:
+    custom = "/opt/bin/tailscale"
+    seen: list[list[str]] = []
+
+    def run(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if argv[0] == custom:
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(list(argv), 0, TAILSCALE_OK, "")
+        return h.run(argv)
+
+    settings = Config(
+        claude_path=CLAUDE,
+        codex_path=CODEX,
+        retention_days=30,
+        tailscale_path=Path(custom),
+    )
+    report = h.go(settings=settings, run=run)
+    assert seen == [[custom, "status", "--json"]]
+    assert result_of(report, "network") == (CheckLevel.OK, None)
+    assert not any(argv[0] == doctor.TAILSCALE for argv in h.commands)

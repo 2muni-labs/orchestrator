@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from orch import doctor
 from orch.config import (
     MARKER_FILE,
     RESERVED_TARGET_NAMES,
@@ -1013,3 +1014,89 @@ def test_add_target_leaves_no_temporary_file(workspace: dict[str, object]) -> No
         add(workspace)
     hub = workspace["targets_file"].parent  # type: ignore[attr-defined]
     assert [entry.name for entry in hub.iterdir()] == ["targets.toml"]
+
+
+# [doctor]
+
+
+def write_config(home: Path, text: str) -> None:
+    config_path(home).write_text(text, encoding="utf-8")
+
+
+def test_doctor_settings_default_to_the_doctor_constants(tmp_path: Path) -> None:
+    settings = load_config(tmp_path)
+    assert settings.disk_warn_gb == doctor.DEFAULT_DISK_WARN_GB
+    assert settings.disk_fail_gb == doctor.DEFAULT_DISK_FAIL_GB
+    assert settings.tailscale_path is None
+    assert Config().disk_warn_gb == doctor.DEFAULT_DISK_WARN_GB
+    assert Config().disk_fail_gb == doctor.DEFAULT_DISK_FAIL_GB
+
+
+@pytest.mark.parametrize(
+    ("text", "warn", "fail"),
+    [
+        ("[doctor]\ndisk_warn_gb = 20\n", 20, 2),
+        ("[doctor]\ndisk_fail_gb = 5\n", 10, 5),
+        ("[doctor]\ndisk_warn_gb = 20\ndisk_fail_gb = 5\n", 20, 5),
+        ("[doctor]\ndisk_warn_gb = 5\ndisk_fail_gb = 5\n", 5, 5),
+    ],
+)
+def test_doctor_disk_thresholds_are_read(
+    tmp_path: Path, text: str, warn: int, fail: int
+) -> None:
+    write_config(tmp_path, text)
+    settings = load_config(tmp_path)
+    assert (settings.disk_warn_gb, settings.disk_fail_gb) == (warn, fail)
+
+
+def test_the_tailscale_path_is_read(tmp_path: Path) -> None:
+    write_config(tmp_path, '[doctor]\ntailscale = "/opt/bin/tailscale"\n')
+    assert load_config(tmp_path).tailscale_path == Path("/opt/bin/tailscale")
+
+
+def test_the_tailscale_path_is_not_checked_for_a_file(tmp_path: Path) -> None:
+    missing = tmp_path / "no-such-dir" / "tailscale"
+    write_config(tmp_path, f'[doctor]\ntailscale = "{missing}"\n')
+    assert load_config(tmp_path).tailscale_path == missing
+
+
+def test_a_home_relative_tailscale_path_expands_like_the_agent_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_config(tmp_path, '[doctor]\ntailscale = "~/bin/tailscale"\n')
+    assert load_config(tmp_path).tailscale_path == tmp_path / "bin" / "tailscale"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "doctor = 1\n",
+        "[doctor]\nunknown = 1\n",
+        "[doctor]\ndisk_warn_gb = 0\n",
+        "[doctor]\ndisk_warn_gb = -1\n",
+        "[doctor]\ndisk_warn_gb = true\n",
+        "[doctor]\ndisk_warn_gb = 1.5\n",
+        '[doctor]\ndisk_warn_gb = "10"\n',
+        "[doctor]\ndisk_fail_gb = 0\n",
+        "[doctor]\ndisk_fail_gb = -1\n",
+        "[doctor]\ndisk_fail_gb = true\n",
+        "[doctor]\ndisk_fail_gb = 1.5\n",
+        '[doctor]\ndisk_fail_gb = "2"\n',
+        "[doctor]\ndisk_warn_gb = 5\ndisk_fail_gb = 6\n",
+        "[doctor]\ndisk_warn_gb = 1\n",
+        "[doctor]\ndisk_fail_gb = 11\n",
+        '[doctor]\ntailscale = "relative/tailscale"\n',
+        '[doctor]\ntailscale = "./tailscale"\n',
+        '[doctor]\ntailscale = "tailscale"\n',
+        '[doctor]\ntailscale = ""\n',
+        '[doctor]\ntailscale = "   "\n',
+        "[doctor]\ntailscale = 1\n",
+    ],
+)
+def test_an_invalid_doctor_setting_is_an_error_not_a_default(
+    tmp_path: Path, text: str
+) -> None:
+    write_config(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)

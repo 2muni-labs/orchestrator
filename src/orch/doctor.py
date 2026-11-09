@@ -236,7 +236,12 @@ def _command_check(
         argv = [str(orch_home / "bin" / "ghapp-token.sh")]
     else:
         failure_level = CheckLevel.WARN
-        argv = [TAILSCALE, "status", "--json"]
+        tailscale = (
+            str(settings.tailscale_path)
+            if settings.tailscale_path is not None
+            else TAILSCALE
+        )
+        argv = [tailscale, "status", "--json"]
 
     try:
         result = run(argv)

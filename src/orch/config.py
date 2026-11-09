@@ -90,6 +90,9 @@ class Config:
     codex_path: Path | None = None
     claude_path: Path | None = None
     usage_limit_patterns: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    disk_warn_gb: int = 10
+    disk_fail_gb: int = 2
+    tailscale_path: Path | None = None
 
 
 def _absolute_path(value: object) -> Path:
@@ -429,6 +432,7 @@ def load_config(home: Path) -> Config:
             "notify",
             "agents",
             "usage_limit_patterns",
+            "doctor",
         },
     )
     backend = data.get("terminal_backend", "tmux")
@@ -457,6 +461,16 @@ def load_config(home: Path) -> Config:
         raise ConfigError("Invalid notification topic")
     agents = _table(data.get("agents", {}), {"codex", "claude"})
     agent_paths = {key: _absolute_path(value) for key, value in agents.items()}
+    doctor = _table(
+        data.get("doctor", {}), {"disk_warn_gb", "disk_fail_gb", "tailscale"}
+    )
+    disk_warn_gb = _positive_integer(doctor.get("disk_warn_gb", 10))
+    disk_fail_gb = _positive_integer(doctor.get("disk_fail_gb", 2))
+    if disk_fail_gb > disk_warn_gb:
+        raise ConfigError("disk_fail_gb exceeds disk_warn_gb")
+    tailscale_path = (
+        _absolute_path(doctor["tailscale"]) if "tailscale" in doctor else None
+    )
     patterns_data = _table(data.get("usage_limit_patterns", {}), {"codex", "claude"})
     defaults = (
         "usage limit",
@@ -488,4 +502,7 @@ def load_config(home: Path) -> Config:
         codex_path=agent_paths.get("codex"),
         claude_path=agent_paths.get("claude"),
         usage_limit_patterns=patterns,
+        disk_warn_gb=disk_warn_gb,
+        disk_fail_gb=disk_fail_gb,
+        tailscale_path=tailscale_path,
     )
