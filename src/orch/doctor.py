@@ -131,6 +131,7 @@ def run_doctor(
                     home=home,
                     now=now,
                     target=target,
+                    level=level.value,
                 )
                 if outcome in (notify.Outcome.FAILED, notify.Outcome.SUPPRESSED):
                     recorded_level = previous

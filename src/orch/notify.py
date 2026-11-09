@@ -42,7 +42,9 @@ def validate_event(event: str) -> None:
         raise ValueError("Invalid notification event")
 
 
-def dedup_key(event: str, *, target: str = "", task_id: str = "") -> str:
+def dedup_key(
+    event: str, *, target: str = "", task_id: str = "", level: str = ""
+) -> str:
     """Return the deduplication key of an event."""
     validate_event(event)
     if event == "test":
@@ -50,7 +52,7 @@ def dedup_key(event: str, *, target: str = "", task_id: str = "") -> str:
     if event == "quota":
         return "quota"
     if event.startswith("doctor_"):
-        return f"{target}|{event}"
+        return f"{target}|{event}|{task_id}|{level}"
     return f"{target}|{event}|{task_id}"
 
 
@@ -143,6 +145,7 @@ def send(
     now: datetime,
     target: str = "",
     task_id: str = "",
+    level: str = "",
     transport: Transport = urllib_transport,
     stderr: TextIO | None = None,
     dedup: bool = True,
@@ -158,7 +161,7 @@ def send(
             return Outcome.REFUSED_PERMISSIONS
 
         if dedup:
-            key = dedup_key(event, target=target, task_id=task_id)
+            key = dedup_key(event, target=target, task_id=task_id, level=level)
             state = load_state(config.notify_state_path(orch_home))
             if not should_send(state, key, now):
                 return Outcome.SUPPRESSED

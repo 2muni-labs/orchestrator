@@ -150,7 +150,7 @@ def test_unknown_events_raise(event: str) -> None:
     [
         ("quota", "orchestrator", "m-x", "quota"),
         ("quota", "", "", "quota"),
-        ("doctor_disk", "orchestrator", "m-x", "orchestrator|doctor_disk"),
+        ("doctor_disk", "orchestrator", "m-x", "orchestrator|doctor_disk|m-x|"),
         ("blocked", "orchestrator", "m-x", "orchestrator|blocked|m-x"),
         ("needs_review", "orchestrator", "m-x", "orchestrator|needs_review|m-x"),
         ("input_wait", "orchestrator", "", "orchestrator|input_wait|"),
@@ -631,3 +631,96 @@ def test_default_transport_is_urllib_and_reaches_urlopen(
     assert len(no_network) == 1
     no_network.clear()
     assert_warning(stderr)
+
+
+# The doctor key holds the task id and the check level
+
+
+@pytest.mark.parametrize(
+    ("event", "target", "task_id", "level", "key"),
+    [
+        ("doctor_disk", "", "", "fail", "|doctor_disk||fail"),
+        ("doctor_disk", "", "", "warn", "|doctor_disk||warn"),
+        ("doctor_main_session", "a", "", "warn", "a|doctor_main_session||warn"),
+        ("doctor_stuck_task", "a", "m-x", "", "a|doctor_stuck_task|m-x|"),
+        ("quota", "a", "m-x", "fail", "quota"),
+        ("blocked", "a", "m-x", "fail", "a|blocked|m-x"),
+        ("needs_review", "a", "m-x", "fail", "a|needs_review|m-x"),
+        ("input_wait", "a", "", "fail", "a|input_wait|"),
+    ],
+)
+def test_dedup_key_with_a_level(
+    event: str, target: str, task_id: str, level: str, key: str
+) -> None:
+    assert dedup_key(event, target=target, task_id=task_id, level=level) == key
+
+
+def send_level(
+    orch_home: Path,
+    transport: FakeTransport,
+    level: str,
+    *,
+    now: datetime = NOW,
+    event: str = "doctor_disk",
+    task_id: str = "",
+) -> Outcome:
+    return send(
+        event,
+        settings=ntfy_config(orch_home),
+        orch_home=orch_home,
+        home=orch_home.parent,
+        now=now,
+        task_id=task_id,
+        level=level,
+        transport=transport,
+        stderr=io.StringIO(),
+    )
+
+
+def test_a_worse_level_is_not_suppressed_by_the_earlier_one(orch_home: Path) -> None:
+    transport = FakeTransport()
+    later = NOW + timedelta(minutes=10)
+    assert send_level(orch_home, transport, "warn") is Outcome.SENT
+    assert send_level(orch_home, transport, "fail", now=later) is Outcome.SENT
+    assert len(transport.calls) == 2
+    assert load_state(notify_state_path(orch_home)) == {
+        "|doctor_disk||warn": NOW.isoformat(),
+        "|doctor_disk||fail": later.isoformat(),
+    }
+
+
+def test_the_same_level_is_still_suppressed_for_thirty_minutes(orch_home: Path) -> None:
+    transport = FakeTransport()
+    assert send_level(orch_home, transport, "fail") is Outcome.SENT
+    assert (
+        send_level(orch_home, transport, "fail", now=NOW + timedelta(minutes=29))
+        is Outcome.SUPPRESSED
+    )
+    assert send_level(orch_home, transport, "fail", now=NOW + DEDUP_WINDOW) is (
+        Outcome.SENT
+    )
+
+
+def test_doctor_events_of_different_tasks_do_not_suppress_each_other(
+    orch_home: Path,
+) -> None:
+    transport = FakeTransport()
+    event = "doctor_stuck_task"
+    assert (
+        send_level(orch_home, transport, "", event=event, task_id="a") is Outcome.SENT
+    )
+    assert (
+        send_level(orch_home, transport, "", event=event, task_id="b") is Outcome.SENT
+    )
+
+
+def test_the_level_stays_out_of_the_notification_body(orch_home: Path) -> None:
+    transport = FakeTransport()
+    assert send_level(orch_home, transport, "fail") is Outcome.SENT
+    assert transport.calls[0][1] == b"orch doctor_disk"
+
+
+def test_the_level_does_not_change_other_events(orch_home: Path) -> None:
+    transport = FakeTransport()
+    assert send_level(orch_home, transport, "warn", event="quota") is Outcome.SENT
+    assert send_level(orch_home, transport, "fail", event="quota") is Outcome.SUPPRESSED
