@@ -870,6 +870,7 @@ def test_a_first_failure_is_alerted_with_the_measured_arguments(
             "home": orch_home.parent,
             "now": NOW,
             "target": "",
+            "level": "fail",
         }
     ]
 
@@ -1607,3 +1608,70 @@ def test_the_configured_tailscale_path_replaces_the_constant(h: Harness) -> None
     assert seen == [[custom, "status", "--json"]]
     assert result_of(report, "network") == (CheckLevel.OK, None)
     assert not any(argv[0] == doctor.TAILSCALE for argv in h.commands)
+
+
+# The real dedup key
+
+
+def real_sender(bodies: list[bytes]) -> Callable[..., notify.Outcome]:
+    def transport(url: str, body: bytes, timeout: float) -> None:
+        bodies.append(body)
+
+    return functools.partial(notify.send, transport=transport)
+
+
+@pytest.mark.parametrize(
+    ("free", "level"), [(5 * GB, "warn"), (GB, "fail")], ids=["warn", "fail"]
+)
+def test_an_item_alert_carries_this_verdict(h: Harness, free: int, level: str) -> None:
+    h.free = [free]
+    h.go()
+    assert h.sent[0]["level"] == level
+
+
+def test_a_warning_that_becomes_a_failure_alerts_twice_within_the_window(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    bodies: list[bytes] = []
+    send = real_sender(bodies)
+    settings = ntfy_settings(orch_home)
+    h.free = [5 * GB]
+    h.go(settings=settings, send=send)
+    h.free = [GB]
+    h.go(settings=settings, send=send, now=NOW + timedelta(minutes=10))
+    assert bodies == [b"orch doctor_disk", b"orch doctor_disk"]
+    assert stored(conn, "disk") is CheckLevel.FAIL
+    assert pauses(conn) == ["disk"]
+
+
+def test_a_repeated_failure_is_suppressed_and_alerted_after_the_window(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    """Failure, recovery and failure in 30 minutes share a key: the record keeps it."""
+    bodies: list[bytes] = []
+    send = real_sender(bodies)
+    settings = ntfy_settings(orch_home)
+    h.results["codex"] = (1, "")
+    h.go(settings=settings, send=send)
+    h.results["codex"] = (0, "ok")
+    h.go(settings=settings, send=send, now=NOW + timedelta(minutes=10))
+    h.results["codex"] = (1, "")
+    report = h.go(settings=settings, send=send, now=NOW + timedelta(minutes=20))
+
+    assert bodies == [b"orch doctor_codex_auth"]
+    assert result_of(report, "codex_auth") == (CheckLevel.FAIL, "exit=1")
+    assert stored(conn, "codex_auth") is CheckLevel.OK
+    assert pauses(conn) == ["codex_auth"]
+
+    h.go(settings=settings, send=send, now=NOW + timedelta(minutes=30))
+    assert bodies == [b"orch doctor_codex_auth", b"orch doctor_codex_auth"]
+    assert stored(conn, "codex_auth") is CheckLevel.FAIL
+
+
+def test_a_stuck_task_alert_passes_no_level(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    add_running(conn, "a", started=NOW - LIMIT * 2)
+    h.go()
+    assert "level" not in h.sent[0]
+    assert h.sent[0]["dedup"] is False

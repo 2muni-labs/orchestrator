@@ -42,7 +42,9 @@ def validate_event(event: str) -> None:
         raise ValueError("Invalid notification event")
 
 
-def dedup_key(event: str, *, target: str = "", task_id: str = "") -> str:
+def dedup_key(
+    event: str, *, target: str = "", task_id: str = "", level: str = ""
+) -> str:
     """Return the deduplication key of an event."""
     validate_event(event)
     if event == "test":
@@ -143,6 +145,7 @@ def send(
     now: datetime,
     target: str = "",
     task_id: str = "",
+    level: str = "",
     transport: Transport = urllib_transport,
     stderr: TextIO | None = None,
     dedup: bool = True,
