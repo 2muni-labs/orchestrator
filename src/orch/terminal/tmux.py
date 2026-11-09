@@ -9,6 +9,7 @@ from pathlib import Path
 from orch.terminal.base import (
     MainPaneStatus,
     PaneRecord,
+    SessionProbe,
     TerminalError,
     _record_lock,
     _valid_pane,
@@ -75,6 +76,17 @@ class TmuxTerminal:
             )
         except OSError, subprocess.SubprocessError:
             return False
+
+    def probe_session(self) -> SessionProbe:
+        try:
+            result = self.runner([self.tmux, "has-session", "-t", f"={self.session}"])
+        except OSError, subprocess.SubprocessError:
+            return SessionProbe.UNAVAILABLE
+        if result.returncode == 0:
+            return SessionProbe.PRESENT
+        if result.returncode == 1:
+            return SessionProbe.ABSENT
+        return SessionProbe.UNAVAILABLE
 
     def open_session(
         self, *, cwd: Path, env: Mapping[str, str], command: Sequence[str]
@@ -163,8 +175,11 @@ class TmuxTerminal:
             record = self._load()
         except TerminalError:
             return MainPaneStatus.NO_RECORD
-        if not self.has_session():
+        probe = self.probe_session()
+        if probe is SessionProbe.ABSENT:
             return MainPaneStatus.NO_SESSION
+        if probe is SessionProbe.UNAVAILABLE:
+            return MainPaneStatus.UNAVAILABLE
         try:
             result = self._run(
                 [

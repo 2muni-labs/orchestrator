@@ -10,6 +10,7 @@ from orch.launcher import build_plan
 from orch.terminal import (
     MainPaneStatus,
     PaneRecord,
+    SessionProbe,
     TerminalError,
     TmuxTerminal,
     load_record,
@@ -654,3 +655,68 @@ def test_a_symlinked_claude_path_is_compared_without_resolving_it(
     assert terminal.main_pane_status(link) is MainPaneStatus.ALIVE
     fake.stdout["list-panes"] = panes_output(f"%1|0|{real} --model x")
     assert terminal.main_pane_status(link) is MainPaneStatus.NOT_CLAUDE
+
+
+# probe_session. has-session exit codes measured on tmux 3.8.
+
+
+def test_probe_finds_a_present_session(fake: FakeTmux, record: Path) -> None:
+    terminal = TmuxTerminal(SESSION, record, runner=fake, tmux="/opt/tmux")
+    assert terminal.probe_session() is SessionProbe.PRESENT
+    assert fake.calls == [["/opt/tmux", "has-session", "-t", f"={SESSION}"]]
+
+
+def test_probe_reads_exit_one_as_absent(fake: FakeTmux, record: Path) -> None:
+    terminal = TmuxTerminal(SESSION, record, runner=fake, tmux="/opt/tmux")
+    fake.fail["has-session"] = (1, "no server running")
+    assert terminal.probe_session() is SessionProbe.ABSENT
+
+
+@pytest.mark.parametrize("code", [2, 127])
+def test_probe_reads_another_exit_code_as_unavailable(
+    fake: FakeTmux, record: Path, code: int
+) -> None:
+    terminal = TmuxTerminal(SESSION, record, runner=fake, tmux="/opt/tmux")
+    fake.fail["has-session"] = (code, "failure")
+    assert terminal.probe_session() is SessionProbe.UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "error", [FileNotFoundError("tmux"), subprocess.TimeoutExpired("t", 1)]
+)
+def test_probe_reads_a_failed_run_as_unavailable(
+    record: Path, error: Exception
+) -> None:
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise error
+
+    terminal = TmuxTerminal(SESSION, record, runner=runner)
+    assert terminal.probe_session() is SessionProbe.UNAVAILABLE
+
+
+def test_has_session_still_reads_a_failed_run_as_false(record: Path) -> None:
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("tmux")
+
+    assert TmuxTerminal(SESSION, record, runner=runner).has_session() is False
+
+
+def test_a_main_pane_check_without_tmux_is_unavailable_not_no_session(
+    fake: FakeTmux, record: Path
+) -> None:
+    """Under launchd tmux is not on PATH: a live session must not look absent."""
+    terminal = opened(fake, record)
+
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("tmux")
+
+    terminal.runner = runner
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.UNAVAILABLE
+
+
+def test_a_main_pane_check_with_exit_127_is_unavailable(
+    fake: FakeTmux, record: Path
+) -> None:
+    terminal = opened(fake, record)
+    fake.fail["has-session"] = (127, "not found")
+    assert terminal.main_pane_status(CLAUDE) is MainPaneStatus.UNAVAILABLE
