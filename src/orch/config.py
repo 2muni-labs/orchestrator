@@ -14,6 +14,8 @@ from orch.redact import RedactionError, redact
 RESERVED_TARGET_NAMES = frozenset({"bin", "secrets", "config", "state.db"})
 MARKER_FILE = ".orch-target.toml"
 NOTIFICATION_TOPIC_PATTERN = r"[A-Za-z0-9_-]{20,64}"
+GATE_TIMEOUT_DEFAULT_MIN = 30
+GATE_TIMEOUT_MAX_MIN = 120
 
 
 class ConfigError(Exception):
@@ -93,6 +95,7 @@ class Config:
     disk_warn_gb: int = 10
     disk_fail_gb: int = 2
     tailscale_path: Path | None = None
+    gate_timeout_min: int = GATE_TIMEOUT_DEFAULT_MIN
 
 
 def _absolute_path(value: object) -> Path:

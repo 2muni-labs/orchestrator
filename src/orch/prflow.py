@@ -71,6 +71,7 @@ def open_pull_request(
     home: Path,
     orch_home: Path,
     resolution: str | None = None,
+    timeout_sec: int | None = None,
 ) -> PullRequestReport:
     """Rebase, test and push a task, then open or update its pull request."""
     task = store.get_task(conn, spec.id)
@@ -232,6 +233,7 @@ def update_pull_request(
     log_path: Path,
     home: Path,
     orch_home: Path,
+    timeout_sec: int | None = None,
 ) -> UpdateReport:
     """Check an open pull request against the moved default branch, without pushing."""
     task = store.get_task(conn, spec.id)

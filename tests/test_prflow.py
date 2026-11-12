@@ -2653,3 +2653,97 @@ def test_a_resolution_replaces_the_first_line_of_a_new_attempt_comment(
     body = str(hub.comments[0]["body"])
     assert body.startswith("Retried after a flaky test.\n\n## Summary")
     assert "Updated after attempt" not in body
+
+
+# The configured gate time limit
+
+
+def test_the_pre_pr_gate_gets_the_given_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits: list[object] = []
+
+    def run_tests(*args: object, **kwargs: object) -> str | None:
+        limits.append(kwargs.get("timeout_sec"))
+        return None
+
+    monkeypatch.setattr(prflow.gate, "run_tests", run_tests)
+    add_ready_task(conn, worktree, test_sha)
+    report = open_pull_request(
+        conn,
+        make_spec(),
+        make_target(repo),
+        token=TOKEN,
+        log_path=tmp_path / "logs" / "feat-x.pr.log",
+        review_path=tmp_path / "reviews" / "feat-x.json",
+        triage_path=tmp_path / "reviews" / "feat-x.triage.md",
+        timeout_sec=2700,
+        **REDACT,
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert limits == [2700]
+
+
+def test_the_pre_pr_gate_times_out_on_the_given_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    report = open_pull_request(
+        conn,
+        make_spec(),
+        make_target(repo, test_command="sleep 30"),
+        token=TOKEN,
+        log_path=tmp_path / "logs" / "feat-x.pr.log",
+        review_path=tmp_path / "reviews" / "feat-x.json",
+        triage_path=tmp_path / "reviews" / "feat-x.triage.md",
+        timeout_sec=1,
+        **REDACT,
+    )
+    assert report.state is TaskState.JUDGING
+    assert report.detail is not None
+    assert "시간 초과" in report.detail
+
+
+def test_the_update_gates_get_the_given_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits: list[object] = []
+    original = prflow.gate.run_gates
+
+    def run_gates(*args: object, **kwargs: object) -> GateReport:
+        limits.append(kwargs.get("timeout_sec"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(prflow.gate, "run_gates", run_gates)
+    move_main(repo)
+    report = update_pull_request(
+        conn,
+        make_spec(),
+        make_target(repo),
+        token=TOKEN,
+        log_path=tmp_path / "logs" / "feat-x.update.log",
+        timeout_sec=3600,
+        **REDACT,
+    )
+    assert report.state is TaskState.PR_OPEN
+    assert report.gates is not None and report.gates.passed
+    assert limits == [3600]

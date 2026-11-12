@@ -873,9 +873,9 @@ def test_no_database_transaction_stays_open_while_commands_run(
     seen: list[bool] = []
     real = gate.run_command
 
-    def spy(*args: object) -> int | None:
+    def spy(*args: object, **kwargs: object) -> int | None:
         seen.append(conn.in_transaction)
-        return real(*args)
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(gate, "run_command", spy)
     run_flow(conn, log_path)
@@ -996,7 +996,7 @@ def test_an_exception_from_run_command_returns_to_judging_and_raises(
     log_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail(*args: object) -> int | None:
+    def fail(*args: object, **kwargs: object) -> int | None:
         raise OSError("cannot start")
 
     add_judged_task(conn, worktree, test_sha)
@@ -1222,3 +1222,135 @@ def test_module_runs_git_only_through_gitops() -> None:
         elif isinstance(node, ast.Constant) and node.value == "git":
             pytest.fail("gate.py must not name the git command")
     assert imported - {"orch"} <= sys.stdlib_module_names
+
+
+# The configured time limit
+
+
+def test_an_explicit_limit_overrides_the_default(
+    tmp_path: Path, log_path: Path
+) -> None:
+    started = time.monotonic()
+    assert run_command("sleep 30", tmp_path, log_path, timeout_sec=1) is None
+    assert time.monotonic() - started < 15
+
+
+def test_an_explicit_limit_can_be_longer_than_the_default(
+    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "COMMAND_TIMEOUT_SEC", 1)
+    assert run_command("sleep 2", tmp_path, log_path, timeout_sec=30) == 0
+
+
+def test_no_explicit_limit_reads_the_default_at_call_time(
+    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "COMMAND_TIMEOUT_SEC", 1)
+    assert run_command("sleep 30", tmp_path, log_path, timeout_sec=None) is None
+
+
+def record_limits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
+    calls: list[tuple[str, object]] = []
+    original = gate.run_command
+
+    def spy(
+        command: str, worktree: Path, log_path: Path, **kwargs: object
+    ) -> int | None:
+        calls.append((command, kwargs.get("timeout_sec")))
+        return original(command, worktree, log_path, **kwargs)
+
+    monkeypatch.setattr(gate, "run_command", spy)
+    return calls
+
+
+def test_run_tests_passes_the_limit_to_both_commands(
+    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = record_limits(monkeypatch)
+    spec = make_spec(verify="echo verify")
+    target = make_target(test_command="echo tests")
+    assert run_tests(spec, target, tmp_path, log_path, timeout_sec=77) is None
+    assert calls == [("echo tests", 77), ("echo verify", 77)]
+
+
+def test_run_tests_reports_a_timeout_from_the_explicit_limit(
+    tmp_path: Path, log_path: Path
+) -> None:
+    target = make_target(test_command="sleep 30")
+    failure = run_tests(make_spec(), target, tmp_path, log_path, timeout_sec=1)
+    assert failure is not None
+    assert "시간 초과" in failure
+
+
+def test_run_gates_passes_the_limit_to_g2_and_g3(
+    worktree: Path, test_sha: str, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = record_limits(monkeypatch)
+    spec = make_spec(verify="echo verify")
+    target = make_target(test_command="echo tests", lint_command="echo lint")
+    report = run_gates(
+        spec,
+        target,
+        worktree,
+        since=test_sha,
+        main_ref=MAIN,
+        log_path=log_path,
+        timeout_sec=88,
+    )
+    assert report.passed
+    assert calls == [("echo tests", 88), ("echo verify", 88), ("echo lint", 88)]
+
+
+def test_run_gates_times_out_g3_on_the_explicit_limit(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    target = make_target(lint_command="sleep 30")
+    report = run_gates(
+        make_spec(),
+        target,
+        worktree,
+        since=test_sha,
+        main_ref=MAIN,
+        log_path=log_path,
+        timeout_sec=1,
+    )
+    assert report.failed_gate == "G3"
+    assert report.detail is not None
+    assert "시간 초과" in report.detail
+
+
+def test_gate_task_passes_the_limit_to_run_gates(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    calls = record_limits(monkeypatch)
+    report = gate_task(
+        conn,
+        make_spec(),
+        make_target(),
+        main_ref=MAIN,
+        log_path=log_path,
+        timeout_sec=99,
+        **REDACT,
+    )
+    assert report.passed
+    assert [limit for _, limit in calls] == [99, 99, 99]
+
+
+def test_gate_task_without_a_limit_uses_the_default(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    monkeypatch.setattr(gate, "COMMAND_TIMEOUT_SEC", 1)
+    report = run_flow(conn, log_path, target=make_target(test_command="sleep 30"))
+    assert report.failed_gate == "G2"
+    assert report.detail is not None
+    assert "시간 초과" in report.detail

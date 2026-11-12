@@ -127,7 +127,9 @@ def check_scope(
     )
 
 
-def run_command(command: str, worktree: Path, log_path: Path) -> int | None:
+def run_command(
+    command: str, worktree: Path, log_path: Path, *, timeout_sec: int | None = None
+) -> int | None:
     """Run a shell command in its own group, logging output. None means a timeout."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
@@ -164,7 +166,12 @@ def _command_failure(command: str, code: int | None) -> str | None:
 
 
 def run_tests(
-    spec: TaskSpec, target: Target, worktree: Path, log_path: Path
+    spec: TaskSpec,
+    target: Target,
+    worktree: Path,
+    log_path: Path,
+    *,
+    timeout_sec: int | None = None,
 ) -> str | None:
     """Run the G2 commands and return a failure summary, or None if they pass."""
     for command, allow_empty in (
@@ -188,6 +195,7 @@ def run_gates(
     since: str,
     main_ref: str,
     log_path: Path,
+    timeout_sec: int | None = None,
 ) -> GateReport:
     """Run G1, G2 and G3, stopping at a failure, then check the scope again."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +264,7 @@ def gate_task(
     log_path: Path,
     home: Path,
     orch_home: Path,
+    timeout_sec: int | None = None,
 ) -> GateReport:
     """Run the gates on a judged task, record them, and commit on success."""
     task = store.get_task(conn, spec.id)
