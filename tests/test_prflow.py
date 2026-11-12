@@ -708,7 +708,7 @@ def test_a_commit_made_during_the_pre_pr_gate_is_not_pushed(
     assert hub.created == []
 
 
-def test_uncommitted_files_from_the_pre_pr_gate_are_not_pushed(
+def test_a_file_made_during_the_pre_pr_gate_fails_it_and_is_not_pushed(
     conn: sqlite3.Connection,
     repo: Path,
     remote: Path,
@@ -722,10 +722,12 @@ def test_uncommitted_files_from_the_pre_pr_gate_are_not_pushed(
     report = open_pr(
         conn, repo, tmp_path, target=make_target(repo, test_command="echo x > stray.py")
     )
-    assert report.state is TaskState.PR_OPEN
-    tip = remote_tip(remote)
-    assert tip == implemented
-    assert "stray.py" not in git(remote, "ls-tree", "-r", "--name-only", tip)
+    assert report.state is TaskState.JUDGING
+    assert report.detail == gate.CHANGED_DETAIL + "stray.py"
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is False
+    assert remote_tip(remote) is None
+    assert hub.created == []
+    assert git(worktree, "rev-parse", "HEAD") == implemented
 
 
 def test_a_differing_remote_branch_stops_without_force(
@@ -1639,7 +1641,7 @@ def test_update_refuses_a_task_with_no_pushed_commit(
 @pytest.mark.parametrize(
     ("overrides", "failed_gate"),
     [
-        ({"test_command": "echo x > outside.py"}, "G1"),
+        ({"test_command": "echo x > outside.py"}, "G2"),
         ({"test_command": "exit 1"}, "G2"),
         ({"lint_command": "exit 1"}, "G3"),
     ],
@@ -2268,7 +2270,7 @@ def test_a_failing_pre_pr_gate_leaves_a_clean_worktree(
     assert (worktree / "src" / "app.py").read_text(encoding="utf-8") == "task\n"
 
 
-def test_a_passing_pre_pr_gate_leaves_a_clean_worktree(
+def test_a_pre_pr_gate_that_changes_the_worktree_fails_and_leaves_it_clean(
     conn: sqlite3.Connection,
     repo: Path,
     remote: Path,
@@ -2280,10 +2282,14 @@ def test_a_passing_pre_pr_gate_leaves_a_clean_worktree(
 ) -> None:
     add_ready_task(conn, worktree, test_sha)
     target = make_target(repo, test_command=LITTER)
-    assert open_pr(conn, repo, tmp_path, target=target).state is TaskState.PR_OPEN
-    assert remote_tip(remote) == implemented
+    report = open_pr(conn, repo, tmp_path, target=target)
+    assert report.state is TaskState.JUDGING
+    assert report.detail == gate.CHANGED_DETAIL + "src/app.py, stray.py"
+    assert remote_tip(remote) is None
     assert git(worktree, "rev-parse", "HEAD") == implemented
     assert porcelain(worktree) == ""
+    assert not (worktree / "stray.py").exists()
+    assert (worktree / "src" / "app.py").read_text(encoding="utf-8") == "task\n"
 
 
 def test_a_commit_made_during_the_pre_pr_gate_is_discarded(

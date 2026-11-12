@@ -182,7 +182,7 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     path = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(path)], check=True)
-    write(path / ".gitignore", ".orch-result.json\n")
+    write(path / ".gitignore", ".orch-result.json\n__pycache__/\n.pytest_cache/\n")
     add_commit(path, "base.txt")
     git(path, "add", ".gitignore")
     git(path, "commit", "-qm", "ignore")
@@ -372,60 +372,61 @@ def test_commands_do_not_see_tokens_or_the_gate_s_virtualenv(
 
 
 def test_run_tests_runs_the_test_command_then_verify(
-    tmp_path: Path, log_path: Path
+    tmp_path: Path, worktree: Path, log_path: Path
 ) -> None:
-    spec = make_spec(verify="echo verify >> order.txt")
-    target = make_target(test_command="echo test >> order.txt")
-    assert run_tests(spec, target, tmp_path, log_path) is None
-    assert (tmp_path / "order.txt").read_text().split() == ["test", "verify"]
+    order = tmp_path / "order.txt"
+    spec = make_spec(verify=f"echo verify >> {order}")
+    target = make_target(test_command=f"echo test >> {order}")
+    assert run_tests(spec, target, worktree, log_path) is None
+    assert order.read_text().split() == ["test", "verify"]
 
 
 def test_run_tests_stops_at_a_failing_test_command(
-    tmp_path: Path, log_path: Path
+    tmp_path: Path, worktree: Path, log_path: Path
 ) -> None:
-    spec = make_spec(verify="touch verify_ran")
+    spec = make_spec(verify=f"touch {tmp_path}/verify_ran")
     target = make_target(test_command="exit 1")
-    failure = run_tests(spec, target, tmp_path, log_path)
+    failure = run_tests(spec, target, worktree, log_path)
     assert failure is not None
     assert "exit 1" in failure
     assert "1" in failure
     assert not (tmp_path / "verify_ran").exists()
 
 
-def test_run_tests_reports_a_failing_verify(tmp_path: Path, log_path: Path) -> None:
-    failure = run_tests(make_spec(verify="exit 2"), make_target(), tmp_path, log_path)
+def test_run_tests_reports_a_failing_verify(worktree: Path, log_path: Path) -> None:
+    failure = run_tests(make_spec(verify="exit 2"), make_target(), worktree, log_path)
     assert failure is not None
     assert "exit 2" in failure
 
 
 def test_run_tests_reports_a_timeout(
-    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+    worktree: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gate, "COMMAND_TIMEOUT_SEC", 1)
     target = make_target(test_command="sleep 30")
-    failure = run_tests(make_spec(), target, tmp_path, log_path)
+    failure = run_tests(make_spec(), target, worktree, log_path)
     assert failure is not None
     assert "시간 초과" in failure
 
 
 def test_collecting_no_tests_passes_only_for_tests_none(
-    tmp_path: Path, log_path: Path
+    worktree: Path, log_path: Path
 ) -> None:
     target = make_target(test_command="exit 5")
-    assert run_tests(make_spec(), target, tmp_path, log_path) is not None
+    assert run_tests(make_spec(), target, worktree, log_path) is not None
     allowed = make_spec(grade=Grade.L1, tests="none")
-    assert run_tests(allowed, target, tmp_path, log_path) is None
+    assert run_tests(allowed, target, worktree, log_path) is None
 
 
-def test_verify_exit_five_never_passes(tmp_path: Path, log_path: Path) -> None:
+def test_verify_exit_five_never_passes(worktree: Path, log_path: Path) -> None:
     spec = make_spec(grade=Grade.L1, tests="none", verify="exit 5")
-    assert run_tests(spec, make_target(), tmp_path, log_path) is not None
+    assert run_tests(spec, make_target(), worktree, log_path) is not None
 
 
-def test_failure_summary_is_limited(tmp_path: Path, log_path: Path) -> None:
+def test_failure_summary_is_limited(worktree: Path, log_path: Path) -> None:
     long_command = "exit 1 # " + "x" * 2000
     failure = run_tests(
-        make_spec(), make_target(test_command=long_command), tmp_path, log_path
+        make_spec(), make_target(test_command=long_command), worktree, log_path
     )
     assert failure is not None
     assert len(failure) <= gate.DETAIL_LIMIT
@@ -1090,7 +1091,7 @@ COMMIT_OUTSIDE = (
         (COMMIT_OUTSIDE, "outside.py"),
     ],
 )
-def test_scope_escape_during_a_gate_fails_g1_without_a_commit(
+def test_a_scope_escape_during_a_gate_fails_that_gate_without_a_commit(
     conn: sqlite3.Connection,
     worktree: Path,
     test_sha: str,
@@ -1113,22 +1114,31 @@ def test_scope_escape_during_a_gate_fails_g1_without_a_commit(
         **REDACT,
     )
     assert report.passed is False
-    assert report.failed_gate == "G1"
-    assert report.gates == {
-        "G1": GateStatus.FAILED,
-        "G2": GateStatus.PASSED,
-        "G3": GateStatus.PASSED,
-    }
-    assert report.detail is not None
-    assert path in report.detail
+    assert report.detail == gate.CHANGED_DETAIL + path
+    if stage == "lint_command":
+        assert report.failed_gate == "G3"
+        assert report.gates == {
+            "G1": GateStatus.PASSED,
+            "G2": GateStatus.PASSED,
+            "G3": GateStatus.FAILED,
+        }
+        assert recorded(conn) == {Gate.G1: True, Gate.G2: True, Gate.G3: False}
+    else:
+        assert report.failed_gate == "G2"
+        assert report.gates == {
+            "G1": GateStatus.PASSED,
+            "G2": GateStatus.FAILED,
+            "G3": GateStatus.NOT_RUN,
+        }
+        assert recorded(conn) == {Gate.G1: True, Gate.G2: False}
     assert state_of(conn) is TaskState.JUDGING
-    assert recorded(conn) == {Gate.G1: False, Gate.G2: True, Gate.G3: True}
     assert "Add feature X" not in git(worktree, "log", "--format=%s")
 
 
-def test_in_scope_file_made_during_a_gate_is_committed(
+def test_an_in_scope_file_made_during_a_gate_fails_it_without_a_commit(
     conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
 ) -> None:
+    """Only work present before the gates is committed; the result file is ignored."""
     add_judged_task(conn, worktree, test_sha)
     write(worktree / "src" / "new.py")
     report = run_flow(
@@ -1138,10 +1148,11 @@ def test_in_scope_file_made_during_a_gate_is_committed(
             test_command="echo x > src/generated.py; echo x > .orch-result.json"
         ),
     )
-    assert report.passed is True
-    assert state_of(conn) is TaskState.READY
-    committed = git(worktree, "show", "--name-only", "--format=", "HEAD").split()
-    assert committed == ["src/generated.py", "src/new.py"]
+    assert report.passed is False
+    assert report.failed_gate == "G2"
+    assert report.detail == gate.CHANGED_DETAIL + "src/generated.py"
+    assert state_of(conn) is TaskState.JUDGING
+    assert git(worktree, "rev-parse", "HEAD") == test_sha
 
 
 def test_run_gates_reports_a_scope_escape(
@@ -1156,12 +1167,13 @@ def test_run_gates_reports_a_scope_escape(
         log_path=log_path,
     )
     assert report.passed is False
-    assert report.failed_gate == "G1"
-    assert report.gates["G1"] is GateStatus.FAILED
-    assert report.gates["G2"] is GateStatus.PASSED
+    assert report.failed_gate == "G2"
+    assert report.detail == gate.CHANGED_DETAIL + "outside.py"
+    assert report.gates["G1"] is GateStatus.PASSED
+    assert report.gates["G3"] is GateStatus.NOT_RUN
 
 
-def test_the_scope_is_checked_again_when_g3_is_skipped(
+def test_a_change_in_g2_fails_before_a_skipped_g3(
     worktree: Path, test_sha: str, log_path: Path
 ) -> None:
     report = run_gates(
@@ -1173,8 +1185,9 @@ def test_the_scope_is_checked_again_when_g3_is_skipped(
         log_path=log_path,
     )
     assert report.passed is False
-    assert report.failed_gate == "G1"
-    assert report.gates["G3"] is GateStatus.SKIPPED
+    assert report.failed_gate == "G2"
+    assert report.detail == gate.CHANGED_DETAIL + "outside.py"
+    assert report.gates["G3"] is GateStatus.NOT_RUN
 
 
 def test_a_failing_gate_keeps_its_own_failure_over_a_scope_escape(
@@ -1264,20 +1277,20 @@ def record_limits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
 
 
 def test_run_tests_passes_the_limit_to_both_commands(
-    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+    worktree: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = record_limits(monkeypatch)
     spec = make_spec(verify="echo verify")
     target = make_target(test_command="echo tests")
-    assert run_tests(spec, target, tmp_path, log_path, timeout_sec=77) is None
+    assert run_tests(spec, target, worktree, log_path, timeout_sec=77) is None
     assert calls == [("echo tests", 77), ("echo verify", 77)]
 
 
 def test_run_tests_reports_a_timeout_from_the_explicit_limit(
-    tmp_path: Path, log_path: Path
+    worktree: Path, log_path: Path
 ) -> None:
     target = make_target(test_command="sleep 30")
-    failure = run_tests(make_spec(), target, tmp_path, log_path, timeout_sec=1)
+    failure = run_tests(make_spec(), target, worktree, log_path, timeout_sec=1)
     assert failure is not None
     assert "시간 초과" in failure
 
@@ -1364,12 +1377,12 @@ def missing_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_tests_reports_a_sandbox_failure_and_runs_nothing(
-    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, worktree: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     missing_sandbox(tmp_path, monkeypatch)
-    spec = make_spec(verify="touch verify_ran")
-    target = make_target(test_command="touch test_ran")
-    failure = run_tests(spec, target, tmp_path, log_path)
+    spec = make_spec(verify=f"touch {tmp_path}/verify_ran")
+    target = make_target(test_command=f"touch {tmp_path}/test_ran")
+    failure = run_tests(spec, target, worktree, log_path)
     assert failure is not None
     assert failure.startswith("샌드박스 실패: ")
     assert len(failure) <= gate.DETAIL_LIMIT
@@ -1462,3 +1475,180 @@ def test_gate_commands_run_through_the_sandbox_by_default(
         ["bash", "-c", "echo verify"],
         ["bash", "-c", "echo lint"],
     ]
+
+
+# Changes while the gates run (a leak path into the commit and the push)
+
+SECRET = "contents-that-must-not-leak"
+
+
+def planted_git_file(tmp_path: Path) -> tuple[str, Path]:
+    """A .git text pointing at a repository whose fsmonitor hook leaves a marker."""
+    evil = tmp_path / "evil"
+    subprocess.run(["git", "init", "-q", str(evil)], check=True)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git(evil, "config", "core.fsmonitor", str(hook))
+    return f"gitdir: {evil / '.git'}", marker
+
+
+def test_a_change_during_g2_fails_run_tests_with_the_path_only(
+    worktree: Path, log_path: Path
+) -> None:
+    spec = make_spec(verify=f"echo {SECRET} >> base.txt")
+    failure = run_tests(spec, make_target(), worktree, log_path)
+    assert failure == gate.CHANGED_DETAIL + "base.txt"
+    assert SECRET not in failure
+
+
+def test_a_new_file_during_g2_is_reported(worktree: Path, log_path: Path) -> None:
+    target = make_target(test_command="mkdir -p src && echo x > src/new.py")
+    failure = run_tests(make_spec(), target, worktree, log_path)
+    assert failure == gate.CHANGED_DETAIL + "src/new.py"
+
+
+def test_ignored_files_written_by_the_commands_do_not_count(
+    worktree: Path, log_path: Path
+) -> None:
+    command = (
+        "mkdir -p .pytest_cache src/__pycache__ && touch .pytest_cache/v "
+        "src/__pycache__/m.pyc .orch-result.json"
+    )
+    target = make_target(test_command=command)
+    assert run_tests(make_spec(), target, worktree, log_path) is None
+
+
+def test_work_left_before_the_gates_does_not_count(
+    worktree: Path, log_path: Path
+) -> None:
+    write(worktree / "src" / "work.py")
+    write(worktree / "base.txt", "edited by the sub-agent\n")
+    assert run_tests(make_spec(), make_target(), worktree, log_path) is None
+
+
+def test_a_change_is_reported_before_a_failing_command(
+    worktree: Path, log_path: Path
+) -> None:
+    target = make_target(test_command="echo y >> base.txt; exit 1")
+    failure = run_tests(make_spec(), target, worktree, log_path)
+    assert failure == gate.CHANGED_DETAIL + "base.txt"
+
+
+def test_a_change_is_reported_after_a_timeout(
+    worktree: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "COMMAND_TIMEOUT_SEC", 1)
+    target = make_target(test_command="echo y >> base.txt; sleep 30")
+    failure = run_tests(make_spec(), target, worktree, log_path)
+    assert failure == gate.CHANGED_DETAIL + "base.txt"
+
+
+def test_a_long_list_of_changed_paths_is_limited(
+    worktree: Path, log_path: Path
+) -> None:
+    command = (
+        "mkdir -p many && for i in $(seq 1 300); do echo x > many/file$i.txt; done"
+    )
+    failure = run_tests(
+        make_spec(), make_target(test_command=command), worktree, log_path
+    )
+    assert failure is not None
+    assert failure.startswith(gate.CHANGED_DETAIL + "many/file")
+    assert len(failure) <= gate.DETAIL_LIMIT
+
+
+def test_a_tampered_git_file_is_restored_before_run_tests_returns(
+    worktree: Path, log_path: Path, tmp_path: Path
+) -> None:
+    """orch pr runs git right after run_tests, so .git must be back by then."""
+    original = (worktree / ".git").read_bytes()
+    planted, marker = planted_git_file(tmp_path)
+    target = make_target(test_command=f"printf '%s\\n' '{planted}' > .git")
+    failure = run_tests(make_spec(), target, worktree, log_path)
+    assert failure == gate.CHANGED_DETAIL + ".git"
+    assert (worktree / ".git").read_bytes() == original
+    gitops.rev_parse(worktree, "HEAD")
+    gitops.reset_to(worktree, gitops.rev_parse(worktree, "HEAD"))
+    assert not marker.exists()
+
+
+def test_a_change_during_g2_fails_g2_and_skips_g3(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    write(worktree / "src" / "ok.py")
+    target = make_target(
+        test_command=f"echo {SECRET} >> src/ok.py", lint_command="touch lint_ran"
+    )
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.failed_gate == "G2"
+    assert report.gates == {
+        "G1": GateStatus.PASSED,
+        "G2": GateStatus.FAILED,
+        "G3": GateStatus.NOT_RUN,
+    }
+    assert report.detail == gate.CHANGED_DETAIL + "src/ok.py"
+    assert not (worktree / "lint_ran").exists()
+
+
+def test_a_change_during_g3_fails_g3(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    write(worktree / "src" / "ok.py")
+    target = make_target(lint_command=f"echo {SECRET} >> src/ok.py")
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.failed_gate == "G3"
+    assert report.gates["G2"] is GateStatus.PASSED
+    assert report.gates["G3"] is GateStatus.FAILED
+    assert report.detail == gate.CHANGED_DETAIL + "src/ok.py"
+
+
+def test_a_change_during_g3_is_reported_before_a_failing_lint(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    write(worktree / "src" / "ok.py")
+    target = make_target(lint_command="echo y >> src/ok.py; exit 1")
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.failed_gate == "G3"
+    assert report.detail == gate.CHANGED_DETAIL + "src/ok.py"
+
+
+def test_a_git_file_tampered_in_g3_is_restored_before_any_git_command(
+    worktree: Path, test_sha: str, log_path: Path, tmp_path: Path
+) -> None:
+    original = (worktree / ".git").read_bytes()
+    planted, marker = planted_git_file(tmp_path)
+    write(worktree / "src" / "ok.py")
+    target = make_target(lint_command=f"printf '%s\\n' '{planted}' > .git")
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.failed_gate == "G3"
+    assert report.detail == gate.CHANGED_DETAIL + ".git"
+    assert (worktree / ".git").read_bytes() == original
+    assert not marker.exists()
+
+
+def test_gates_that_change_nothing_still_pass(
+    worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    write(worktree / "src" / "ok.py")
+    target = make_target(
+        test_command="cat src/ok.py > /dev/null", lint_command="touch .orch-result.json"
+    )
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.passed is True
+
+
+def test_gate_task_never_commits_a_change_made_during_the_gates(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "new.py", "the sub-agent's work\n")
+    target = make_target(test_command=f"echo {SECRET} >> src/new.py")
+    report = run_flow(conn, log_path, target=target)
+    assert report.failed_gate == "G2"
+    assert report.detail == gate.CHANGED_DETAIL + "src/new.py"
+    assert state_of(conn) is TaskState.JUDGING
+    assert recorded(conn) == {Gate.G1: True, Gate.G2: False}
+    assert git(worktree, "rev-parse", "HEAD") == test_sha
+    assert all(SECRET not in (r.detail or "") for r in gate_results(conn, "feat-x", 1))

@@ -37,6 +37,15 @@ class MergeResult:
     conflicts: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WorktreeSnapshot:
+    """The worktree as the gates found it, read through the trusted .git file."""
+
+    git_dir: Path
+    git_file: bytes
+    tree: str
+
+
 def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
     """Run git with an isolated repository environment and a group timeout."""
     command = ["git", "-C", str(cwd), *args]
@@ -321,3 +330,13 @@ def task_changed_paths(worktree: Path, since: str, main_ref: str) -> frozenset[s
     return frozenset(
         path for path in (committed + uncommitted + untracked).split("\0") if path
     )
+
+
+def snapshot_worktree(worktree: Path) -> WorktreeSnapshot:
+    """Record the .git file and a tree of tracked and untracked, non-ignored files."""
+    raise NotImplementedError
+
+
+def worktree_changes(worktree: Path, before: WorktreeSnapshot) -> tuple[str, ...]:
+    """Restore a changed .git file first, then return the paths changed since before."""
+    raise NotImplementedError

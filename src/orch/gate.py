@@ -23,6 +23,7 @@ from orch.taskfile import TaskSpec
 RESULT_FILE = ".orch-result.json"
 COMMAND_TIMEOUT_SEC = GATE_TIMEOUT_DEFAULT_MIN * 60
 DETAIL_LIMIT = 500
+CHANGED_DETAIL = "게이트 실행 중 워크트리가 바뀌었습니다: "
 TEST_GLOBS = ("tests/**",)
 
 
