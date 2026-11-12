@@ -14,6 +14,8 @@ from orch.redact import RedactionError, redact
 RESERVED_TARGET_NAMES = frozenset({"bin", "secrets", "config", "state.db"})
 MARKER_FILE = ".orch-target.toml"
 NOTIFICATION_TOPIC_PATTERN = r"[A-Za-z0-9_-]{20,64}"
+GATE_TIMEOUT_DEFAULT_MIN = 30
+GATE_TIMEOUT_MAX_MIN = 120
 
 
 class ConfigError(Exception):
@@ -93,6 +95,7 @@ class Config:
     disk_warn_gb: int = 10
     disk_fail_gb: int = 2
     tailscale_path: Path | None = None
+    gate_timeout_min: int = GATE_TIMEOUT_DEFAULT_MIN
 
 
 def _absolute_path(value: object) -> Path:
@@ -433,6 +436,7 @@ def load_config(home: Path) -> Config:
             "agents",
             "usage_limit_patterns",
             "doctor",
+            "gate",
         },
     )
     backend = data.get("terminal_backend", "tmux")
@@ -471,6 +475,12 @@ def load_config(home: Path) -> Config:
     tailscale_path = (
         _absolute_path(doctor["tailscale"]) if "tailscale" in doctor else None
     )
+    gate = _table(data.get("gate", {}), {"timeout_min"})
+    gate_timeout_min = _positive_integer(
+        gate.get("timeout_min", GATE_TIMEOUT_DEFAULT_MIN)
+    )
+    if gate_timeout_min > GATE_TIMEOUT_MAX_MIN:
+        raise ConfigError("gate timeout_min exceeds maximum")
     patterns_data = _table(data.get("usage_limit_patterns", {}), {"codex", "claude"})
     defaults = (
         "usage limit",
@@ -505,4 +515,5 @@ def load_config(home: Path) -> Config:
         disk_warn_gb=disk_warn_gb,
         disk_fail_gb=disk_fail_gb,
         tailscale_path=tailscale_path,
+        gate_timeout_min=gate_timeout_min,
     )

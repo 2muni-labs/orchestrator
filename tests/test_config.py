@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from orch import doctor
+from orch import doctor, gate
 from orch.config import (
+    GATE_TIMEOUT_DEFAULT_MIN,
+    GATE_TIMEOUT_MAX_MIN,
     MARKER_FILE,
     RESERVED_TARGET_NAMES,
     Config,
@@ -1098,5 +1100,66 @@ def test_an_invalid_doctor_setting_is_an_error_not_a_default(
     tmp_path: Path, text: str
 ) -> None:
     write_config(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+# [gate]
+
+
+def test_the_gate_limit_defaults_to_thirty_minutes(tmp_path: Path) -> None:
+    assert GATE_TIMEOUT_DEFAULT_MIN == 30
+    assert GATE_TIMEOUT_MAX_MIN == 120
+    assert load_config(tmp_path).gate_timeout_min == GATE_TIMEOUT_DEFAULT_MIN
+    assert Config().gate_timeout_min == GATE_TIMEOUT_DEFAULT_MIN
+    assert gate.COMMAND_TIMEOUT_SEC == GATE_TIMEOUT_DEFAULT_MIN * 60
+
+
+@pytest.mark.parametrize("minutes", [1, 30, 45, 120])
+def test_the_gate_limit_is_read(tmp_path: Path, minutes: int) -> None:
+    write_config(tmp_path, f"[gate]\ntimeout_min = {minutes}\n")
+    assert load_config(tmp_path).gate_timeout_min == minutes
+
+
+def test_the_gate_limit_sits_beside_other_settings(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        "retention_days = 7\n[gate]\ntimeout_min = 40\n[doctor]\ndisk_warn_gb = 20\n",
+    )
+    settings = load_config(tmp_path)
+    assert settings.gate_timeout_min == 40
+    assert settings.retention_days == 7
+    assert settings.disk_warn_gb == 20
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "gate = 1\n",
+        "gate = 30\n",
+        "[gate]\nunknown = 1\n",
+        "[gate]\ntimeout = 30\n",
+        "[gate]\ntimeout_min = 0\n",
+        "[gate]\ntimeout_min = -1\n",
+        "[gate]\ntimeout_min = true\n",
+        "[gate]\ntimeout_min = 1.5\n",
+        "[gate]\ntimeout_min = 30.0\n",
+        '[gate]\ntimeout_min = "30"\n',
+        "[gate]\ntimeout_min = 121\n",
+        "[gate]\ntimeout_min = 1000\n",
+    ],
+)
+def test_an_invalid_gate_limit_is_an_error_not_a_default(
+    tmp_path: Path, text: str
+) -> None:
+    write_config(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_the_upper_bound_is_inclusive_and_one_more_is_refused(tmp_path: Path) -> None:
+    write_config(tmp_path, f"[gate]\ntimeout_min = {GATE_TIMEOUT_MAX_MIN}\n")
+    assert load_config(tmp_path).gate_timeout_min == GATE_TIMEOUT_MAX_MIN
+    write_config(tmp_path, f"[gate]\ntimeout_min = {GATE_TIMEOUT_MAX_MIN + 1}\n")
     with pytest.raises(ConfigError):
         load_config(tmp_path)

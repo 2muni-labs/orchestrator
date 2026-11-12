@@ -71,6 +71,7 @@ def open_pull_request(
     home: Path,
     orch_home: Path,
     resolution: str | None = None,
+    timeout_sec: int | None = None,
 ) -> PullRequestReport:
     """Rebase, test and push a task, then open or update its pull request."""
     task = store.get_task(conn, spec.id)
@@ -131,7 +132,9 @@ def open_pull_request(
     skipped = task.gated_sha is not None and head == task.gated_sha
     detail = None
     if not skipped:
-        detail = gate.run_tests(spec, target, worktree, log_path)
+        detail = gate.run_tests(
+            spec, target, worktree, log_path, timeout_sec=timeout_sec
+        )
         if gitops.rev_parse(worktree, "HEAD") != head:
             detail = "G2 실행 중 커밋이 생겼습니다"
         if detail is None:
@@ -232,6 +235,7 @@ def update_pull_request(
     log_path: Path,
     home: Path,
     orch_home: Path,
+    timeout_sec: int | None = None,
 ) -> UpdateReport:
     """Check an open pull request against the moved default branch, without pushing."""
     task = store.get_task(conn, spec.id)
@@ -262,6 +266,7 @@ def update_pull_request(
             since=task.test_sha,
             main_ref=main_ref,
             log_path=log_path,
+            timeout_sec=timeout_sec,
         )
     finally:
         gitops.reset_to(worktree, task.pushed_sha)

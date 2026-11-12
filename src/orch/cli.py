@@ -712,6 +712,7 @@ def _command(
             log_path=paths.logs / f"{task_id}.gate.log",
             home=home,
             orch_home=orch_home,
+            timeout_sec=settings.gate_timeout_min * 60,
         )
         return (0 if report.passed else 20), {
             "task_id": task_id,
@@ -774,6 +775,7 @@ def _command(
             home=home,
             orch_home=orch_home,
             resolution=args.resolution,
+            timeout_sec=settings.gate_timeout_min * 60,
         )
         if report.state == TaskState.PR_OPEN and report.user_check:
             _send_notification(
@@ -799,6 +801,7 @@ def _command(
             log_path=paths.logs / f"{task_id}.update.log",
             home=home,
             orch_home=orch_home,
+            timeout_sec=settings.gate_timeout_min * 60,
         )
         passed = (
             report.state == TaskState.PR_OPEN

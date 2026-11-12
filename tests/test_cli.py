@@ -22,6 +22,7 @@ from orch import (
     config,
     credentials,
     doctor,
+    gate,
     gc,
     github,
     lifecycle,
@@ -4189,3 +4190,107 @@ def test_open_output_is_redacted(
     assert code == 0, data
     assert TOPIC not in json.dumps(data, ensure_ascii=False)
     assert data["warnings"]
+
+
+# [gate] timeout_min
+
+
+def set_gate_limit(env: Env, minutes: object) -> None:
+    write(config.config_path(env.orch_home), f"[gate]\ntimeout_min = {minutes}\n")
+
+
+def record_gate_limits(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    limits: list[object] = []
+    original = gate.run_command
+
+    def spy(command: str, worktree: Path, log_path: Path, **kwargs: object) -> object:
+        limits.append(kwargs.get("timeout_sec"))
+        return original(command, worktree, log_path, **kwargs)
+
+    monkeypatch.setattr(gate, "run_command", spy)
+    return limits
+
+
+@pytest.mark.usefixtures("target")
+def test_gate_uses_the_configured_limit(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judge(orch, env)
+    set_gate_limit(env, 45)
+    limits = record_gate_limits(monkeypatch)
+    code, data = orch("gate", TASK)
+    assert code == 0, data
+    assert limits
+    assert set(limits) == {45 * 60}
+
+
+@pytest.mark.usefixtures("target")
+def test_gate_uses_thirty_minutes_without_a_setting(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judge(orch, env)
+    limits = record_gate_limits(monkeypatch)
+    code, data = orch("gate", TASK)
+    assert code == 0, data
+    assert limits
+    assert set(limits) == {config.GATE_TIMEOUT_DEFAULT_MIN * 60}
+
+
+@pytest.mark.parametrize("minutes", [0, 121, "true", '"30"'])
+@pytest.mark.usefixtures("target")
+def test_gate_refuses_an_invalid_limit_without_running(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch, minutes: object
+) -> None:
+    judge(orch, env)
+    set_gate_limit(env, minutes)
+    limits = record_gate_limits(monkeypatch)
+    assert_error(orch("gate", TASK, unchecked=True), USAGE, "refused")
+    assert limits == []
+    assert state_of(env) is TaskState.JUDGING
+
+
+@pytest.mark.usefixtures("target")
+def test_pr_passes_the_configured_limit(
+    orch: Call, env: Env, pr_calls: list[dict[str, object]]
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    set_gate_limit(env, 50)
+    code, data = orch("pr", TASK)
+    assert code == 0, data
+    assert pr_calls[1].get("timeout_sec") == 50 * 60
+
+
+@pytest.mark.usefixtures("target")
+def test_pr_passes_the_default_limit_without_a_setting(
+    orch: Call, env: Env, pr_calls: list[dict[str, object]]
+) -> None:
+    make_ready(orch, env)
+    add_token_script(env)
+    code, data = orch("pr", TASK)
+    assert code == 0, data
+    assert pr_calls[1].get("timeout_sec") == config.GATE_TIMEOUT_DEFAULT_MIN * 60
+
+
+@pytest.mark.usefixtures("target")
+def test_update_passes_the_configured_limit(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepare(orch, env)
+    add_token_script(env)
+    set_gate_limit(env, 120)
+    calls: list[dict[str, object]] = []
+
+    def fake(conn: object, spec: object, target: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return UpdateReport(
+            state=TaskState.PR_OPEN,
+            gates=GateReport(
+                passed=True, gates={"G1": GateStatus.PASSED}, log_path="log"
+            ),
+        )
+
+    monkeypatch.setattr(prflow, "update_pull_request", fake)
+    result = orch("update", TASK, unchecked=True)
+    assert result[0] == 0, result
+    assert calls[0].get("timeout_sec") == 120 * 60
