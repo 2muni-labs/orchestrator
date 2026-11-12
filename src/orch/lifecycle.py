@@ -181,7 +181,10 @@ def prepare_task(
             _create_text(saved_path, text)
             saved = True
         exit_code = gate.run_command(
-            target.setup_command, worktree, paths.logs / f"{spec.id}.setup.log"
+            target.setup_command,
+            worktree,
+            paths.logs / f"{spec.id}.setup.log",
+            sandbox=False,
         )
         if exit_code is None or exit_code != 0:
             raise LifecycleError(f"Setup failed: {spec.id} (exit code {exit_code})")

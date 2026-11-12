@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_env import FAKE_SANDBOX_EXEC
 from transitions import check_call
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -135,6 +136,7 @@ class Sandbox:
             "ORCH_FAKE_SCENARIO": "success",
             "ORCH_FAKE_PYTHON": sys.executable,
             "ORCH_FAKE_GH_DIR": str(self.gh_dir),
+            "ORCH_FAKE_SANDBOX_EXEC": str(FAKE_SANDBOX_EXEC),
             "CODEX_HOME": str(self.home / "codex"),
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(self.home / ".gitconfig"),

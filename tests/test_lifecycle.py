@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import gate, github, gitops, results, scheduler, store
+from orch import gate, github, gitops, results, sandbox, scheduler, store
 from orch.config import Limits, Target, TargetPaths, ensure_target
 from orch.github import PullRequestStatus
 from orch.gitops import create_worktree, fetch
@@ -369,6 +369,43 @@ def test_prepare_runs_the_setup_command_in_the_worktree(
     assert not (repo / ".setup-ran").exists()
 
 
+def test_prepare_runs_setup_outside_the_sandbox_with_the_default_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup needs the network (uv sync) and is no gate: no sandbox, no [gate]."""
+    original = gate.run_command
+    seen: list[dict[str, object]] = []
+
+    def spy(*args: object, **kwargs: object) -> int | None:
+        seen.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gate, "run_command", spy)
+    prepare_task(conn, draft, make_target(repo), paths)
+    assert len(seen) == 1
+    assert seen[0].get("sandbox") is False
+    assert seen[0].get("timeout_sec") is None
+
+
+def test_prepare_does_not_need_sandbox_exec(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    draft: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sandbox, "SANDBOX_EXEC", str(tmp_path / "missing" / "sx"))
+    target = make_target(repo, setup_command="touch .setup-ran")
+    prepare_task(conn, draft, target, paths)
+    assert (paths.worktrees / TASK / ".setup-ran").exists()
+    assert state_of(conn) is TaskState.PREPARED
+
+
 def test_prepare_refuses_a_dependency_that_is_not_registered(
     conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
 ) -> None:
@@ -508,7 +545,7 @@ def test_prepare_undoes_everything_when_setup_times_out(
     draft: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gate, "run_command", lambda *args: None)
+    monkeypatch.setattr(gate, "run_command", lambda *args, **kwargs: None)
     with pytest.raises(LifecycleError):
         prepare_task(conn, draft, make_target(repo), paths)
     assert_prepare_left_nothing(conn, repo, paths)
@@ -521,7 +558,7 @@ def test_prepare_undoes_everything_on_an_interrupt(
     draft: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def interrupted(*args: object) -> int:
+    def interrupted(*args: object, **kwargs: object) -> int:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(gate, "run_command", interrupted)

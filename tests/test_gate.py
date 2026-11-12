@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import gate, gitops, store
+from orch import gate, gitops, sandbox, store
 from orch.config import Target
 from orch.gate import (
     GateError,
@@ -1354,3 +1354,111 @@ def test_gate_task_without_a_limit_uses_the_default(
     assert report.failed_gate == "G2"
     assert report.detail is not None
     assert "시간 초과" in report.detail
+
+
+# The sandbox (more in test_sandbox.py)
+
+
+def missing_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox, "SANDBOX_EXEC", str(tmp_path / "missing" / "sx"))
+
+
+def test_run_tests_reports_a_sandbox_failure_and_runs_nothing(
+    tmp_path: Path, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing_sandbox(tmp_path, monkeypatch)
+    spec = make_spec(verify="touch verify_ran")
+    target = make_target(test_command="touch test_ran")
+    failure = run_tests(spec, target, tmp_path, log_path)
+    assert failure is not None
+    assert failure.startswith("샌드박스 실패: ")
+    assert len(failure) <= gate.DETAIL_LIMIT
+    assert not (tmp_path / "test_ran").exists()
+    assert not (tmp_path / "verify_ran").exists()
+
+
+def test_a_sandbox_failure_fails_g2_before_g3(
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_sandbox(tmp_path, monkeypatch)
+    target = make_target(lint_command="touch lint_ran")
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert report.failed_gate == "G2"
+    assert report.gates == {
+        "G1": GateStatus.PASSED,
+        "G2": GateStatus.FAILED,
+        "G3": GateStatus.NOT_RUN,
+    }
+    assert report.detail is not None
+    assert report.detail.startswith("샌드박스 실패: ")
+    assert not (worktree / "lint_ran").exists()
+
+
+def test_a_sandbox_failure_in_g3_is_reported(
+    worktree: Path, test_sha: str, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = sandbox.check
+    checks: list[int] = []
+
+    def third_fails(**kwargs: object) -> None:
+        checks.append(1)
+        if len(checks) == 3:
+            raise sandbox.SandboxError("시작 실패")
+        original(**kwargs)
+
+    monkeypatch.setattr(sandbox, "check", third_fails)
+    target = make_target(lint_command="touch lint_ran")
+    report = gates_on(worktree, test_sha, log_path, make_spec(), target)
+    assert len(checks) == 3
+    assert report.failed_gate == "G3"
+    assert report.gates["G2"] is GateStatus.PASSED
+    assert report.gates["G3"] is GateStatus.FAILED
+    assert report.detail == "샌드박스 실패: 시작 실패"
+    assert not (worktree / "lint_ran").exists()
+
+
+def test_a_sandbox_failure_returns_the_task_to_judging(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "new.py")
+    missing_sandbox(tmp_path, monkeypatch)
+    report = run_flow(conn, log_path)
+    assert report.failed_gate == "G2"
+    assert state_of(conn) is TaskState.JUDGING
+    assert recorded(conn) == {Gate.G1: True, Gate.G2: False}
+    result = [r for r in gate_results(conn, "feat-x", 1) if r.gate is Gate.G2][0]
+    assert result.detail is not None
+    assert result.detail.startswith("샌드박스 실패: ")
+    assert git(worktree, "rev-parse", "HEAD") == test_sha
+
+
+def test_gate_commands_run_through_the_sandbox_by_default(
+    worktree: Path, test_sha: str, log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = sandbox.wrap
+    wrapped: list[list[str]] = []
+
+    def spy(argv: list[str], **kwargs: object) -> list[str]:
+        wrapped.append(list(argv))
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(sandbox, "wrap", spy)
+    spec = make_spec(verify="echo verify")
+    target = make_target(test_command="echo test", lint_command="echo lint")
+    report = gates_on(worktree, test_sha, log_path, spec, target)
+    assert report.passed
+    assert [argv for argv in wrapped if argv[0] == "bash"] == [
+        ["bash", "-c", "echo test"],
+        ["bash", "-c", "echo verify"],
+        ["bash", "-c", "echo lint"],
+    ]
