@@ -12,13 +12,13 @@ from enum import StrEnum
 from pathlib import Path
 
 from orch import gitops, store
-from orch.config import Target
+from orch.config import GATE_TIMEOUT_DEFAULT_MIN, Target
 from orch.lanes.base import child_env
 from orch.models import Gate, Grade, Outcome, TaskState
 from orch.taskfile import TaskSpec
 
 RESULT_FILE = ".orch-result.json"
-COMMAND_TIMEOUT_SEC = 30 * 60
+COMMAND_TIMEOUT_SEC = GATE_TIMEOUT_DEFAULT_MIN * 60
 DETAIL_LIMIT = 500
 TEST_GLOBS = ("tests/**",)
 
@@ -145,7 +145,9 @@ def run_command(
             start_new_session=True,
         )
         try:
-            code = process.wait(timeout=COMMAND_TIMEOUT_SEC)
+            code = process.wait(
+                timeout=COMMAND_TIMEOUT_SEC if timeout_sec is None else timeout_sec
+            )
         except subprocess.TimeoutExpired:
             code = None
         finally:
@@ -178,7 +180,7 @@ def run_tests(
         (target.test_command, spec.tests == "none"),
         (spec.verify, False),
     ):
-        code = run_command(command, worktree, log_path)
+        code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
         if code == 5 and allow_empty:
             continue
         failure = _command_failure(command, code)
@@ -230,7 +232,7 @@ def run_gates(
         return failed("G1", detail)
     gates["G1"] = GateStatus.PASSED
 
-    detail = run_tests(spec, target, worktree, log_path)
+    detail = run_tests(spec, target, worktree, log_path, timeout_sec=timeout_sec)
     if detail is not None:
         return failed("G2", detail)
     gates["G2"] = GateStatus.PASSED
@@ -238,7 +240,9 @@ def run_gates(
     if not target.lint_command.strip():
         gates["G3"] = GateStatus.SKIPPED
     else:
-        code = run_command(target.lint_command, worktree, log_path)
+        code = run_command(
+            target.lint_command, worktree, log_path, timeout_sec=timeout_sec
+        )
         detail = _command_failure(target.lint_command, code)
         if detail is not None:
             return failed("G3", detail)
@@ -291,6 +295,7 @@ def gate_task(
             since=task.test_sha,
             main_ref=main_ref,
             log_path=log_path,
+            timeout_sec=timeout_sec,
         )
         for name in ("G1", "G2", "G3"):
             status = report.gates[name]

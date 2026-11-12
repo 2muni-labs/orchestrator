@@ -436,6 +436,7 @@ def load_config(home: Path) -> Config:
             "agents",
             "usage_limit_patterns",
             "doctor",
+            "gate",
         },
     )
     backend = data.get("terminal_backend", "tmux")
@@ -474,6 +475,12 @@ def load_config(home: Path) -> Config:
     tailscale_path = (
         _absolute_path(doctor["tailscale"]) if "tailscale" in doctor else None
     )
+    gate = _table(data.get("gate", {}), {"timeout_min"})
+    gate_timeout_min = _positive_integer(
+        gate.get("timeout_min", GATE_TIMEOUT_DEFAULT_MIN)
+    )
+    if gate_timeout_min > GATE_TIMEOUT_MAX_MIN:
+        raise ConfigError("gate timeout_min exceeds maximum")
     patterns_data = _table(data.get("usage_limit_patterns", {}), {"codex", "claude"})
     defaults = (
         "usage limit",
@@ -508,4 +515,5 @@ def load_config(home: Path) -> Config:
         disk_warn_gb=disk_warn_gb,
         disk_fail_gb=disk_fail_gb,
         tailscale_path=tailscale_path,
+        gate_timeout_min=gate_timeout_min,
     )
