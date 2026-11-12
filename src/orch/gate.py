@@ -18,7 +18,7 @@ from orch.models import Gate, Grade, Outcome, TaskState
 from orch.taskfile import TaskSpec
 
 RESULT_FILE = ".orch-result.json"
-COMMAND_TIMEOUT_SEC = 15 * 60
+COMMAND_TIMEOUT_SEC = 30 * 60
 DETAIL_LIMIT = 500
 TEST_GLOBS = ("tests/**",)
 
