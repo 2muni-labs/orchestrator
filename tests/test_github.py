@@ -12,6 +12,7 @@ from orch import github
 from orch.github import (
     GitHubError,
     PullRequestStatus,
+    add_label,
     comment_on_pull_request,
     create_pull_request,
     label_exists,
@@ -598,3 +599,81 @@ def test_label_check_refuses_bad_arguments_without_running_gh(
     with pytest.raises(GitHubError):
         label_exists(**values)
     assert gh.calls() == []
+
+
+# Adding a label to an open pull request
+
+
+def add(**options: str) -> None:
+    values = {"url": URL, "name": "review-overridden", "token": TOKEN}
+    values.update(options)
+    add_label(**values)
+
+
+def test_add_label_runs_the_exact_edit_command(gh: FakeGh) -> None:
+    gh.stdout = URL + "\n"
+    gh.write()
+    assert add() is None
+    assert gh.calls() == [["pr", "edit", URL, "--add-label", "review-overridden"]]
+
+
+def test_add_label_never_creates_or_removes_a_label(gh: FakeGh) -> None:
+    add()
+    for call in gh.calls():
+        assert "create" not in call
+        assert "--remove-label" not in call
+        assert "label" not in call[:1]
+
+
+def test_add_label_passes_the_token_only_through_gh_token(gh: FakeGh) -> None:
+    add()
+    assert gh.env()["GH_TOKEN"] == TOKEN
+    assert gh.env()["GH_PROMPT_DISABLED"] == "1"
+    for call in gh.calls():
+        assert not any(TOKEN in arg for arg in call)
+
+
+def test_add_label_raises_without_the_token_when_gh_fails(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"could not add label: {TOKEN}\n"
+    gh.stdout = f"debug {TOKEN}\n"
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        add()
+    assert "could not add label" in str(caught.value)
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+def test_add_label_timeout_hides_the_token(
+    gh: FakeGh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gh.stderr = f"late {TOKEN}\n"
+    gh.sleep = 30
+    gh.write()
+    monkeypatch.setattr(github, "GH_TIMEOUT_SEC", 1)
+    with pytest.raises(GitHubError) as caught:
+        add()
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"name": ""},
+        {"name": "-x"},
+        {"name": "a b"},
+        {"name": "--remove-label"},
+        {"url": ""},
+        {"url": "--help"},
+        {"url": "https://github.com/owner/sample/issues/7"},
+        {"token": ""},
+        {"token": "a b"},
+    ],
+)
+def test_add_label_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError) as caught:
+        add(**options)
+    assert gh.calls() == []
+    assert TOKEN not in error_chain_text(caught.value)

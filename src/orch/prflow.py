@@ -81,6 +81,7 @@ def open_pull_request(
     if not task.worktree or not task.test_sha:
         raise PullRequestFlowError(f"Task needs a worktree and test commit: {spec.id}")
 
+    new_attempt = task.state == TaskState.READY and task.pr_url is not None
     review = None
     if review_path.exists():
         try:
@@ -97,7 +98,7 @@ def open_pull_request(
             check_triage(conn, triage, review, task)
         except ReviewFlowError as exc:
             raise PullRequestFlowError(f"Invalid triage: {spec.id}") from exc
-        if not task.pr_url and not github.label_exists(
+        if (not task.pr_url or new_attempt) and not github.label_exists(
             github=target.github, name=OVERRIDE_LABEL, token=token
         ):
             raise PullRequestFlowError(f"Repository needs label: {OVERRIDE_LABEL}")
@@ -143,6 +144,8 @@ def open_pull_request(
         passed=detail is None,
         detail="skipped" if skipped else detail,
     )
+    if not skipped:
+        gitops.reset_to(worktree, head)
     if detail is not None:
         store.transition(conn, spec.id, task.state, TaskState.JUDGING, actor="orch")
         return PullRequestReport(state=TaskState.JUDGING, detail=detail)
@@ -155,11 +158,31 @@ def open_pull_request(
 
     changed = gitops.changed_paths(worktree, main_ref)
     if task.pr_url:
-        body = (
-            resolution
-            if resolution is not None
-            else "Updated after resolving conflicts."
-        )
+        if new_attempt:
+            if triage is not None:
+                github.add_label(url=task.pr_url, name=OVERRIDE_LABEL, token=token)
+            first_line = (
+                resolution
+                if resolution is not None
+                else f"Updated after attempt {task.attempt}."
+            )
+            body = (
+                first_line
+                + "\n\n"
+                + build_body(
+                    task,
+                    changed=changed,
+                    gates=store.gate_results(conn, spec.id, task.attempt),
+                    review=review,
+                    triage=triage,
+                )
+            )
+        else:
+            body = (
+                resolution
+                if resolution is not None
+                else "Updated after resolving conflicts."
+            )
         github.comment_on_pull_request(
             url=task.pr_url,
             body=f"{body}\n\nCommit: `{head}`",
