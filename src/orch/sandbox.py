@@ -1,9 +1,11 @@
 """The macOS sandbox-exec profile that gate commands run under.
 
-The profile was fixed by measurement on macOS 15.8.1 (24H32) on 2026-11-12: the full
-test suite passes under it with no skipped tests, and it blocks the network, writes
-outside the worktree and the per-command TMPDIR, reads of credential paths and the
-keychain. Measure again after a macOS update (execution design, chapter 6).
+The profile was fixed by measurement on macOS 15.8.1 (24H32) on 2026-11-12 and
+extended on 2026-11-13. It blocks the network, writes outside the worktree and the
+per-command TMPDIR, writes to the worktree's .git file and .venv, reads of
+credential paths and the keychain, and starting processes outside the sandbox
+through launchd, LaunchServices or AppleEvents. The full test suite passes under it.
+Measure again after a macOS update (execution design, chapter 6).
 """
 
 import os
@@ -52,6 +54,52 @@ PROFILE = """\
   (global-name "com.apple.trustd.agent"))
 
 (allow process-exec (literal "/bin/ps") (with no-sandbox))
+
+(deny file-write*
+  (literal (string-append (param "WORKTREE") "/.git"))
+  (subpath (string-append (param "WORKTREE") "/.venv")))
+
+(deny file-read* file-write*
+  (literal (string-append (param "HOME") "/.git-credentials"))
+  (subpath (string-append (param "HOME") "/.config/git/credentials"))
+  (literal (string-append (param "HOME") "/.netrc"))
+  (subpath (string-append (param "HOME") "/.aws"))
+  (subpath (string-append (param "HOME") "/.docker"))
+  (literal (string-append (param "HOME") "/.npmrc"))
+  (literal (string-append (param "HOME") "/.pypirc"))
+  (subpath (string-append (param "HOME") "/.kube"))
+  (subpath (string-append (param "HOME") "/.gnupg"))
+  (subpath (string-append (param "HOME") "/.config/gcloud"))
+  (subpath (string-append (param "HOME") "/.azure"))
+  (subpath (string-append (param "HOME") "/.config/hub"))
+  (subpath (string-append (param "HOME") "/.config/glab-cli"))
+  (subpath (string-append (param "HOME") "/.cargo/credentials"))
+  (literal (string-append (param "HOME") "/.cargo/credentials.toml"))
+  (literal (string-append (param "HOME") "/.gem/credentials"))
+  (subpath (string-append (param "HOME") "/.terraform.d"))
+  (literal (string-append (param "HOME") "/.vault-token"))
+  (literal (string-append (param "HOME") "/.pgpass"))
+  (literal (string-append (param "HOME") "/.boto"))
+  (literal (string-append (param "HOME") "/.s3cfg"))
+  (subpath (string-append (param "HOME") "/.password-store"))
+  (subpath (string-append (param "HOME") "/.config/op"))
+  (subpath (string-append (param "HOME") "/.huggingface"))
+  (subpath (string-append (param "HOME") "/.cache/huggingface")))
+
+(deny appleevent-send)
+
+(deny mach-lookup
+  (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.coreservices.quarantine-resolver")
+  (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.lsd.modifydb")
+  (global-name "com.apple.lsd.open")
+  (global-name "com.apple.lsd.xpc"))
+
+(deny process-exec
+  (literal "/usr/bin/open")
+  (literal "/usr/bin/osascript")
+  (literal "/bin/launchctl"))
 """
 
 

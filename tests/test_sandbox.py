@@ -487,6 +487,31 @@ SECRET_PATHS = [
     ".codex/auth.json",
     ".claude/settings.json",
     ".claude.json",
+    ".git-credentials",
+    ".config/git/credentials",
+    ".netrc",
+    ".aws/credentials",
+    ".docker/config.json",
+    ".npmrc",
+    ".pypirc",
+    ".kube/config",
+    ".gnupg/private-keys-v1.d/key",
+    ".config/gcloud/credentials.db",
+    ".azure/msal_token_cache.json",
+    ".config/hub",
+    ".config/glab-cli/config.yml",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".gem/credentials",
+    ".terraform.d/credentials.tfrc.json",
+    ".vault-token",
+    ".pgpass",
+    ".boto",
+    ".s3cfg",
+    ".password-store/site.gpg",
+    ".config/op/config",
+    ".huggingface/token",
+    ".cache/huggingface/token",
 ]
 
 
@@ -616,6 +641,113 @@ def test_a_real_sandboxed_command_keeps_process_group_signals(
         'raise SystemExit(0 if p.wait() == -15 else 1)"'
     )
     assert gate.run_command(command, worktree, log_path) == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["echo x >> .git", "mv .git moved", "rm .git", "touch .venv/probe"],
+)
+@pytest.mark.usefixtures("real_sandbox")
+def test_a_real_sandboxed_command_cannot_change_the_git_file_or_venv(
+    linked_worktree: tuple[Path, Path], log_path: Path, command: str
+) -> None:
+    """orch runs git through the .git file outside the sandbox, and later commands
+    run code from .venv."""
+    _, linked = linked_worktree
+    original = (linked / ".git").read_bytes()
+    (linked / ".venv").mkdir()
+    assert gate.run_command(command, linked, log_path) != 0
+    assert (linked / ".git").read_bytes() == original
+    assert not (linked / ".venv" / "probe").exists()
+    assert not (linked / "moved").exists()
+
+
+@pytest.mark.usefixtures("real_sandbox")
+def test_a_real_sandboxed_command_reads_the_venv(
+    linked_worktree: tuple[Path, Path], log_path: Path
+) -> None:
+    _, linked = linked_worktree
+    (linked / ".venv").mkdir()
+    (linked / ".venv" / "marker.txt").write_text("venv\n", encoding="utf-8")
+    command = "cat .venv/marker.txt > copy.txt"
+    assert gate.run_command(command, linked, log_path) == 0
+    assert (linked / "copy.txt").read_text(encoding="utf-8") == "venv\n"
+
+
+SPAWN_TOOLS = [
+    "/usr/bin/open -h",
+    "/usr/bin/osascript -e 'return 1'",
+    "/bin/launchctl list",
+]
+
+
+@pytest.mark.parametrize("command", SPAWN_TOOLS)
+@pytest.mark.usefixtures("real_sandbox")
+def test_a_real_sandboxed_command_cannot_exec_the_spawn_tools(
+    worktree: Path, log_path: Path, command: str
+) -> None:
+    """These start processes outside the sandbox through launchd or LaunchServices.
+    The arguments do nothing harmful in case the denial ever stops working."""
+    assert gate.run_command(command, worktree, log_path) == 126
+
+
+LOOKUP = """\
+import ctypes, sys
+libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+port = ctypes.c_uint.in_dll(libc, "bootstrap_port")
+out = ctypes.c_uint(0)
+print(libc.bootstrap_look_up(port, sys.argv[1].encode(), ctypes.byref(out)))
+"""
+BOOTSTRAP_NOT_PRIVILEGED = 1100
+LAUNCH_SERVICES = [
+    "com.apple.coreservices.launchservicesd",
+    "com.apple.coreservices.quarantine-resolver",
+    "com.apple.lsd.mapdb",
+    "com.apple.lsd.modifydb",
+    "com.apple.lsd.open",
+    "com.apple.lsd.xpc",
+]
+
+
+def look_up(worktree: Path, log_path: Path, name: str, *, sandboxed: bool) -> int:
+    """Return bootstrap_look_up's code for a service, asked from a gate command."""
+    script = worktree / "lookup.py"
+    script.write_text(LOOKUP, encoding="utf-8")
+    command = f"{sys.executable} -I lookup.py {name} > code.txt"
+    assert gate.run_command(command, worktree, log_path, sandbox=sandboxed) == 0
+    return int((worktree / "code.txt").read_text(encoding="utf-8"))
+
+
+@pytest.mark.usefixtures("real_sandbox")
+def test_the_lookup_probe_reaches_launch_services_outside_the_sandbox(
+    worktree: Path, log_path: Path
+) -> None:
+    name = "com.apple.coreservices.launchservicesd"
+    assert look_up(worktree, log_path, name, sandboxed=False) == 0
+
+
+@pytest.mark.usefixtures("real_sandbox")
+def test_a_real_sandboxed_command_still_looks_up_other_services(
+    worktree: Path, log_path: Path
+) -> None:
+    name = "com.apple.system.notification_center"
+    assert look_up(worktree, log_path, name, sandboxed=True) == 0
+
+
+@pytest.mark.parametrize("name", LAUNCH_SERVICES)
+@pytest.mark.usefixtures("real_sandbox")
+def test_a_real_sandboxed_command_cannot_reach_launch_services(
+    worktree: Path, log_path: Path, name: str
+) -> None:
+    """Calling LSOpen directly needs these services, so it fails without the tool."""
+    code = look_up(worktree, log_path, name, sandboxed=True)
+    assert code == BOOTSTRAP_NOT_PRIVILEGED
+
+
+def test_the_profile_denies_sending_apple_events() -> None:
+    """AppleEvents to an app are not provable end to end: privacy consent stops the
+    unsandboxed control too. The rule itself is pinned here."""
+    assert "(deny appleevent-send)" in sandbox.PROFILE
 
 
 def test_sandbox_env_reports_this_process() -> None:
