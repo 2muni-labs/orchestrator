@@ -6,6 +6,8 @@ outside the worktree and the per-command TMPDIR, reads of credential paths and t
 keychain. Measure again after a macOS update (execution design, chapter 6).
 """
 
+import os
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -59,7 +61,10 @@ class SandboxError(Exception):
 
 def executable(environ: Mapping[str, str] | None = None) -> str:
     """Return sandbox-exec's path; fake agent mode may name a stand-in."""
-    raise NotImplementedError
+    env = os.environ if environ is None else environ
+    if env.get("ORCH_FAKE_AGENTS") == "1" and env.get(FAKE_ENV):
+        return env[FAKE_ENV]
+    return SANDBOX_EXEC
 
 
 def wrap(
@@ -71,9 +76,44 @@ def wrap(
     home: Path,
 ) -> list[str]:
     """Return argv run under the profile, with resolved paths as its parameters."""
-    raise NotImplementedError
+    return [
+        executable,
+        "-p",
+        PROFILE,
+        "-D",
+        f"WORKTREE={worktree.resolve()}",
+        "-D",
+        f"TMPDIR={tmpdir.resolve()}",
+        "-D",
+        f"HOME={home.resolve()}",
+        *argv,
+    ]
 
 
 def check(*, executable: str, worktree: Path, tmpdir: Path, home: Path) -> None:
     """Start the profile once on a no-op command; raise SandboxError if it cannot."""
-    raise NotImplementedError
+    argv = wrap(
+        [CHECK_COMMAND],
+        executable=executable,
+        worktree=worktree,
+        tmpdir=tmpdir,
+        home=home,
+    )
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=CHECK_TIMEOUT_SEC,
+        )
+    except OSError as exc:
+        detail = str(exc).splitlines()[0]
+        raise SandboxError(f"샌드박스 실행 불가: {detail}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxError(f"샌드박스 점검 시간 초과: {CHECK_TIMEOUT_SEC}초") from exc
+    if result.returncode != 0:
+        lines = result.stderr.splitlines()
+        detail = f": {lines[0]}" if lines else ""
+        raise SandboxError(f"샌드박스 점검 종료 코드 {result.returncode}{detail}")

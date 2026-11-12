@@ -3,15 +3,18 @@
 import json
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import subprocess
+import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
 from orch import gitops, store
+from orch import sandbox as gate_sandbox
 from orch.config import GATE_TIMEOUT_DEFAULT_MIN, Target
 from orch.lanes.base import child_env
 from orch.models import Gate, Grade, Outcome, TaskState
@@ -140,32 +143,54 @@ def run_command(
     With sandbox (the default) the command runs under sandbox.PROFILE with a new
     TMPDIR, after a start check that raises sandbox.SandboxError on failure.
     """
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"$ {command}\n")
-        log.flush()
-        process = subprocess.Popen(
-            ["bash", "-c", command],
-            cwd=worktree,
-            env=child_env(os.environ),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            code = process.wait(
-                timeout=COMMAND_TIMEOUT_SEC if timeout_sec is None else timeout_sec
+    tmpdir = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"$ {command}\n")
+            log.flush()
+            argv = ["bash", "-c", command]
+            env = child_env(os.environ)
+            if sandbox:
+                tmpdir = Path(tempfile.mkdtemp(prefix="orch-gate-")).resolve()
+                home = Path.home().resolve()
+                exe = gate_sandbox.executable()
+                try:
+                    gate_sandbox.check(
+                        executable=exe, worktree=worktree, tmpdir=tmpdir, home=home
+                    )
+                except gate_sandbox.SandboxError as exc:
+                    log.write(f"샌드박스 실패: {exc}\n")
+                    raise
+                env["TMPDIR"] = str(tmpdir)
+                argv = gate_sandbox.wrap(
+                    argv, executable=exe, worktree=worktree, tmpdir=tmpdir, home=home
+                )
+            process = subprocess.Popen(
+                argv,
+                cwd=worktree,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError, PermissionError:
-                pass
-            process.wait()
-        return code
+                code = process.wait(
+                    timeout=COMMAND_TIMEOUT_SEC if timeout_sec is None else timeout_sec
+                )
+            except subprocess.TimeoutExpired:
+                code = None
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError, PermissionError:
+                    pass
+                process.wait()
+            return code
+    finally:
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir)
 
 
 def _command_failure(command: str, code: int | None) -> str | None:
@@ -189,7 +214,10 @@ def run_tests(
         (target.test_command, spec.tests == "none"),
         (spec.verify, False),
     ):
-        code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
+        try:
+            code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
+        except gate_sandbox.SandboxError as exc:
+            return f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
         if code == 5 and allow_empty:
             continue
         failure = _command_failure(command, code)
@@ -249,9 +277,12 @@ def run_gates(
     if not target.lint_command.strip():
         gates["G3"] = GateStatus.SKIPPED
     else:
-        code = run_command(
-            target.lint_command, worktree, log_path, timeout_sec=timeout_sec
-        )
+        try:
+            code = run_command(
+                target.lint_command, worktree, log_path, timeout_sec=timeout_sec
+            )
+        except gate_sandbox.SandboxError as exc:
+            return failed("G3", f"샌드박스 실패: {exc}"[:DETAIL_LIMIT])
         detail = _command_failure(target.lint_command, code)
         if detail is not None:
             return failed("G3", detail)
