@@ -177,6 +177,11 @@ def create_pull_request(
     return url
 
 
+def add_label(*, url: str, name: str, token: str) -> None:
+    """Add an existing label to a pull request. The label is never created here."""
+    raise NotImplementedError
+
+
 def comment_on_pull_request(
     *,
     url: str,

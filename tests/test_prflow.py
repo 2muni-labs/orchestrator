@@ -256,6 +256,9 @@ class FakeGitHub:
         self.label_calls: list[dict[str, object]] = []
         self.create_error: Exception | None = None
         self.comment_error: Exception | None = None
+        self.added: list[dict[str, object]] = []
+        self.add_error: Exception | None = None
+        monkeypatch.setattr(github, "add_label", self.add_label)
         monkeypatch.setattr(github, "create_pull_request", self.create)
         monkeypatch.setattr(github, "comment_on_pull_request", self.comment)
         monkeypatch.setattr(github, "pull_request_status", self.status)
@@ -264,6 +267,11 @@ class FakeGitHub:
     def label_exists(self, **options: object) -> bool:
         self.label_calls.append(options)
         return self.label_present
+
+    def add_label(self, **options: object) -> None:
+        self.added.append(options)
+        if self.add_error is not None:
+            raise self.add_error
 
     def create(self, **options: object) -> str:
         self.created.append(options)
@@ -858,6 +866,7 @@ def test_an_overridden_block_is_marked_at_the_top_and_labeled(
     assert "(insufficient_tests): The code is right" in body
     assert "Verdict: BLOCK" in body
     assert list(created["labels"]) == ["review-overridden"]
+    assert hub.added == []
     assert hub.label_calls == [
         {"github": "owner/sample", "name": "review-overridden", "token": TOKEN}
     ]
@@ -1016,6 +1025,8 @@ def test_reopening_after_a_conflict_needs_no_label_check(
     assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
     assert hub.created == []
     assert hub.label_calls == []
+    assert hub.added == []
+    assert "Updated after attempt" not in str(hub.comments[0]["body"])
 
 
 def test_the_review_flag_requires_a_saved_review(
@@ -2227,3 +2238,418 @@ def test_a_conflict_or_failed_gate_is_never_a_user_check(
     )
     assert conflicted.state is TaskState.CONFLICT
     assert conflicted.user_check is False
+
+
+# Returning the worktree to its commit after the pre-PR gate
+
+
+def porcelain(worktree: Path) -> str:
+    return git(worktree, "status", "--porcelain")
+
+
+LITTER = "echo x > stray.py; echo changed > src/app.py"
+
+
+def test_a_failing_pre_pr_gate_leaves_a_clean_worktree(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    target = make_target(repo, test_command=f"{LITTER}; exit 1")
+    assert open_pr(conn, repo, tmp_path, target=target).state is TaskState.JUDGING
+    assert git(worktree, "rev-parse", "HEAD") == implemented
+    assert porcelain(worktree) == ""
+    assert not (worktree / "stray.py").exists()
+    assert (worktree / "src" / "app.py").read_text(encoding="utf-8") == "task\n"
+
+
+def test_a_passing_pre_pr_gate_leaves_a_clean_worktree(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    target = make_target(repo, test_command=LITTER)
+    assert open_pr(conn, repo, tmp_path, target=target).state is TaskState.PR_OPEN
+    assert remote_tip(remote) == implemented
+    assert git(worktree, "rev-parse", "HEAD") == implemented
+    assert porcelain(worktree) == ""
+
+
+def test_a_commit_made_during_the_pre_pr_gate_is_discarded(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    sneak = (
+        "echo x > outside.py; git add outside.py; "
+        "git -c user.name=t -c user.email=t@example.com commit -qm sneak"
+    )
+    report = open_pr(conn, repo, tmp_path, target=make_target(repo, test_command=sneak))
+    assert report.state is TaskState.JUDGING
+    assert report.detail == "G2 실행 중 커밋이 생겼습니다"
+    assert git(worktree, "rev-parse", "HEAD") == implemented
+    assert not (worktree / "outside.py").exists()
+    assert porcelain(worktree) == ""
+    assert remote_tip(remote) is None
+
+
+def test_a_skipped_pre_pr_gate_does_not_reset(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resets: list[tuple[object, ...]] = []
+    original = prflow.gitops.reset_to
+
+    def spy(*args: object) -> None:
+        resets.append(args)
+        original(*args)
+
+    monkeypatch.setattr(prflow.gitops, "reset_to", spy)
+    add_ready_task(conn, worktree, test_sha, gated_sha=implemented)
+    assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail == "skipped"
+    assert resets == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("exit 1", ["record", "reset", "transition"]),
+        ("true", ["record", "reset", "push", "transition"]),
+    ],
+)
+def test_the_pre_pr_gate_is_recorded_then_reset_then_acted_on(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    expected: list[str],
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    order: list[str] = []
+
+    def wrap(module: object, name: str, label: str, *, only_pre_pr: bool = False):
+        original = getattr(module, name)
+
+        def spy(*args: object, **kwargs: object) -> object:
+            if not only_pre_pr or Gate.G2_PRE_PR in args:
+                order.append(label)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, spy)
+
+    wrap(store, "record_gate_result", "record", only_pre_pr=True)
+    wrap(prflow.gitops, "reset_to", "reset")
+    wrap(prflow.gitops, "push_task_branch", "push")
+    wrap(store, "transition", "transition")
+    open_pr(conn, repo, tmp_path, target=make_target(repo, test_command=command))
+    assert order == expected
+
+
+def test_a_failed_reset_after_a_failing_gate_keeps_the_state_and_can_be_rerun(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    original = prflow.gitops.reset_to
+    broken = {"on": True}
+
+    def reset(*args: object) -> None:
+        if broken["on"]:
+            raise GitError("reset failed")
+        original(*args)
+
+    monkeypatch.setattr(prflow.gitops, "reset_to", reset)
+    failing = make_target(repo, test_command="exit 1")
+    with pytest.raises(GitError, match="reset failed"):
+        open_pr(conn, repo, tmp_path, target=failing)
+    assert task_of(conn).state is TaskState.READY
+    assert events_of(conn) == []
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is False
+    assert remote_tip(remote) is None
+    assert hub.created == []
+    broken["on"] = False
+    report = open_pr(conn, repo, tmp_path, target=failing)
+    assert report.state is TaskState.JUDGING
+    assert events_of(conn) == [("ready", "judging")]
+
+
+def test_a_failed_reset_after_a_passing_gate_keeps_the_state_and_can_be_rerun(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    original = prflow.gitops.reset_to
+    broken = {"on": True}
+
+    def reset(*args: object) -> None:
+        if broken["on"]:
+            raise GitError("reset failed")
+        original(*args)
+
+    monkeypatch.setattr(prflow.gitops, "reset_to", reset)
+    with pytest.raises(GitError, match="reset failed"):
+        open_pr(conn, repo, tmp_path)
+    task = task_of(conn)
+    assert task.state is TaskState.READY
+    assert task.gated_sha == implemented
+    assert task.pushed_sha is None
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is True
+    assert remote_tip(remote) is None
+    assert hub.created == []
+    broken["on"] = False
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail == "skipped"
+    assert remote_tip(remote) == implemented
+
+
+def test_a_failing_pre_pr_gate_after_main_moved_keeps_the_rebased_commits(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, base_sha=git(repo, "rev-parse", "HEAD"))
+    new_main = move_main(repo)
+    failing = make_target(repo, test_command="exit 1")
+    assert open_pr(conn, repo, tmp_path, target=failing).state is TaskState.JUDGING
+    task = task_of(conn)
+    assert task.base_sha == new_main
+    commits = git(worktree, "rev-list", "--reverse", f"{new_main}..HEAD").split()
+    assert len(commits) == 2
+    assert task.test_sha == commits[0]
+    assert task.test_sha != test_sha
+    assert git(worktree, "rev-parse", "HEAD") == commits[1]
+    assert porcelain(worktree) == ""
+
+
+# A new attempt on an open pull request
+
+
+@pytest.fixture
+def reopened(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> str:
+    """An open pull request back in ready with a new, unpushed commit."""
+    return_to_ready(conn, repo, worktree, tmp_path)
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != opened
+    assert task_of(conn).pushed_sha == opened
+    hub.comments.clear()
+    hub.label_calls.clear()
+    return head
+
+
+def test_a_new_override_on_an_open_pull_request_adds_the_label(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    save_block(conn, tmp_path, TRIAGE)
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert report.pr_url == URL
+    assert report.user_check is True
+    assert remote_tip(remote) == reopened
+    assert len(hub.created) == 1
+    assert hub.label_calls == [
+        {"github": "owner/sample", "name": "review-overridden", "token": TOKEN}
+    ]
+    assert hub.added == [{"url": URL, "name": "review-overridden", "token": TOKEN}]
+    assert len(hub.comments) == 1
+    body = str(hub.comments[0]["body"])
+    assert body.startswith("Updated after attempt 1.\n\n")
+    assert "## Review BLOCK overridden" in body
+    assert "Follow-up task: `feat-x-tests`" in body
+    assert "Verdict: BLOCK" in body
+    assert "## Gates" in body
+    assert "G2_PRE_PR: passed" in body
+    assert body.rstrip().endswith(f"Commit: `{reopened}`")
+    assert events_of(conn)[-1] == ("ready", "pr_open")
+
+
+def test_a_missing_label_stops_a_new_override_before_rebase_and_push(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    save_block(conn, tmp_path, TRIAGE)
+    move_main(repo)
+    hub.label_present = False
+    with pytest.raises(PullRequestFlowError, match="review-overridden"):
+        open_pr(conn, repo, tmp_path)
+    task = task_of(conn)
+    assert task.state is TaskState.READY
+    assert task.pushed_sha == opened
+    assert remote_tip(remote) == opened
+    assert git(worktree, "rev-parse", "HEAD") == reopened
+    assert hub.added == []
+    assert hub.comments == []
+
+
+@pytest.mark.parametrize(
+    "triage", [None, "not a triage\n", TRIAGE.replace("feat-x-tests", "feat-none")]
+)
+def test_a_new_block_without_a_good_triage_is_refused_on_an_open_pull_request(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    triage: str | None,
+) -> None:
+    save_block(conn, tmp_path, triage)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path)
+    assert task_of(conn).state is TaskState.READY
+    assert remote_tip(remote) == opened
+    assert git(worktree, "rev-parse", "HEAD") == reopened
+    assert hub.added == []
+    assert hub.comments == []
+
+
+def test_a_failed_label_add_keeps_the_push_and_a_rerun_finishes(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_block(conn, tmp_path, TRIAGE)
+    hub.add_error = GitHubError("pr edit: failed")
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path)
+    task = task_of(conn)
+    assert task.state is TaskState.READY
+    assert task.pushed_sha == reopened
+    assert remote_tip(remote) == reopened
+    assert len(hub.added) == 1
+    assert hub.comments == []
+
+    hub.add_error = None
+    runs: list[object] = []
+    leases: list[tuple[object, ...]] = []
+    original_update = prflow.gitops.update_task_branch
+
+    def run_tests(*args: object, **kwargs: object) -> str | None:
+        runs.append(args)
+        return None
+
+    def update(*args: object, **kwargs: object) -> str:
+        leases.append(args)
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(prflow.gate, "run_tests", run_tests)
+    monkeypatch.setattr(prflow.gitops, "update_task_branch", update)
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert runs == []
+    assert gates_of(conn)[Gate.G2_PRE_PR].detail == "skipped"
+    assert [args[2] for args in leases] == [reopened]
+    assert remote_tip(remote) == reopened
+    assert task_of(conn).pushed_sha == reopened
+    assert len(hub.added) == 2
+    assert hub.added[1] == {"url": URL, "name": "review-overridden", "token": TOKEN}
+    assert len(hub.comments) == 1
+    assert "## Review BLOCK overridden" in str(hub.comments[0]["body"])
+    assert len(hub.created) == 1
+
+
+def test_a_passing_new_attempt_keeps_the_label_and_names_the_attempt(
+    conn: sqlite3.Connection,
+    repo: Path,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    store.update_task(conn, TASK, attempt=2)
+    write_review(tmp_path / "reviews" / "feat-x.json", make_review())
+    hub.label_present = False
+    assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
+    assert hub.label_calls == []
+    assert hub.added == []
+    body = str(hub.comments[0]["body"])
+    assert body.startswith("Updated after attempt 2.\n\n")
+    assert "overridden" not in body
+    assert "Verdict: PASS" in body
+
+
+def test_github_has_no_way_to_remove_a_label() -> None:
+    assert not [name for name in dir(github) if "remove" in name.lower()]
+
+
+def test_a_resolution_replaces_the_first_line_of_a_new_attempt_comment(
+    conn: sqlite3.Connection,
+    repo: Path,
+    reopened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    open_pr(conn, repo, tmp_path, resolution="Retried after a flaky test.")
+    body = str(hub.comments[0]["body"])
+    assert body.startswith("Retried after a flaky test.\n\n## Summary")
+    assert "Updated after attempt" not in body
