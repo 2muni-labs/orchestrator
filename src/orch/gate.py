@@ -128,9 +128,18 @@ def check_scope(
 
 
 def run_command(
-    command: str, worktree: Path, log_path: Path, *, timeout_sec: int | None = None
+    command: str,
+    worktree: Path,
+    log_path: Path,
+    *,
+    timeout_sec: int | None = None,
+    sandbox: bool = True,
 ) -> int | None:
-    """Run a shell command in its own group, logging output. None means a timeout."""
+    """Run a shell command in its own group, logging output. None means a timeout.
+
+    With sandbox (the default) the command runs under sandbox.PROFILE with a new
+    TMPDIR, after a start check that raises sandbox.SandboxError on failure.
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"$ {command}\n")

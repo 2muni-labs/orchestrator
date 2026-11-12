@@ -1,0 +1,9 @@
+#!/bin/bash
+# A stand-in for sandbox-exec in tests: drop the profile arguments and run the command.
+while [ $# -gt 0 ]; do
+  case $1 in
+    -p | -f | -D) shift 2 ;;
+    *) break ;;
+  esac
+done
+exec "$@"
