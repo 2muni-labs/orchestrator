@@ -54,8 +54,11 @@ scripts/gate.sh    manual gates G1 to G3, a fallback until M16
 scripts/run-sub.sh manual sub-agent runner, a fallback until M16
 scripts/guard_regress.py  guard false-positive check over local transcripts, kept after M16
 targets.toml       registered targets, with home-relative paths only
-.claude/agents/    read-only sub-agent definitions
+.claude/agents/    read-only sub-agent definitions, until M16 switches to config/agents/
 config/settings.json  hooks and deny rules that orch open injects
+config/main.md     main agent rules that orch open injects, from M16
+config/agents/     read-only sub-agent definitions that orch open injects, from M16
+config/subagent.md implementation sub-agent rules that orch run adds to the prompt, from M16
 
 ~/.orch/orchestrator/   runtime data, never committed
   tasks/<id>.md         task specs
