@@ -1679,3 +1679,69 @@ def test_the_runner_writes_nothing_when_kill_recorded_without_a_file(
     assert result.summary == runner.KILL_SUMMARY
     assert not (paths.results / f"{TASK}.json").exists()
     assert events_of(conn).count(("running", "judging")) == 1
+
+
+# Hub sub-agent rules (M16)
+
+
+@pytest.mark.parametrize("hub", ["unset", "relative", "empty", "rules-only"])
+def test_a_run_without_the_hub_files_does_not_start(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+    hub: str,
+) -> None:
+    environ = make_env(home, "success")
+    del environ["ORCH_FAKE_AGENTS"]
+    if hub == "unset":
+        del environ["ORCH_HUB"]
+    elif hub == "relative":
+        environ["ORCH_HUB"] = "hub"
+    else:
+        root = tmp_path / "bare-hub"
+        root.mkdir()
+        if hub == "rules-only":
+            (root / "config").mkdir()
+            (root / "config" / "subagent.md").write_text("rules\n", encoding="utf-8")
+        environ["ORCH_HUB"] = str(root)
+    with pytest.raises(RunError):
+        run_task(
+            conn,
+            TASK,
+            target=make_target(repo),
+            config=make_config(),
+            paths=paths,
+            environ=environ,
+        )
+    assert task_of(conn).state is TaskState.RESERVED
+    assert latest_run(conn, TASK) is None
+    assert not list(paths.logs.glob(f"{TASK}.*.log")) if paths.logs.exists() else True
+
+
+def test_a_fake_run_sends_the_hub_rules_to_the_agent(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    captured: dict[str, str] = {}
+    real_popen = runner.subprocess.Popen
+
+    def spy(*args: object, **kwargs: object) -> object:
+        stdin = kwargs.get("stdin")
+        if hasattr(stdin, "read"):
+            data = stdin.read()  # type: ignore[union-attr]
+            stdin.seek(0)  # type: ignore[union-attr]
+            captured["prompt"] = data.decode("utf-8")
+        return real_popen(*args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(runner.subprocess, "Popen", spy)
+        run(conn, repo, paths, home, "success")
+    rules = (HUB / "config" / "subagent.md").read_text(encoding="utf-8")
+    schema = (HUB / "schemas" / "result.json").read_text(encoding="utf-8")
+    assert captured["prompt"].endswith(rules + "\nResult schema:\n" + schema)

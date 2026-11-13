@@ -9,6 +9,7 @@ from orch.lanes.base import (
     LaneError,
     build_prompt,
     child_env,
+    load_hub_rules,
     resolve_agent,
     tail_hits_limit,
 )
@@ -52,7 +53,12 @@ def build_command(
         argv=argv,
         cwd=worktree,
         env=child_env(environ),
-        stdin_text=build_prompt(spec_text, task_id=spec.id, log_label=log_label),
+        stdin_text=build_prompt(
+            spec_text,
+            task_id=spec.id,
+            log_label=log_label,
+            hub_rules=load_hub_rules(environ),
+        ),
     )
 
 

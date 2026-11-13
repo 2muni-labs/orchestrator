@@ -151,6 +151,9 @@ class Sandbox:
         for path in (self.home, self.gh_dir, self.drafts, self.hub / "tests"):
             path.mkdir(parents=True)
         (self.hub / "tests" / "fake_agents").symlink_to(FAKE_AGENTS)
+        for part in (("config", "subagent.md"), ("schemas", "result.json")):
+            (self.hub / part[0]).mkdir(exist_ok=True)
+            (self.hub / part[0] / part[1]).symlink_to(REPO_ROOT.joinpath(*part))
         (self.home / ".gitconfig").write_text(
             "[user]\n\tname = t\n\temail = t@example.com\n"
             "[init]\n\tdefaultBranch = main\n",

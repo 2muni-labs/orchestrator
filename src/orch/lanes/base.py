@@ -48,16 +48,48 @@ def child_env(environ: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def build_prompt(spec_text: str, *, task_id: str, log_label: str) -> str:
-    """Return the task spec followed by the common rules."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HubRules:
+    """The hub files added to every implementation prompt."""
+
+    rules: str
+    result_schema: str
+
+
+def load_hub_rules(environ: Mapping[str, str]) -> HubRules:
+    """Read config/subagent.md and schemas/result.json from ORCH_HUB."""
+    hub_value = environ.get("ORCH_HUB")
+    if not hub_value or not Path(hub_value).is_absolute():
+        raise LaneError("Hub rules require an absolute ORCH_HUB")
+    hub = Path(hub_value)
+    try:
+        rules = (hub / "config" / "subagent.md").read_text(encoding="utf-8", newline="")
+        result_schema = (hub / "schemas" / "result.json").read_text(
+            encoding="utf-8", newline=""
+        )
+    except (OSError, UnicodeError) as exc:
+        raise LaneError("Cannot read hub rules and result schema as UTF-8") from exc
+    if not rules.strip() or not result_schema.strip():
+        raise LaneError("Hub rules and result schema must not be blank")
+    return HubRules(rules=rules, result_schema=result_schema)
+
+
+def build_prompt(
+    spec_text: str, *, task_id: str, log_label: str, hub_rules: HubRules
+) -> str:
+    """Return the task spec, the common rules and the hub files."""
     return (
         spec_text
         + "\n\nCommon rules:\n"
-        + f"Write {RESULT_FILE} in the worktree root, conforming to "
-        "schemas/result.json.\n"
+        + f"Write {RESULT_FILE} in the worktree root, conforming to the result "
+        "schema below.\n"
         + f"Set task_id to {task_id!r} and log_path to {log_label!r}.\n"
-        "Do not run git commit. Do not run commands in the background.\n"
-        "Do not modify files under tests/.\n"
+        + "Do not run git commit. Do not run commands in the background.\n"
+        + "Do not modify files under tests/.\n"
+        + "\n"
+        + hub_rules.rules
+        + "\nResult schema:\n"
+        + hub_rules.result_schema
     )
 
 

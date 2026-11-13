@@ -9,7 +9,7 @@ import pytest
 from orch import lanes
 from orch.config import Config, Target
 from orch.lanes import base, claude, codex
-from orch.lanes.base import LaneCommand, LaneError
+from orch.lanes.base import HubRules, LaneCommand, LaneError
 from orch.models import Effort, Grade, Lane
 from orch.taskfile import TaskSpec
 
@@ -18,6 +18,8 @@ LOG_LABEL = "~/.orch/sample/logs/feat-x.log"
 THREAD = "01a1a500-74e7-78d2-b6b3-56a6d2a73346"
 LIMIT_MESSAGE = "You’ve hit your usage limit. Upgrade to Pro or try again later."
 PATTERNS = ("usage limit", "rate limit", "hit your .*limit", "quota")
+REPO = Path(__file__).resolve().parents[1]
+HUB_ENV = {"PATH": "/usr/bin", "ORCH_HUB": str(REPO)}
 
 
 def make_spec(lane: Lane = Lane.B, **overrides: object) -> TaskSpec:
@@ -70,7 +72,7 @@ def build(spec: TaskSpec, config: Config, environ: dict[str, str] | None = None)
         worktree=Path("/", "w", "feat-x"),
         target=make_target(),
         config=config,
-        environ=environ if environ is not None else {"PATH": "/usr/bin"},
+        environ=environ if environ is not None else HUB_ENV,
         log_label=LOG_LABEL,
     )
 
@@ -191,6 +193,7 @@ def test_tokens_and_unrelated_variables_do_not_reach_the_agent(
     environ = {
         "PATH": "/usr/bin",
         "HOME": "/h",
+        "ORCH_HUB": str(REPO),
         "GH_TOKEN": "secret",
         "GITHUB_TOKEN": "secret",
         "ANTHROPIC_API_KEY": "secret",
@@ -244,19 +247,145 @@ def test_child_env_passes_the_fake_python_only_in_fake_mode() -> None:
 # Prompt
 
 
+def expected_prompt(rules: str, schema: str) -> str:
+    return (
+        SPEC_TEXT
+        + "\n\nCommon rules:\n"
+        + "Write .orch-result.json in the worktree root, conforming to the result "
+        "schema below.\n"
+        + f"Set task_id to 'feat-x' and log_path to {LOG_LABEL!r}.\n"
+        + "Do not run git commit. Do not run commands in the background.\n"
+        + "Do not modify files under tests/.\n"
+        + "\n"
+        + rules
+        + "\nResult schema:\n"
+        + schema
+    )
+
+
+def write_hub(root: Path, rules: str | None, schema: str | None) -> Path:
+    if rules is not None:
+        (root / "config").mkdir(parents=True, exist_ok=True)
+        (root / "config" / "subagent.md").write_text(rules, encoding="utf-8")
+    if schema is not None:
+        (root / "schemas").mkdir(parents=True, exist_ok=True)
+        (root / "schemas" / "result.json").write_text(schema, encoding="utf-8")
+    return root
+
+
 @pytest.mark.parametrize("lane", [Lane.B, Lane.C])
-def test_prompt_is_the_whole_spec_then_the_common_rules(
+def test_prompt_is_the_spec_the_common_rules_and_the_hub_files(
     agents: Config, lane: Lane
 ) -> None:
+    rules = (REPO / "config" / "subagent.md").read_text(encoding="utf-8")
+    schema = (REPO / "schemas" / "result.json").read_text(encoding="utf-8")
     prompt = build(make_spec(lane), agents).stdin_text
-    assert prompt.startswith(SPEC_TEXT)
-    rules = prompt[len(SPEC_TEXT) :]
-    assert ".orch-result.json" in rules
-    assert "schemas/result.json" in rules
-    assert "feat-x" in rules
-    assert LOG_LABEL in rules
-    for phrase in ("git commit", "background", "tests/"):
-        assert phrase in rules
+    assert prompt == expected_prompt(rules, schema)
+
+
+@pytest.mark.parametrize("lane", [Lane.B, Lane.C])
+def test_prompt_keeps_the_hub_files_byte_for_byte(
+    agents: Config, lane: Lane, tmp_path: Path
+) -> None:
+    rules = "  Rule one.\n\nRule two, no final newline"
+    schema = '\n{"type": "object"}\n\n'
+    hub = write_hub(tmp_path / "hub", rules, schema)
+    environ = {"PATH": "/usr/bin", "ORCH_HUB": str(hub)}
+    prompt = build(make_spec(lane), agents, environ).stdin_text
+    assert prompt == expected_prompt(rules, schema)
+
+
+def test_build_prompt_joins_the_parts_exactly() -> None:
+    hub_rules = HubRules(rules="R\n", result_schema="{}\n")
+    prompt = base.build_prompt(
+        SPEC_TEXT, task_id="feat-x", log_label=LOG_LABEL, hub_rules=hub_rules
+    )
+    assert prompt == expected_prompt("R\n", "{}\n")
+
+
+def test_load_hub_rules_reads_both_files_unchanged(tmp_path: Path) -> None:
+    hub = write_hub(tmp_path, " rules \n", " {}\n\n")
+    assert base.load_hub_rules({"ORCH_HUB": str(hub)}) == HubRules(
+        rules=" rules \n", result_schema=" {}\n\n"
+    )
+
+
+def test_load_hub_rules_reads_the_real_hub() -> None:
+    loaded = base.load_hub_rules({"ORCH_HUB": str(REPO)})
+    assert loaded.rules == (REPO / "config" / "subagent.md").read_text(encoding="utf-8")
+    assert loaded.result_schema == (REPO / "schemas" / "result.json").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [{}, {"ORCH_HUB": ""}, {"ORCH_HUB": "hub"}, {"ORCH_HUB": "./relative/hub"}],
+)
+def test_load_hub_rules_needs_an_absolute_hub(environ: dict[str, str]) -> None:
+    with pytest.raises(LaneError):
+        base.load_hub_rules(environ)
+
+
+@pytest.mark.parametrize(
+    ("rules", "schema"),
+    [
+        (None, "{}"),
+        ("rules", None),
+        (None, None),
+        ("", "{}"),
+        ("rules", ""),
+        (" \n\t\n", "{}"),
+        ("rules", "\n  \n"),
+    ],
+)
+def test_load_hub_rules_refuses_missing_or_blank_files(
+    tmp_path: Path, rules: str | None, schema: str | None
+) -> None:
+    hub = write_hub(tmp_path, rules, schema)
+    with pytest.raises(LaneError):
+        base.load_hub_rules({"ORCH_HUB": str(hub)})
+
+
+@pytest.mark.parametrize("which", ["rules", "schema"])
+def test_load_hub_rules_refuses_a_directory_or_bad_bytes(
+    tmp_path: Path, which: str
+) -> None:
+    hub = write_hub(tmp_path, "rules", "{}")
+    path = (
+        hub / "config" / "subagent.md"
+        if which == "rules"
+        else hub / "schemas" / "result.json"
+    )
+    path.unlink()
+    path.mkdir()
+    with pytest.raises(LaneError):
+        base.load_hub_rules({"ORCH_HUB": str(hub)})
+    path.rmdir()
+    path.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(LaneError):
+        base.load_hub_rules({"ORCH_HUB": str(hub)})
+
+
+@pytest.mark.parametrize("lane", [Lane.B, Lane.C])
+@pytest.mark.parametrize("hub", [None, "relative", "missing"])
+def test_lanes_refuse_to_build_without_the_hub_files(
+    agents: Config, lane: Lane, hub: str | None, tmp_path: Path
+) -> None:
+    environ = {"PATH": "/usr/bin"}
+    if hub == "relative":
+        environ["ORCH_HUB"] = "hub"
+    elif hub == "missing":
+        environ["ORCH_HUB"] = str(tmp_path / "empty-hub")
+    with pytest.raises(LaneError):
+        build(make_spec(lane), agents, environ)
+
+
+@pytest.mark.parametrize("lane", [Lane.B, Lane.C])
+def test_the_hub_does_not_reach_the_agent_environment(
+    agents: Config, lane: Lane
+) -> None:
+    assert "ORCH_HUB" not in build(make_spec(lane), agents).env
 
 
 def test_prompt_does_not_put_the_spec_on_the_command_line(agents: Config) -> None:
