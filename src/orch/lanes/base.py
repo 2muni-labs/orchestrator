@@ -48,17 +48,24 @@ def child_env(environ: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def build_prompt(spec_text: str, *, task_id: str, log_label: str) -> str:
-    """Return the task spec followed by the common rules."""
-    return (
-        spec_text
-        + "\n\nCommon rules:\n"
-        + f"Write {RESULT_FILE} in the worktree root, conforming to "
-        "schemas/result.json.\n"
-        + f"Set task_id to {task_id!r} and log_path to {log_label!r}.\n"
-        "Do not run git commit. Do not run commands in the background.\n"
-        "Do not modify files under tests/.\n"
-    )
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HubRules:
+    """The hub files added to every implementation prompt."""
+
+    rules: str
+    result_schema: str
+
+
+def load_hub_rules(environ: Mapping[str, str]) -> HubRules:
+    """Read config/subagent.md and schemas/result.json from ORCH_HUB."""
+    raise NotImplementedError
+
+
+def build_prompt(
+    spec_text: str, *, task_id: str, log_label: str, hub_rules: HubRules
+) -> str:
+    """Return the task spec, the common rules and the hub files."""
+    raise NotImplementedError
 
 
 def resolve_agent(

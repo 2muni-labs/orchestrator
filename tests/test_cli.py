@@ -168,6 +168,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     hub = tmp_path / "hub"
     (hub / "tests").mkdir(parents=True)
     (hub / "tests" / "fake_agents").symlink_to(HUB_SOURCE / "tests" / "fake_agents")
+    for part in (("config", "subagent.md"), ("schemas", "result.json")):
+        (hub / part[0]).mkdir(exist_ok=True)
+        (hub / part[0] / part[1]).symlink_to(HUB_SOURCE.joinpath(*part))
     gitconfig = tmp_path / "gitconfig"
     gitconfig.write_text(
         "[user]\n\tname = t\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n",
