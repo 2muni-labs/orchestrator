@@ -1,5 +1,6 @@
 """orch open: assemble the H2 launch plan. Nothing here launches anything."""
 
+import json
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -65,17 +66,65 @@ def version_warning(version: str | None) -> str | None:
 
 def parse_agent(text: str, *, stem: str) -> dict[str, object]:
     """Convert one agent definition file into its --agents entry."""
-    raise NotImplementedError
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        raise LaunchError(f"Agent {stem}: missing opening metadata delimiter")
+    try:
+        closing = lines.index("---", 1)
+    except ValueError as exc:
+        raise LaunchError(f"Agent {stem}: missing closing metadata delimiter") from exc
+
+    metadata: dict[str, str] = {}
+    for line in lines[1:closing]:
+        key, separator, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if not separator or key not in AGENT_KEYS or key in metadata or not value:
+            raise LaunchError(f"Agent {stem}: invalid metadata line")
+        metadata[key] = value
+    if "name" not in metadata or "description" not in metadata:
+        raise LaunchError(f"Agent {stem}: name and description are required")
+    if metadata["name"] != stem:
+        raise LaunchError(f"Agent {stem}: name must match the file stem")
+
+    prompt = "\n".join(lines[closing + 1 :]).strip()
+    if not prompt:
+        raise LaunchError(f"Agent {stem}: prompt must not be empty")
+    definition: dict[str, object] = {
+        "description": metadata["description"],
+        "prompt": prompt,
+    }
+    if "tools" in metadata:
+        tools = [tool.strip() for tool in metadata["tools"].split(",")]
+        if any(not tool for tool in tools):
+            raise LaunchError(f"Agent {stem}: tools must not contain empty items")
+        definition["tools"] = tools
+    if "model" in metadata:
+        definition["model"] = metadata["model"]
+    return definition
 
 
 def load_agents(directory: Path) -> dict[str, dict[str, object]]:
     """Read every *.md agent definition in the directory, by file name."""
-    raise NotImplementedError
+    agents: dict[str, dict[str, object]] = {}
+    try:
+        if not directory.is_dir():
+            raise LaunchError(f"Agent definitions directory is missing: {directory}")
+        for path in sorted(directory.glob("*.md"), key=lambda path: path.name):
+            if not path.is_file():
+                raise LaunchError(f"Agent definition must be a regular file: {path}")
+            agents[path.stem] = parse_agent(
+                path.read_text(encoding="utf-8"), stem=path.stem
+            )
+    except (OSError, UnicodeError) as exc:
+        raise LaunchError(f"Cannot read agent definitions in {directory}") from exc
+    if not agents:
+        raise LaunchError(f"No agent definitions found in {directory}")
+    return agents
 
 
 def agents_json(agents: Mapping[str, Mapping[str, object]]) -> str:
     """Return the --agents JSON string."""
-    raise NotImplementedError
+    return json.dumps(agents, ensure_ascii=False, sort_keys=True)
 
 
 def build_plan(
@@ -96,6 +145,16 @@ def build_plan(
     if not target.path.is_dir():
         raise LaunchError("Target path must be an existing directory")
 
+    main = hub / "config" / "main.md"
+    try:
+        if not main.is_file():
+            raise LaunchError("Hub main rules must be a regular file")
+        if not main.read_text(encoding="utf-8").strip():
+            raise LaunchError("Hub main rules must not be empty")
+    except (OSError, UnicodeError) as exc:
+        raise LaunchError("Cannot read hub main rules") from exc
+    agents = load_agents(hub / "config" / "agents")
+
     env = {"ORCH_TARGET": target.name, "ORCH_HUB": str(hub)}
     if orch_home != default_orch_home:
         env["ORCH_HOME"] = str(orch_home)
@@ -114,6 +173,10 @@ def build_plan(
             MAIN_MODEL,
             "--settings",
             str(settings),
+            "--append-system-prompt-file",
+            str(main),
+            "--agents",
+            agents_json(agents),
             "--add-dir",
             str(target_paths(orch_home, target.name).root),
             "--remote-control",
