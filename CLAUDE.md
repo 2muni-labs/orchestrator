@@ -130,10 +130,31 @@ You run tasks through the installed `orch`. `R` below stands for
   It has no task, so `orch wait` does not apply: learn of the merge from the user.
   After the merge, remove the worktree and local branch. If it conflicts with `main`,
   merge `origin/main` into the branch and push normally.
-- A harness pull request must also pass before you push: in its
-  worktree, run `.venv/bin/python -m pytest`, `.venv/bin/python -m ruff check .` and
-  `.venv/bin/python -m ruff format --check .` on the final commit. This covers every
-  push to that branch. Put the results in the pull request body.
+- A harness pull request must also pass before you push: in its worktree, run the
+  sandboxed checks below on the final commit. This covers every push to that branch.
+  Put the results in the pull request body.
+- **Sandboxed checks.** Your own checks of code that has not merged, the harness pull
+  request check and the combined check, run under the gate profile through the
+  installed `orch`:
+  1. Run `uv sync --frozen` in the worktree first, outside the sandbox. The profile
+     denies writes under `.venv`.
+  2. `orch sandbox run --dir <worktree> -- .venv/bin/python -m pytest -rs`, then the
+     same with `.venv/bin/python -m ruff check .` and
+     `.venv/bin/python -m ruff format --check .`. Each must print `ok` true.
+     `worktree_changed` and `sandbox_failed` are failures like any other: never
+     rerun the command outside the sandbox to get past them.
+  3. Read the pytest log at `log_path`. Every `SKIPPED` line must name
+     `tests/test_sandbox_real.py` or `tests/integration/test_sandbox_gate.py` with
+     the reason `already inside a sandbox, where sandbox-exec cannot start`. Any
+     other skip is a failure.
+  4. Then run exactly those two files outside the sandbox in the same worktree,
+     `.venv/bin/python -m pytest -rs tests/test_sandbox_real.py
+     tests/integration/test_sandbox_gate.py`, and confirm 0 skipped. They start the
+     real `sandbox-exec`, which cannot start inside a sandbox.
+
+  Report both counts. Only those two files run outside, because only they need to.
+  The remaining risk: they run the branch's `sandbox.py`, `gate.py` and what those
+  import outside the sandbox, before that code merges.
 - `scripts/run-sub.sh` and `scripts/gate.sh` stay until M16 as a fallback for when
   `orch` itself fails and the user approves using them. Never handle one task with
   both: they do not update `state.db`. M16 removes only these two;
@@ -145,8 +166,8 @@ You run tasks through the installed `orch`. `R` below stands for
   reason) leaves this machine. Never put `--show` output in a commit message, pull
   request body or report.
 - When two pull requests go up together, finish a check on their combined state before
-  the user merges and report it: full tests and ruff, in a temporary worktree that
-  merges both. `orch update` checks each one against `main` only. Do not defer it to
+  the user merges and report it: the sandboxed checks above, in a temporary linked
+  worktree (`git worktree add --detach`) that merges both. `orch update` checks each one against `main` only. Do not defer it to
   a later task's worktree. Watch for semantic conflicts, especially when both change
   the same test file.
 - When you discard a task and dispatch it again under a new id, state that and its
