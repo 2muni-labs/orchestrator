@@ -3,12 +3,13 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
 import subprocess
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +25,7 @@ RESULT_FILE = ".orch-result.json"
 COMMAND_TIMEOUT_SEC = GATE_TIMEOUT_DEFAULT_MIN * 60
 DETAIL_LIMIT = 500
 CHANGED_DETAIL = "게이트 실행 중 워크트리가 바뀌었습니다: "
+SANDBOX_RUN_LOG_PREFIX = "sandbox-run"
 TEST_GLOBS = ("tests/**",)
 
 
@@ -395,3 +397,65 @@ def gate_task(
         except Exception as recovery_exc:
             exc.add_note(f"Failed to recover gating -> judging: {recovery_exc}")
         raise
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SandboxRunReport:
+    """The outcome of one command run by orch sandbox run."""
+
+    ok: bool
+    error: str | None
+    exit_code: int | None
+    detail: str | None
+    changed: tuple[str, ...]
+    log_path: str
+
+
+def run_sandboxed(
+    argv: Sequence[str],
+    worktree: Path,
+    log_path: Path,
+    *,
+    timeout_sec: int | None = None,
+) -> SandboxRunReport:
+    """Run one command in a linked worktree under the gate sandbox and check it."""
+    if not argv:
+        raise GateError("A sandbox run requires a command")
+    try:
+        before = gitops.snapshot_worktree(worktree)
+    except gitops.GitError as exc:
+        raise GateError(str(exc)) from exc
+
+    command = shlex.join(argv)
+    code = None
+    sandbox_failure = None
+    try:
+        code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
+    except gate_sandbox.SandboxError as exc:
+        sandbox_failure = f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
+    finally:
+        changed = gitops.worktree_changes(worktree, before)
+
+    if changed:
+        error = "worktree_changed"
+        detail = (CHANGED_DETAIL + ", ".join(changed))[:DETAIL_LIMIT]
+    elif sandbox_failure is not None:
+        error = "sandbox_failed"
+        detail = sandbox_failure
+    elif code is None:
+        error = "timeout"
+        detail = _command_failure(command, code)
+    elif code != 0:
+        error = "command_failed"
+        detail = _command_failure(command, code)
+    else:
+        error = None
+        detail = None
+    return SandboxRunReport(
+        ok=error is None,
+        error=error,
+        exit_code=code,
+        detail=detail,
+        changed=changed,
+        log_path=str(log_path),
+    )

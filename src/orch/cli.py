@@ -160,6 +160,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     for name in ("install", "uninstall", "restore"):
         service_commands.add_parser(name)
+    sandbox_run = (
+        commands.add_parser("sandbox")
+        .add_subparsers(dest="sandbox_command", required=True)
+        .add_parser("run")
+    )
+    sandbox_run.add_argument("--dir")
+    sandbox_run.add_argument("argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -300,6 +307,33 @@ def _refresh_todos(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "sandbox":
+        argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+        if not argv:
+            raise _UsageError("sandbox run requires a command")
+        target = os.environ.get("ORCH_TARGET")
+        if not target:
+            raise _UsageError("ORCH_TARGET is required for sandbox run")
+        orch_home, _ = _environment(args.command)
+        paths = config.target_paths(orch_home, target)
+        settings = config.load_config(orch_home)
+        worktree = Path(args.dir).resolve() if args.dir is not None else Path.cwd()
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        log_path = paths.logs / (
+            f"{gate.SANDBOX_RUN_LOG_PREFIX}.{timestamp}.{os.getpid()}.log"
+        )
+        report = gate.run_sandboxed(
+            argv, worktree, log_path, timeout_sec=settings.gate_timeout_min * 60
+        )
+        data = {
+            "ok": report.ok,
+            "exit_code": report.exit_code,
+            "changed": list(report.changed),
+            "log_path": report.log_path,
+        }
+        if report.ok:
+            return 0, data
+        return 20, {**data, "error": report.error, "message": report.detail}
     if args.command == "review":
         if args.id == "save":
             if args.save_id is None or args.by is not None:
