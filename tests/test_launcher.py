@@ -1,3 +1,4 @@
+import json
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -7,10 +8,14 @@ import pytest
 from orch import launcher
 from orch.config import Target
 from orch.launcher import (
+    AGENT_KEYS,
     MAIN_MODEL,
     PINNED_CLAUDE_VERSION,
     LaunchError,
+    agents_json,
     build_plan,
+    load_agents,
+    parse_agent,
     parse_claude_version,
     probe_claude_version,
     version_warning,
@@ -117,11 +122,28 @@ def test_an_unknown_version_warns() -> None:
 # plan
 
 
+PROBE_AGENT = (
+    "---\nname: probe\ndescription: Probe agent.\nmodel: haiku\n"
+    'tools: Read, Grep, Glob\n---\n\nSay "it\'s $HOME" twice.\n'
+)
+PROBE_JSON = {
+    "probe": {
+        "description": "Probe agent.",
+        "prompt": 'Say "it\'s $HOME" twice.',
+        "tools": ["Read", "Grep", "Glob"],
+        "model": "haiku",
+    }
+}
+
+
 @pytest.fixture
 def layout(tmp_path: Path) -> dict[str, Path]:
     hub = tmp_path / "hub"
     (hub / "config").mkdir(parents=True)
     (hub / "config" / "settings.json").write_text("{}")
+    (hub / "config" / "main.md").write_text("# Main rules\n")
+    (hub / "config" / "agents").mkdir()
+    (hub / "config" / "agents" / "probe.md").write_text(PROBE_AGENT)
     repo = tmp_path / "repo"
     repo.mkdir()
     return {
@@ -166,10 +188,15 @@ def test_plan_argv_cwd_env(layout: dict[str, Path]) -> None:
         "claude-opus-5-5",
         "--settings",
         str(layout["hub"] / "config" / "settings.json"),
+        "--append-system-prompt-file",
+        str(layout["hub"] / "config" / "main.md"),
+        "--agents",
+        json.dumps(PROBE_JSON, ensure_ascii=False, sort_keys=True),
         "--add-dir",
         str(layout["orch_home"] / "orchestrator"),
         "--remote-control",
     )
+    assert json.loads(result.argv[result.argv.index("--agents") + 1]) == PROBE_JSON
     assert result.cwd == layout["repo"]
     assert dict(result.env) == {
         "ORCH_TARGET": "orchestrator",
@@ -178,14 +205,13 @@ def test_plan_argv_cwd_env(layout: dict[str, Path]) -> None:
     assert result.warnings == ()
 
 
-def test_plan_does_not_inject_main_rules_or_agents_before_m16(
-    layout: dict[str, Path],
-) -> None:
+def test_plan_never_replaces_the_system_prompt(layout: dict[str, Path]) -> None:
     argv = plan(layout).argv
-    assert "--append-system-prompt-file" not in argv
     assert "--append-system-prompt" not in argv
-    assert "--agents" not in argv
     assert "--system-prompt" not in argv
+    assert "--system-prompt-file" not in argv
+    assert argv.count("--append-system-prompt-file") == 1
+    assert argv.count("--agents") == 1
 
 
 def test_plan_sets_orch_home_only_when_not_default(
@@ -258,3 +284,210 @@ def test_plan_writes_nothing(layout: dict[str, Path], tmp_path: Path) -> None:
 def test_the_real_hub_settings_file_exists() -> None:
     hub = Path(__file__).resolve().parents[1]
     assert (hub / "config" / "settings.json").is_file()
+
+
+# main rules and agent definitions (M16)
+
+
+@pytest.mark.parametrize("content", [None, "dir", "", " \n\t\n"])
+def test_plan_refuses_a_missing_or_empty_main_rules_file(
+    layout: dict[str, Path], content: str | None
+) -> None:
+    main = layout["hub"] / "config" / "main.md"
+    main.unlink()
+    if content == "dir":
+        main.mkdir()
+    elif content is not None:
+        main.write_text(content)
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_refuses_unreadable_main_rules(layout: dict[str, Path]) -> None:
+    (layout["hub"] / "config" / "main.md").write_bytes(b"\xff\xfe rules")
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_refuses_a_missing_agents_directory(layout: dict[str, Path]) -> None:
+    agents = layout["hub"] / "config" / "agents"
+    (agents / "probe.md").unlink()
+    agents.rmdir()
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_refuses_an_agents_file_instead_of_a_directory(
+    layout: dict[str, Path],
+) -> None:
+    agents = layout["hub"] / "config" / "agents"
+    (agents / "probe.md").unlink()
+    agents.rmdir()
+    agents.write_text(PROBE_AGENT)
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_refuses_an_agents_directory_without_definitions(
+    layout: dict[str, Path],
+) -> None:
+    agents = layout["hub"] / "config" / "agents"
+    (agents / "probe.md").unlink()
+    (agents / "README.txt").write_text("not a definition\n")
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_refuses_a_malformed_definition(layout: dict[str, Path]) -> None:
+    (layout["hub"] / "config" / "agents" / "probe.md").write_text(
+        "---\nname: probe\ndescription: x\ntools: Read\n---\n\n"
+    )
+    with pytest.raises(LaunchError):
+        plan(layout)
+
+
+def test_plan_writes_nothing_with_definitions(
+    layout: dict[str, Path], tmp_path: Path
+) -> None:
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    plan(layout)
+    after = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_agent_keys() -> None:
+    assert frozenset({"name", "description", "model", "tools"}) == AGENT_KEYS
+
+
+def test_parse_agent_converts_the_front_matter_and_body() -> None:
+    assert parse_agent(PROBE_AGENT, stem="probe") == PROBE_JSON["probe"]
+
+
+def test_parse_agent_strips_keys_values_and_tool_names() -> None:
+    text = (
+        "---\n name :  probe \ndescription:  A: colon in value  \n"
+        "tools:Read ,Grep,  Glob \n---\n\n\n  Line one.\n\nLine two.  \n\n"
+    )
+    assert parse_agent(text, stem="probe") == {
+        "description": "A: colon in value",
+        "prompt": "Line one.\n\nLine two.",
+        "tools": ["Read", "Grep", "Glob"],
+    }
+
+
+def test_parse_agent_leaves_out_missing_optional_keys() -> None:
+    text = "---\nname: probe\ndescription: Probe.\n---\nBody.\n"
+    result = parse_agent(text, stem="probe")
+    assert result == {"description": "Probe.", "prompt": "Body."}
+
+
+def test_parse_agent_keeps_a_single_tool_as_a_list() -> None:
+    text = "---\nname: probe\ndescription: Probe.\ntools: Read\n---\nBody.\n"
+    assert parse_agent(text, stem="probe")["tools"] == ["Read"]
+
+
+N = "name: probe\n"
+D = "description: x\n"
+MALFORMED = {
+    "empty": "",
+    "no-opening": N + D + "---\nBody\n",
+    "indented": " ---\n" + N + D + "---\nBody\n",
+    "no-closing": "---\n" + N + D + "Body\n",
+    "no-body": "---\n" + N + D + "---\n",
+    "blank-body": "---\n" + N + D + "---\n \n\t\n",
+    "no-colon": "---\nname probe\n" + D + "---\nBody\n",
+    "blank-line": "---\n" + N + "\n" + D + "---\nBody\n",
+    "key": "---\n" + N + "color: red\n" + D + "---\nB\n",
+    "case": "---\n" + N + "Name: probe\n" + D + "---\nB\n",
+    "dup": "---\n" + N + N + D + "---\nB\n",
+    "empty-value": "---\n" + N + "description: \n---\nBody\n",
+    "empty-name": "---\nname:\n" + D + "---\nBody\n",
+    "no-name": "---\n" + D + "---\nBody\n",
+    "no-description": "---\n" + N + "---\nBody\n",
+    "name-stem": "---\nname: other\n" + D + "---\nBody\n",
+    "t1": "---\n" + N + D + "tools: Read,\n---\nB\n",
+    "t2": "---\n" + N + D + "tools: ,Read\n---\nB\n",
+    "t3": "---\n" + N + D + "tools: A, ,B\n---\nB\n",
+}
+
+
+@pytest.mark.parametrize("text", list(MALFORMED.values()), ids=list(MALFORMED))
+def test_parse_agent_refuses_malformed_definitions(text: str) -> None:
+    with pytest.raises(LaunchError):
+        parse_agent(text, stem="probe")
+
+
+def test_load_agents_reads_md_files_by_name(tmp_path: Path) -> None:
+    (tmp_path / "beta.md").write_text("---\nname: beta\ndescription: B.\n---\nB body\n")
+    (tmp_path / "alpha.md").write_text(
+        "---\nname: alpha\ndescription: A.\n---\nA body\n"
+    )
+    (tmp_path / "notes.txt").write_text("ignored")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "gamma.md").write_text("---\nname: gamma\ndescription: G.\n---\nG\n")
+    agents = load_agents(tmp_path)
+    assert list(agents) == ["alpha", "beta"]
+    assert agents == {
+        "alpha": {"description": "A.", "prompt": "A body"},
+        "beta": {"description": "B.", "prompt": "B body"},
+    }
+
+
+def test_load_agents_refuses_a_directory_named_like_a_definition(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "alpha.md").write_text("---\nname: alpha\ndescription: A.\n---\nA\n")
+    (tmp_path / "beta.md").mkdir()
+    with pytest.raises(LaunchError):
+        load_agents(tmp_path)
+
+
+def test_load_agents_refuses_one_bad_definition_among_good_ones(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "alpha.md").write_text("---\nname: alpha\ndescription: A.\n---\nA\n")
+    (tmp_path / "beta.md").write_text("---\nname: alpha\ndescription: B.\n---\nB\n")
+    with pytest.raises(LaunchError):
+        load_agents(tmp_path)
+
+
+def test_load_agents_refuses_undecodable_bytes(tmp_path: Path) -> None:
+    (tmp_path / "alpha.md").write_bytes(
+        b"---\nname: alpha\ndescription: \xff\n---\nA\n"
+    )
+    with pytest.raises(LaunchError):
+        load_agents(tmp_path)
+
+
+@pytest.mark.parametrize("make", ["missing", "file"])
+def test_load_agents_refuses_a_non_directory(tmp_path: Path, make: str) -> None:
+    directory = tmp_path / "agents"
+    if make == "file":
+        directory.write_text("x")
+    with pytest.raises(LaunchError):
+        load_agents(directory)
+
+
+def test_load_agents_refuses_an_empty_directory(tmp_path: Path) -> None:
+    with pytest.raises(LaunchError):
+        load_agents(tmp_path)
+
+
+def test_agents_json_is_sorted_and_keeps_non_ascii() -> None:
+    value = {"b": {"prompt": "한국어", "description": "d"}, "a": {"description": "e"}}
+    assert agents_json(value) == json.dumps(value, ensure_ascii=False, sort_keys=True)
+    assert "한국어" in agents_json(value)
+
+
+def test_the_real_hub_agents_convert() -> None:
+    hub = Path(__file__).resolve().parents[1]
+    agents = load_agents(hub / "config" / "agents")
+    assert sorted(agents) == ["orch-explorer", "orch-reviewer"]
+    for definition in agents.values():
+        assert definition["tools"] == ["Read", "Grep", "Glob"]
+        assert isinstance(definition["prompt"], str)
+        assert definition["prompt"]
+    assert agents["orch-explorer"]["model"] == "haiku"
+    assert agents["orch-reviewer"]["model"] == "sonnet"
+    assert (hub / "config" / "main.md").read_text().strip()

@@ -3075,9 +3075,19 @@ def terminals(monkeypatch: pytest.MonkeyPatch) -> Terminals:
     return made
 
 
+OPEN_AGENT = "---\nname: probe\ndescription: Probe.\ntools: Read\n---\nBody.\n"
+OPEN_AGENTS_JSON = json.dumps(
+    {"probe": {"description": "Probe.", "prompt": "Body.", "tools": ["Read"]}},
+    ensure_ascii=False,
+    sort_keys=True,
+)
+
+
 @pytest.fixture
 def openable(env: Env, monkeypatch: pytest.MonkeyPatch, target: None) -> None:
     write(env.hub / "config" / "settings.json", "{}\n")
+    write(env.hub / "config" / "main.md", "# Main rules\n")
+    write(env.hub / "config" / "agents" / "probe.md", OPEN_AGENT)
     write(env.orch_home / "config", f'[agents]\nclaude = "{CLAUDE_BIN}"\n')
     monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: "2.1.319")
 
@@ -3120,6 +3130,10 @@ def test_open_starts_the_main_session_and_panels(
                 "claude-opus-5-5",
                 "--settings",
                 str(env.hub / "config" / "settings.json"),
+                "--append-system-prompt-file",
+                str(env.hub / "config" / "main.md"),
+                "--agents",
+                OPEN_AGENTS_JSON,
                 "--add-dir",
                 str(env.paths.root),
                 "--remote-control",
@@ -3260,6 +3274,24 @@ def test_open_refuses_without_hook_settings(
     orch: Call, env: Env, terminals: list[FakeTerminal]
 ) -> None:
     (env.hub / "config" / "settings.json").unlink()
+    assert_error(orch("open", TARGET), USAGE, "refused")
+    assert all(call[0] != "open" for t in terminals for call in t.calls)
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_without_main_rules(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    (env.hub / "config" / "main.md").unlink()
+    assert_error(orch("open", TARGET), USAGE, "refused")
+    assert all(call[0] != "open" for t in terminals for call in t.calls)
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_refuses_a_malformed_agent_definition(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    write(env.hub / "config" / "agents" / "probe.md", "name: probe\n")
     assert_error(orch("open", TARGET), USAGE, "refused")
     assert all(call[0] != "open" for t in terminals for call in t.calls)
 
