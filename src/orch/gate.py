@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -418,4 +419,43 @@ def run_sandboxed(
     timeout_sec: int | None = None,
 ) -> SandboxRunReport:
     """Run one command in a linked worktree under the gate sandbox and check it."""
-    raise NotImplementedError
+    if not argv:
+        raise GateError("A sandbox run requires a command")
+    try:
+        before = gitops.snapshot_worktree(worktree)
+    except gitops.GitError as exc:
+        raise GateError(str(exc)) from exc
+
+    command = shlex.join(argv)
+    code = None
+    sandbox_failure = None
+    try:
+        code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
+    except gate_sandbox.SandboxError as exc:
+        sandbox_failure = f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
+    finally:
+        changed = gitops.worktree_changes(worktree, before)
+
+    if changed:
+        error = "worktree_changed"
+        detail = (CHANGED_DETAIL + ", ".join(changed))[:DETAIL_LIMIT]
+    elif sandbox_failure is not None:
+        error = "sandbox_failed"
+        detail = sandbox_failure
+    elif code is None:
+        error = "timeout"
+        detail = _command_failure(command, code)
+    elif code != 0:
+        error = "command_failed"
+        detail = _command_failure(command, code)
+    else:
+        error = None
+        detail = None
+    return SandboxRunReport(
+        ok=error is None,
+        error=error,
+        exit_code=code,
+        detail=detail,
+        changed=changed,
+        log_path=str(log_path),
+    )
