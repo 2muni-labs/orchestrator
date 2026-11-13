@@ -11,6 +11,7 @@ from orch.config import Target, target_paths
 
 PINNED_CLAUDE_VERSION: Final = "2.1.319"
 MAIN_MODEL: Final = "claude-opus-5-5"
+AGENT_KEYS: Final = frozenset({"name", "description", "model", "tools"})
 
 VersionRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -60,6 +61,21 @@ def version_warning(version: str | None) -> str | None:
         f"Claude Code 실제 버전 {version}이 "
         f"고정 버전 {PINNED_CLAUDE_VERSION}과 다릅니다."
     )
+
+
+def parse_agent(text: str, *, stem: str) -> dict[str, object]:
+    """Convert one agent definition file into its --agents entry."""
+    raise NotImplementedError
+
+
+def load_agents(directory: Path) -> dict[str, dict[str, object]]:
+    """Read every *.md agent definition in the directory, by file name."""
+    raise NotImplementedError
+
+
+def agents_json(agents: Mapping[str, Mapping[str, object]]) -> str:
+    """Return the --agents JSON string."""
+    raise NotImplementedError
 
 
 def build_plan(

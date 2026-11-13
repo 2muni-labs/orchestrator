@@ -599,10 +599,18 @@ def test_main_pane_status_does_not_change_the_record(
     assert record.read_bytes() == before
 
 
+LAUNCH_AGENT = (
+    "---\nname: probe\ndescription: Probe agent.\ntools: Read, Grep\n---\n\n"
+    'It\'s `quoted` "text" with $HOME, a \\ backslash and 한국어.\n'
+)
+
+
 def launched_argv(tmp_path: Path, claude: Path) -> tuple[str, ...]:
     hub = tmp_path / "hub"
-    (hub / "config").mkdir(parents=True)
+    (hub / "config" / "agents").mkdir(parents=True)
     (hub / "config" / "settings.json").write_text("{}", encoding="utf-8")
+    (hub / "config" / "main.md").write_text("# Main rules\n", encoding="utf-8")
+    (hub / "config" / "agents" / "probe.md").write_text(LAUNCH_AGENT, encoding="utf-8")
     repo = tmp_path / "repo"
     repo.mkdir()
     return build_plan(
@@ -624,9 +632,25 @@ def launched_argv(tmp_path: Path, claude: Path) -> tuple[str, ...]:
     ).argv
 
 
+def tmux_quote(word: str) -> str:
+    escaped = word.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    return f'"{escaped}"'
+
+
 def tmux_start_command(argv: Sequence[str]) -> str:
-    """Format argv as measured: tmux double-quotes an argument with a space."""
-    return " ".join(f'"{word}"' if " " in word else word for word in argv)
+    """Format argv as measured on tmux 3.8 (2026-11-13): an argument with a space
+    is double-quoted, and the backslashes, double quotes and dollar signs inside it
+    are escaped with a backslash."""
+    return " ".join(tmux_quote(word) if " " in word else word for word in argv)
+
+
+def test_tmux_start_command_matches_the_measured_form() -> None:
+    measured = (
+        '/c --agents "{\\"a\\": {\\"prompt\\": \\"it\'s `x` \\\\\\"y\\\\\\" '
+        '\\$Z \\\\\\\\ ;|&\\"}}"'
+    )
+    arg = '{"a": {"prompt": "it\'s `x` \\"y\\" $Z \\\\ ;|&"}}'
+    assert tmux_start_command(["/c", "--agents", arg]) == measured
 
 
 @pytest.mark.parametrize("directory", ["bin", "my dir"])
@@ -635,6 +659,7 @@ def test_the_path_orch_open_launches_with_is_alive(
 ) -> None:
     claude = tmp_path / directory / "claude"
     argv = launched_argv(tmp_path, claude)
+    assert "--agents" in argv
     terminal = opened(fake, record)
     fake.stdout["list-panes"] = panes_output(f"%1|0|{tmux_start_command(argv)}")
     assert argv[0] == str(claude)
