@@ -2,8 +2,11 @@
 
 import os
 import re
+import shutil
 import signal
+import stat
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,8 +40,27 @@ class MergeResult:
     conflicts: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WorktreeSnapshot:
+    """The worktree as the gates found it, read through the trusted .git file."""
+
+    git_dir: Path
+    git_file: bytes
+    tree: str
+
+
 def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
     """Run git with an isolated repository environment and a group timeout."""
+    return _run_git(cwd, *args, input_text=input_text)
+
+
+def _run_git(
+    cwd: Path,
+    *args: str,
+    input_text: str | None = None,
+    repository_env: dict[str, str] | None = None,
+) -> str:
+    """Run git, allowing snapshot calls to pin a trusted repository and index."""
     command = ["git", "-C", str(cwd), *args]
     env = os.environ.copy()
     for name in (
@@ -52,6 +74,8 @@ def _git(cwd: Path, *args: str, input_text: str | None = None) -> str:
     ):
         env.pop(name, None)
     env.update(GIT_TERMINAL_PROMPT="0", GIT_EDITOR="true", LC_ALL="C")
+    if repository_env is not None:
+        env.update(repository_env)
     try:
         process = subprocess.Popen(
             command,
@@ -321,3 +345,86 @@ def task_changed_paths(worktree: Path, since: str, main_ref: str) -> frozenset[s
     return frozenset(
         path for path in (committed + uncommitted + untracked).split("\0") if path
     )
+
+
+def snapshot_worktree(worktree: Path) -> WorktreeSnapshot:
+    """Record the .git file and a tree of tracked and untracked, non-ignored files."""
+    try:
+        git_file = worktree / ".git"
+        if not stat.S_ISREG(git_file.lstat().st_mode):
+            raise GitError("Worktree .git must be a regular file")
+        contents = git_file.read_bytes()
+        git_dir = Path(_git(worktree, "rev-parse", "--absolute-git-dir").strip())
+        return WorktreeSnapshot(
+            git_dir=git_dir,
+            git_file=contents,
+            tree=_snapshot_tree(worktree, git_dir),
+        )
+    except OSError as exc:
+        raise GitError(f"Cannot snapshot worktree: {exc}") from exc
+
+
+def _snapshot_git(
+    worktree: Path,
+    git_dir: Path,
+    *args: str,
+    index_file: Path | None = None,
+) -> str:
+    """Use the recorded git directory without resolving the worktree's .git."""
+    env = {"GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(worktree.resolve())}
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = str(index_file)
+    return _run_git(worktree, *args, repository_env=env)
+
+
+def _snapshot_tree(worktree: Path, git_dir: Path) -> str:
+    """Stage into a temporary index, leaving the real index and HEAD untouched."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="orch-snapshot-") as temporary:
+            index_file = Path(temporary) / "index"
+            try:
+                shutil.copyfile(git_dir / "index", index_file)
+            except FileNotFoundError:
+                pass
+            _snapshot_git(worktree, git_dir, "add", "-A", index_file=index_file)
+            return _snapshot_git(
+                worktree, git_dir, "write-tree", index_file=index_file
+            ).strip()
+    except OSError as exc:
+        raise GitError(f"Cannot snapshot worktree: {exc}") from exc
+
+
+def worktree_changes(worktree: Path, before: WorktreeSnapshot) -> tuple[str, ...]:
+    """Restore a changed .git file first, then return the paths changed since before."""
+    try:
+        git_file = worktree / ".git"
+        try:
+            mode = git_file.lstat().st_mode
+        except FileNotFoundError:
+            mode = 0
+        changed = not stat.S_ISREG(mode) or git_file.read_bytes() != before.git_file
+        if changed:
+            if stat.S_ISDIR(mode):
+                shutil.rmtree(git_file)
+            else:
+                git_file.unlink(missing_ok=True)
+            git_file.write_bytes(before.git_file)
+    except OSError as exc:
+        raise GitError(f"Cannot restore worktree .git: {exc}") from exc
+
+    tree = _snapshot_tree(worktree, before.git_dir)
+    paths = _snapshot_git(
+        worktree,
+        before.git_dir,
+        "diff-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        before.tree,
+        tree,
+    )
+    found = {path for path in paths.split("\0") if path}
+    if changed:
+        found.add(".git")
+    return tuple(sorted(found))

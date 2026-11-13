@@ -23,6 +23,7 @@ from orch.taskfile import TaskSpec
 RESULT_FILE = ".orch-result.json"
 COMMAND_TIMEOUT_SEC = GATE_TIMEOUT_DEFAULT_MIN * 60
 DETAIL_LIMIT = 500
+CHANGED_DETAIL = "게이트 실행 중 워크트리가 바뀌었습니다: "
 TEST_GLOBS = ("tests/**",)
 
 
@@ -210,6 +211,8 @@ def run_tests(
     timeout_sec: int | None = None,
 ) -> str | None:
     """Run the G2 commands and return a failure summary, or None if they pass."""
+    before = gitops.snapshot_worktree(worktree)
+    failure = None
     for command, allow_empty in (
         (target.test_command, spec.tests == "none"),
         (spec.verify, False),
@@ -217,13 +220,17 @@ def run_tests(
         try:
             code = run_command(command, worktree, log_path, timeout_sec=timeout_sec)
         except gate_sandbox.SandboxError as exc:
-            return f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
+            failure = f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
+            break
         if code == 5 and allow_empty:
             continue
         failure = _command_failure(command, code)
         if failure is not None:
-            return failure
-    return None
+            break
+    paths = gitops.worktree_changes(worktree, before)
+    if paths:
+        return (CHANGED_DETAIL + ", ".join(paths))[:DETAIL_LIMIT]
+    return failure
 
 
 def run_gates(
@@ -269,6 +276,7 @@ def run_gates(
         return failed("G1", detail)
     gates["G1"] = GateStatus.PASSED
 
+    before = gitops.snapshot_worktree(worktree)
     detail = run_tests(spec, target, worktree, log_path, timeout_sec=timeout_sec)
     if detail is not None:
         return failed("G2", detail)
@@ -282,11 +290,17 @@ def run_gates(
                 target.lint_command, worktree, log_path, timeout_sec=timeout_sec
             )
         except gate_sandbox.SandboxError as exc:
-            return failed("G3", f"샌드박스 실패: {exc}"[:DETAIL_LIMIT])
-        detail = _command_failure(target.lint_command, code)
-        if detail is not None:
-            return failed("G3", detail)
-        gates["G3"] = GateStatus.PASSED
+            detail = f"샌드박스 실패: {exc}"[:DETAIL_LIMIT]
+        else:
+            detail = _command_failure(target.lint_command, code)
+        if detail is None:
+            gates["G3"] = GateStatus.PASSED
+
+    paths = gitops.worktree_changes(worktree, before)
+    if paths:
+        return failed("G3", (CHANGED_DETAIL + ", ".join(paths))[:DETAIL_LIMIT])
+    if detail is not None:
+        return failed("G3", detail)
 
     detail = scope_failure()
     if detail is not None:

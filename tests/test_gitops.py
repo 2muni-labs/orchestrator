@@ -1,5 +1,6 @@
 import ast
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -28,10 +29,12 @@ from orch.gitops import (
     remove_worktree,
     reset_to,
     rev_parse,
+    snapshot_worktree,
     task_changed_paths,
     task_tip,
     temporary_merge,
     update_task_branch,
+    worktree_changes,
 )
 from orch.redact import ResidualPathError, SecretFoundError
 
@@ -1187,3 +1190,185 @@ def test_has_uncommitted_changes(repo: Path) -> None:
 def test_has_uncommitted_changes_outside_a_repository(tmp_path: Path) -> None:
     with pytest.raises(GitError):
         gitops.has_uncommitted_changes(tmp_path / "missing")
+
+
+# Worktree snapshots for the gates
+
+
+def absolute_git_dir(worktree: Path) -> Path:
+    return Path(git(worktree, "rev-parse", "--absolute-git-dir"))
+
+
+def index_bytes(worktree: Path) -> bytes:
+    return (absolute_git_dir(worktree) / "index").read_bytes()
+
+
+def evil_git_file(tmp_path: Path) -> tuple[bytes, Path]:
+    """A .git file pointing at a repository whose fsmonitor hook leaves a marker."""
+    evil = tmp_path / "evil"
+    subprocess.run(["git", "init", "-q", str(evil)], check=True)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git(evil, "config", "core.fsmonitor", str(hook))
+    return f"gitdir: {evil / '.git'}\n".encode(), marker
+
+
+def test_a_snapshot_records_the_git_file_dir_and_tree(worktree: Path) -> None:
+    snap = snapshot_worktree(worktree)
+    assert snap.git_file == (worktree / ".git").read_bytes()
+    assert snap.git_dir == absolute_git_dir(worktree)
+    assert snap.git_dir.is_absolute()
+    assert re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", snap.tree)
+
+
+def test_a_snapshot_refuses_the_main_working_tree(repo: Path) -> None:
+    with pytest.raises(GitError):
+        snapshot_worktree(repo)
+
+
+def test_no_change_gives_no_paths_and_leaves_the_index_alone(worktree: Path) -> None:
+    write(worktree / "src" / "pending.py")
+    write(worktree / "base.txt", "edited before the gates\n")
+    status = git(worktree, "status", "--porcelain")
+    index = index_bytes(worktree)
+    snap = snapshot_worktree(worktree)
+    assert worktree_changes(worktree, snap) == ()
+    assert worktree_changes(worktree, snap) == ()
+    assert index_bytes(worktree) == index
+    assert git(worktree, "status", "--porcelain") == status
+    assert snapshot_worktree(worktree).tree == snap.tree
+
+
+def _edit(wt: Path) -> None:
+    write(wt / "base.txt", "changed\n")
+
+
+def _new(wt: Path) -> None:
+    write(wt / "src" / "leak.py")
+
+
+def _delete(wt: Path) -> None:
+    (wt / "base.txt").unlink()
+
+
+def _chmod(wt: Path) -> None:
+    (wt / "base.txt").chmod(0o755)
+
+
+def _symlink(wt: Path) -> None:
+    (wt / "link").symlink_to("/etc/hosts")
+
+
+def _gitignore(wt: Path) -> None:
+    write(wt / ".gitignore", ".venv/\n.orch-result.json\nextra/\n")
+
+
+def _several(wt: Path) -> None:
+    write(wt / "b.txt")
+    write(wt / "a.txt")
+
+
+def _pending(wt: Path) -> None:
+    write(wt / "src" / "pending.py", "changed during the gates\n")
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        (_edit, ("base.txt",)),
+        (_new, ("src/leak.py",)),
+        (_delete, ("base.txt",)),
+        (_chmod, ("base.txt",)),
+        (_symlink, ("link",)),
+        (_gitignore, (".gitignore",)),
+        (_several, ("a.txt", "b.txt")),
+        (_pending, ("src/pending.py",)),
+    ],
+)
+def test_a_change_after_the_snapshot_is_reported_by_path(
+    worktree: Path, change: object, expected: tuple[str, ...]
+) -> None:
+    write(worktree / "src" / "pending.py")
+    snap = snapshot_worktree(worktree)
+    index = index_bytes(worktree)
+    change(worktree)  # type: ignore[operator]
+    assert worktree_changes(worktree, snap) == expected
+    assert index_bytes(worktree) == index
+
+
+def test_ignored_files_and_empty_directories_do_not_count(worktree: Path) -> None:
+    snap = snapshot_worktree(worktree)
+    write(worktree / ".venv" / "lib" / "x.py")
+    write(worktree / ".orch-result.json", "{}\n")
+    (worktree / "empty").mkdir()
+    assert worktree_changes(worktree, snap) == ()
+
+
+def test_a_changed_git_file_is_reported_and_restored(worktree: Path) -> None:
+    original = (worktree / ".git").read_bytes()
+    snap = snapshot_worktree(worktree)
+    with (worktree / ".git").open("ab") as out:
+        out.write(b"x\n")
+    assert worktree_changes(worktree, snap) == (".git",)
+    assert (worktree / ".git").read_bytes() == original
+    assert git(worktree, "rev-parse", "HEAD")
+
+
+def _git_removed(wt: Path) -> None:
+    (wt / ".git").unlink()
+
+
+def _git_directory(wt: Path) -> None:
+    (wt / ".git").unlink()
+    write(wt / ".git" / "config", "[core]\n")
+
+
+def _git_symlink(wt: Path) -> None:
+    other = wt.parent / "other-git-file"
+    other.write_bytes((wt / ".git").read_bytes())
+    (wt / ".git").unlink()
+    (wt / ".git").symlink_to(other)
+
+
+@pytest.mark.parametrize("change", [_git_removed, _git_directory, _git_symlink])
+def test_a_replaced_git_file_is_restored_as_a_regular_file(
+    worktree: Path, change: object
+) -> None:
+    original = (worktree / ".git").read_bytes()
+    snap = snapshot_worktree(worktree)
+    change(worktree)  # type: ignore[operator]
+    assert worktree_changes(worktree, snap) == (".git",)
+    assert (worktree / ".git").is_file()
+    assert not (worktree / ".git").is_symlink()
+    assert (worktree / ".git").read_bytes() == original
+    if (worktree.parent / "other-git-file").exists():
+        assert (worktree.parent / "other-git-file").read_bytes() == original
+
+
+def test_a_git_file_change_and_a_content_change_are_both_reported(
+    worktree: Path,
+) -> None:
+    snap = snapshot_worktree(worktree)
+    write(worktree / "base.txt", "changed\n")
+    with (worktree / ".git").open("ab") as out:
+        out.write(b"x\n")
+    assert worktree_changes(worktree, snap) == (".git", "base.txt")
+
+
+def test_changes_are_read_without_following_a_tampered_git_file(
+    worktree: Path, tmp_path: Path
+) -> None:
+    original = (worktree / ".git").read_bytes()
+    snap = snapshot_worktree(worktree)
+    tampered, marker = evil_git_file(tmp_path)
+    (worktree / ".git").write_bytes(tampered)
+    # The control: plain git in the worktree runs the planted hook.
+    subprocess.run(["git", "-C", str(worktree), "status"], capture_output=True)
+    assert marker.exists()
+    marker.unlink()
+    write(worktree / "base.txt", "changed\n")
+    assert worktree_changes(worktree, snap) == (".git", "base.txt")
+    assert not marker.exists()
+    assert (worktree / ".git").read_bytes() == original
