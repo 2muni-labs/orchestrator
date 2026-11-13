@@ -160,6 +160,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     for name in ("install", "uninstall", "restore"):
         service_commands.add_parser(name)
+    sandbox_run = (
+        commands.add_parser("sandbox")
+        .add_subparsers(dest="sandbox_command", required=True)
+        .add_parser("run")
+    )
+    sandbox_run.add_argument("--dir")
+    sandbox_run.add_argument("argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -300,6 +307,8 @@ def _refresh_todos(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "sandbox":
+        raise NotImplementedError
     if args.command == "review":
         if args.id == "save":
             if args.save_id is None or args.by is not None:

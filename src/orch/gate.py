@@ -8,7 +8,7 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +24,7 @@ RESULT_FILE = ".orch-result.json"
 COMMAND_TIMEOUT_SEC = GATE_TIMEOUT_DEFAULT_MIN * 60
 DETAIL_LIMIT = 500
 CHANGED_DETAIL = "게이트 실행 중 워크트리가 바뀌었습니다: "
+SANDBOX_RUN_LOG_PREFIX = "sandbox-run"
 TEST_GLOBS = ("tests/**",)
 
 
@@ -395,3 +396,26 @@ def gate_task(
         except Exception as recovery_exc:
             exc.add_note(f"Failed to recover gating -> judging: {recovery_exc}")
         raise
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SandboxRunReport:
+    """The outcome of one command run by orch sandbox run."""
+
+    ok: bool
+    error: str | None
+    exit_code: int | None
+    detail: str | None
+    changed: tuple[str, ...]
+    log_path: str
+
+
+def run_sandboxed(
+    argv: Sequence[str],
+    worktree: Path,
+    log_path: Path,
+    *,
+    timeout_sec: int | None = None,
+) -> SandboxRunReport:
+    """Run one command in a linked worktree under the gate sandbox and check it."""
+    raise NotImplementedError

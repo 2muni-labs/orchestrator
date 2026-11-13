@@ -30,6 +30,7 @@ from orch import (
     prflow,
     render,
     review,
+    sandbox,
     scheduler,
     service,
     store,
@@ -4294,3 +4295,173 @@ def test_update_passes_the_configured_limit(
     result = orch("update", TASK, unchecked=True)
     assert result[0] == 0, result
     assert calls[0].get("timeout_sec") == 120 * 60
+
+
+# orch sandbox run
+
+
+@pytest.fixture
+def checked(repo: Path, env: Env, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A linked worktree like the main agent's harness or combined worktree."""
+    path = env.home / "checked"
+    git(repo, "worktree", "add", "-q", "--detach", str(path))
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    return path
+
+
+def sandbox_run(orch: Call, *args: str) -> tuple[int, dict[str, object]]:
+    return orch("sandbox", "run", *args)
+
+
+def test_sandbox_run_passes_a_passing_command(
+    orch: Call, env: Env, checked: Path
+) -> None:
+    code, data = sandbox_run(
+        orch, "--dir", str(checked), "--", sys.executable, "-c", "print('ran it')"
+    )
+    assert code == 0, data
+    assert data["ok"] is True
+    assert data["exit_code"] == 0
+    assert data["changed"] == []
+    log = Path(str(data["log_path"]))
+    assert log.parent == env.paths.logs
+    assert re.fullmatch(r"sandbox-run\.\d{8}T\d{6}Z\.\d+\.log", log.name)
+    assert "ran it" in log.read_text(encoding="utf-8")
+
+
+def test_sandbox_run_reports_a_failing_command(orch: Call, checked: Path) -> None:
+    result = sandbox_run(
+        orch, "--dir", str(checked), "--", sys.executable, "-c", "raise SystemExit(4)"
+    )
+    assert_error(result, 20, "command_failed")
+    assert result[1]["exit_code"] == 4
+    assert result[1]["changed"] == []
+    assert Path(str(result[1]["log_path"])).is_file()
+
+
+def test_sandbox_run_fails_on_a_change_with_paths_only(
+    orch: Call, checked: Path
+) -> None:
+    code = "open('src/app.py', 'a').write('contents-that-must-not-leak')"
+    result = sandbox_run(orch, "--dir", str(checked), "--", sys.executable, "-c", code)
+    assert_error(result, 20, "worktree_changed")
+    assert result[1]["changed"] == ["src/app.py"]
+    assert result[1]["message"] == gate.CHANGED_DETAIL + "src/app.py"
+    assert result[1]["exit_code"] == 0
+    assert "must-not-leak" not in json.dumps(result[1], ensure_ascii=False)
+
+
+def test_sandbox_run_fails_closed_without_the_sandbox(
+    orch: Call, checked: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox, "SANDBOX_EXEC", str(tmp_path / "missing" / "sx"))
+    marker = tmp_path / "ran"
+    result = sandbox_run(orch, "--dir", str(checked), "--", "touch", str(marker))
+    assert_error(result, 20, "sandbox_failed")
+    assert result[1]["exit_code"] is None
+    assert not marker.exists()
+
+
+def test_sandbox_run_uses_the_current_directory_by_default(
+    orch: Call, checked: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "cwd.txt"
+    monkeypatch.chdir(checked)
+    script = "import os, sys; open(sys.argv[1], 'w').write(os.getcwd())"
+    code, data = sandbox_run(orch, "--", sys.executable, "-c", script, str(out))
+    assert code == 0, data
+    assert Path(out.read_text(encoding="utf-8")).resolve() == checked.resolve()
+
+
+def test_sandbox_run_resolves_a_relative_dir(
+    orch: Call, checked: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "cwd.txt"
+    monkeypatch.chdir(checked.parent)
+    script = "import os, sys; open(sys.argv[1], 'w').write(os.getcwd())"
+    code, data = sandbox_run(
+        orch, "--dir", checked.name, "--", sys.executable, "-c", script, str(out)
+    )
+    assert code == 0, data
+    assert Path(out.read_text(encoding="utf-8")).resolve() == checked.resolve()
+
+
+def test_sandbox_run_passes_the_configured_limit(
+    orch: Call, env: Env, checked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_gate_limit(env, 40)
+    limits: list[object] = []
+    original = gate.run_sandboxed
+
+    def spy(argv: object, worktree: Path, log_path: Path, **kwargs: object) -> object:
+        limits.append(kwargs.get("timeout_sec"))
+        return original(argv, worktree, log_path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate, "run_sandboxed", spy)
+    code, data = sandbox_run(orch, "--dir", str(checked), "--", "true")
+    assert code == 0, data
+    assert limits == [40 * 60]
+
+
+def test_sandbox_run_uses_thirty_minutes_without_a_setting(
+    orch: Call, checked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    limits = record_gate_limits(monkeypatch)
+    code, data = sandbox_run(orch, "--dir", str(checked), "--", "true")
+    assert code == 0, data
+    assert limits == [config.GATE_TIMEOUT_DEFAULT_MIN * 60]
+
+
+def test_sandbox_run_refuses_an_invalid_limit_without_running(
+    orch: Call, env: Env, checked: Path, tmp_path: Path
+) -> None:
+    set_gate_limit(env, 0)
+    marker = tmp_path / "ran"
+    result = sandbox_run(orch, "--dir", str(checked), "--", "touch", str(marker))
+    assert_error(result, USAGE, "refused")
+    assert not marker.exists()
+
+
+def test_sandbox_run_needs_a_command(orch: Call, checked: Path) -> None:
+    assert_error(sandbox_run(orch, "--dir", str(checked), "--"), USAGE, "usage")
+    assert_error(sandbox_run(orch, "--dir", str(checked)), USAGE, "usage")
+
+
+def test_sandbox_run_needs_a_target(
+    orch: Call, checked: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_TARGET")
+    marker = tmp_path / "ran"
+    result = sandbox_run(orch, "--dir", str(checked), "--", "touch", str(marker))
+    assert_error(result, USAGE, "usage")
+    assert not marker.exists()
+
+
+def test_sandbox_run_does_not_need_the_hub(
+    orch: Call, checked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    code, data = sandbox_run(orch, "--dir", str(checked), "--", "true")
+    assert code == 0, data
+
+
+def test_sandbox_run_refuses_a_directory_that_is_not_a_linked_worktree(
+    orch: Call, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    marker = tmp_path / "ran"
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    for directory in (repo, plain):
+        result = sandbox_run(orch, "--dir", str(directory), "--", "touch", str(marker))
+        assert_error(result, USAGE, "refused")
+    assert not marker.exists()
+
+
+def test_sandbox_run_does_not_touch_the_state_database(
+    orch: Call, env: Env, checked: Path
+) -> None:
+    code, data = sandbox_run(orch, "--dir", str(checked), "--", "true")
+    assert code == 0, data
+    assert not config.state_db_path(env.orch_home).exists()
+    assert not env.paths.todo.exists()
