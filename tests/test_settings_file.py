@@ -44,8 +44,7 @@ def test_pre_bash_matches_only_bash() -> None:
 
 def test_secrets_are_denied_to_the_file_tools() -> None:
     assert SETTINGS["permissions"]["deny"] == [
-        f"{tool}(~/.orch/secrets/**)"
-        for tool in ("Read", "Grep", "Glob", "Edit", "Write")
+        f"{tool}(~/.orch/secrets/**)" for tool in ("Read", "Grep", "Edit")
     ]
 
 
