@@ -75,6 +75,11 @@ def recover(
 
 
 def summary(conn: sqlite3.Connection, *, target: str, orphaned: Sequence[str]) -> str:
+    orphaned = [
+        task_id
+        for task_id in orphaned
+        if (task := store.get_task(conn, task_id)) is not None and task.target == target
+    ]
     tasks = store.list_tasks(
         conn,
         target=target,
