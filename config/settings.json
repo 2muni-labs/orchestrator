@@ -35,9 +35,7 @@
     "deny": [
       "Read(~/.orch/secrets/**)",
       "Grep(~/.orch/secrets/**)",
-      "Glob(~/.orch/secrets/**)",
-      "Edit(~/.orch/secrets/**)",
-      "Write(~/.orch/secrets/**)"
+      "Edit(~/.orch/secrets/**)"
     ]
   }
 }
