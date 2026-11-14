@@ -425,6 +425,37 @@ def test_summary_is_empty_when_nothing_needs_action(conn: sqlite3.Connection) ->
     assert summary(conn, target="orchestrator", orphaned=[]) == ""
 
 
+def test_summary_lists_only_this_targets_new_orphans(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "zz", TaskState.ORPHANED)
+    add_task(conn, "x", TaskState.ORPHANED, target="other")
+    add_task(conn, "a", TaskState.ORPHANED)
+    text = summary(conn, target="orchestrator", orphaned=["zz", "x", "gone", "a"])
+    assert text.splitlines() == [
+        "orch 복구 요약 (대상 orchestrator)",
+        "- a: orphaned",
+        "- zz: orphaned",
+        "이번에 orphaned로 바꾼 작업: zz, a",
+    ]
+
+
+def test_summary_is_empty_when_only_another_target_was_orphaned(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "x", TaskState.ORPHANED, target="other")
+    assert summary(conn, target="orchestrator", orphaned=["x"]) == ""
+
+
+def test_summary_drops_the_line_when_no_new_orphan_is_this_targets(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "j", TaskState.JUDGING)
+    add_task(conn, "x", TaskState.ORPHANED, target="other")
+    text = summary(conn, target="orchestrator", orphaned=["x"])
+    assert text.splitlines() == ["orch 복구 요약 (대상 orchestrator)", "- j: judging"]
+
+
 # handle_session_start
 
 
@@ -441,6 +472,33 @@ def test_session_start_outputs_additional_context(
         conn, target="orchestrator", orphaned=["a"]
     )
     assert "\n" not in text.strip()
+
+
+def test_session_start_recovers_another_target_without_reporting_it(
+    conn: sqlite3.Connection, environ: dict[str, str]
+) -> None:
+    add_task(conn, "x", TaskState.RUNNING, target="other")
+    add_run(conn, "x")
+    assert handle_session_start("{}", environ, now=NOW, alive=dead) == ""
+    assert state(conn, "x") is TaskState.ORPHANED
+
+
+def test_session_start_reports_only_this_targets_orphans(
+    conn: sqlite3.Connection, environ: dict[str, str]
+) -> None:
+    add_task(conn, "a", TaskState.RUNNING)
+    add_run(conn, "a", pid=1)
+    add_task(conn, "x", TaskState.RUNNING, target="other")
+    add_run(conn, "x", pid=2)
+    text = handle_session_start("{}", environ, now=NOW, alive=dead)
+    assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == "\n".join(
+        [
+            "orch 복구 요약 (대상 orchestrator)",
+            "- a: orphaned",
+            "이번에 orphaned로 바꾼 작업: a",
+        ]
+    )
+    assert state(conn, "x") is TaskState.ORPHANED
 
 
 def test_session_start_without_a_target_recovers_silently(
