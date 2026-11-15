@@ -18,6 +18,8 @@
 | D5 | 저장소 구성 | 7장 참고: 저장소 분리 + 버전 붙은 출력 계약 | 허브 통합, 서브모듈 | 미정 |
 | D6 | 측정 먼저 | 4장 측정을 허브 작업보다 먼저 | 작업과 병행 | 미정 |
 | D7 | 진행도 데이터 | 대상별 `docs/roadmap.toml` + 지시서 `milestone` 필드 | 설계 문서 표 파싱 | 미정 |
+| D8 | 토큰 사용량과 5시간·주간 한도 | 작업공간의 책임. 에이전트가 남기는 세션 기록을 작업공간이 직접 읽음 | 허브가 runs에 기록 | **결정** (2026-11-15, 사용자) |
+| D9 | 스키마·프로토콜 정의 위치 | 8장: 만드는 쪽이 정의. orch 출력은 허브, 작업공간 서버와 화면 사이는 작업공간 저장소 | 별도 계약 저장소 | 미정 (권장안 제시) |
 
 아래 2·3장은 D1~D4의 권장안을 전제로 씁니다.
 
@@ -70,13 +72,15 @@ v1은 1주일 운용 범위, v2는 그 뒤입니다.
 
 ### D. 에이전트 버전과 사용량
 
+책임 구분(D8): 버전 고정과 업그레이드 판단은 허브가 갖고, 토큰 사용량과 한도는 작업공간이 갖습니다. 작업공간은 에이전트의 세션 기록(Codex `~/.codex/sessions/**/rollout-*.jsonl`, Claude Code `~/.claude/projects/**/*.jsonl`)에서 사용량 필드만 읽고, 기록의 `cwd`가 어느 작업 워크트리인지로 작업과 회차에 연결합니다. 실행 결과를 한도 오류(`BLOCKED_QUOTA`)로 분류하는 일은 배분 판단에 쓰이므로 계속 허브가 맡습니다.
+
 | ID | 요건 | 범위 |
 | --- | --- | --- |
 | AG-1 | Claude Code, Codex, orch의 설치·고정·최신 버전과 차이 | v1 |
 | AG-2 | 새 버전 알림과 올리기 전에 다시 측정할 항목 목록. 자동 업그레이드·버튼 없음 | v1 |
-| AG-3 | 서브 실행별 입력·캐시·출력·추론 토큰을 대상·레인·모델·기간별로 집계 | v1(Codex), C 레인은 P5-M2 뒤 |
-| AG-4 | Codex 5시간·주간 사용률과 리셋 시각(마지막 실행 시점 값임을 표시). Claude 한도는 P5-M1 결과에 따름 | v1 / 미정 |
-| AG-5 | 메인 세션 토큰 | P5-M5 뒤 |
+| AG-3 | 서브 실행별 입력·캐시·출력·추론 토큰을 대상·레인·모델·기간별로 집계. 작업공간이 세션 기록에서 직접 계산 | v1(Codex), C 레인은 W-M2 뒤 |
+| AG-4 | Codex 5시간·주간 사용률과 리셋 시각(마지막 기록 시점 값임을 표시). Claude 한도는 W-M3 결과에 따름 | v1 / 미정 |
+| AG-5 | 메인 세션 토큰 | W-M2 뒤 |
 
 ### E. 진행도
 
@@ -92,6 +96,7 @@ v1은 1주일 운용 범위, v2는 그 뒤입니다.
 | --- | --- |
 | NF-1 | Tailscale 인터페이스에만 바인드, Tailscale 신원 또는 토큰 인증, WebSocket Origin 검사. 터미널 연결은 원격 셸과 같은 위험으로 다룸 |
 | NF-2 | 서버는 `~/.orch/config` 전체, `~/.orch/secrets`, 토큰을 읽지 않음. orch 데이터는 orch가 `redact`를 거쳐 낸 출력만 씀 |
+| NF-6 | 에이전트 세션 기록에는 대화 전문이 들어 있으므로, 서버는 사용량·한도·버전·`cwd` 필드만 추출하고 나머지는 저장하거나 화면에 보내지 않음. 인증 파일(Codex `auth.json`, 키체인)은 읽지 않음 |
 | NF-3 | 실행 호스트는 Intel 맥(x86_64). 가벼운 서버, launchd 시작·재기동 |
 | NF-4 | orch 출력 계약 버전 확인. 모르는 버전이면 해당 화면만 끄고 경고 |
 | NF-5 | 의존성 설치는 준비 단계에서만 네트워크 사용, 테스트·lint는 네트워크 없이 (orch 게이트 조건) |
@@ -100,15 +105,22 @@ v1은 1주일 운용 범위, v2는 그 뒤입니다.
 
 외부 도구의 동작은 고정 버전에서 잰 결과로만 지시서에 씁니다.
 
+허브 쪽 측정(허브 작업의 지시서에 씀):
+
 | ID | 확인할 것 | 영향 |
 | --- | --- | --- |
-| P5-M1 | Claude 구독 한도(5시간·주간)를 비대화형으로 읽을 수 있는지 (Claude Code 2.1.319) | AG-4 |
-| P5-M2 | `claude -p` JSON 출력의 인자, 종료 코드, usage 필드 | AG-3, `m-p5-lane-c-usage` |
 | P5-M3 | Claude Code·Codex 최신 버전 확인 위치와 인증 필요 여부 | AG-1, `m-p5-versions` |
 | P5-M4 | 권한 승인 대기가 끝났음을 알 수 있는 훅 이벤트 | OR-2, `m-p5-input-wait` |
-| P5-M5 | 메인 세션 기록의 usage 필드 | AG-5 |
 
-확인된 사실(2026-11-15): B 레인 실행 로그의 `turn.completed`에 `usage`(입력, 캐시 입력, 캐시 쓰기, 출력, 추론 토큰)가 있습니다. C 레인 로그는 일반 텍스트라 usage가 없습니다. runs 테이블에는 토큰 열이 없습니다. Notification 훅의 `input_wait`는 ntfy로만 보내고 기록을 남기지 않습니다. Claude Code 고정 버전은 `launcher.py`의 상수, Codex 버전은 `~/.orch/config`의 절대 경로에 들어 있습니다.
+작업공간 쪽 측정(D8에 따라 작업공간 저장소의 설계 문서에 씀, 고정 버전 기준):
+
+| ID | 확인할 것 | 영향 |
+| --- | --- | --- |
+| W-M1 | Codex rollout의 `session_meta.cwd`·`cli_version`, `token_count`의 토큰 필드와 `rate_limits`의 형식(codex-cli 0.160.0) | AG-3, AG-4 |
+| W-M2 | `claude -p`(C 레인)와 메인 세션이 세션 기록을 남기는 위치, 회차와 연결할 키, usage 필드(Claude Code 2.1.319) | AG-3, AG-5 |
+| W-M3 | Claude 구독 한도(5시간·주간)를 비대화형으로 읽을 수 있는지 | AG-4 |
+
+확인된 사실(2026-11-15): Codex rollout에는 `session_meta`(`cwd`, `cli_version`, `session_id` 포함)와 `token_count` 이벤트가 있습니다. B 레인 실행 로그의 `turn.completed`에도 `usage`가 있지만, D8에 따라 허브는 이를 기록하지 않습니다. 워크트리 경로로 만든 Claude Code 프로젝트 디렉터리가 있습니다. Notification 훅의 `input_wait`는 ntfy로만 보내고 기록을 남기지 않습니다. Claude Code 고정 버전은 `launcher.py`의 상수, Codex 버전은 `~/.orch/config`의 절대 경로에 들어 있습니다.
 
 ## 5. 허브 작업
 
@@ -124,18 +136,17 @@ v1은 1주일 운용 범위, v2는 그 뒤입니다.
 
 | ID | 내용 | 등급 | 수정 범위 | 의존 | 묶음 |
 | --- | --- | --- | --- | --- | --- |
-| `m-p5-schema6` | 스키마 v6: runs 토큰 열, tasks `milestone`, 지시서 검증 | L3 | `store.py`, `models.py`, 지시서 파서 | `h-pins` | 1 |
-| `m-p5-usage-b` | B 레인 `turn.completed` usage를 runs에 기록 | L3 | `runner.py`, `lanes/codex.py`(안전) | schema6 | 1 |
+| `m-p5-schema6` | 스키마 v6: tasks `milestone`, 지시서 검증 | L3 | `store.py`, `models.py`, 지시서 파서 | `h-pins` | 1 |
 | `m-p5-events` | `orch events --follow [--since <id>] [--target]`, JSON 한 줄씩 | L3 | `cli.py`, `store.py` | — | 1 |
-| `m-p5-show` | `orch show <id>`: 지시서, 결과, 게이트, 리뷰, PR, 로그 경로 | L2 | `cli.py`, `render.py` | schema6 | 1 |
-| `m-p5-contract` | 화면이 읽는 출력에 `schema_version`과 계약 테스트 | L2 | `cli.py` | 위 명령 | 1 |
-| `m-p5-lane-c-usage` | C 레인 JSON 출력과 usage 기록 | L3 | `lanes/claude.py`(안전) | schema6, P5-M2 | 2 |
+| `m-p5-show` | `orch show <id>`: 지시서, 결과, 게이트, 리뷰, PR, 로그 경로, 회차별 레인·모델·시작·종료 시각·워크트리 경로(작업공간이 사용량을 회차에 연결하는 키) | L2 | `cli.py`, `render.py` | schema6 | 1 |
+| `m-p5-contract` | 화면이 읽는 출력에 `schema_version`, `schemas/cli/`의 JSON Schema와 계약 테스트(8장) | L2 | `cli.py` | 위 명령, `h-docs-p5` | 1 |
 | `m-p5-input-wait` | 입력 대기 시작·끝 기록과 events 출력 | L3 | `hooks.py`(안전) | P5-M4 | 2 |
-| `m-p5-usage` | `orch usage`: 버전, 토큰 집계, 한도 | L3 | 새 `usage.py`, `cli.py` | usage-b, `h-pins`, P5-M3 | 2 |
-| `m-p5-versions` | doctor `agent_versions`(하루 한 번, 경고만), `launcher`가 `pins.toml`에서 고정 버전을 읽음 | L3 | `doctor.py`, `launcher.py`(안전) | `h-pins`, P5-M3 | 2 |
+| `m-p5-versions` | `orch versions`(설치·고정·최신 캐시, 재측정 항목)와 doctor `agent_versions`(하루 한 번, 경고만). `launcher`가 `pins.toml`에서 고정 버전을 읽음 | L3 | `doctor.py`, `launcher.py`(안전), `cli.py` | `h-pins`, P5-M3 | 2 |
 | `m-p5-roadmap` | `orch roadmap [--target]`: 대상 기본 브랜치의 로드맵 검증과 진척률 | L2 | 새 `roadmap.py`, `cli.py` | schema6, `h-docs-p5` | 2 |
 
-묶음 1이 끝나면 orch-deck v1을 시작할 수 있습니다. 각 묶음 뒤에 버전 PR, 태그, 승인 후 설치를 거칩니다. 새로 생기는 `usage.py`, `roadmap.py`를 안전 장치 경로에 넣을지는 `h-docs-p5`에서 정합니다.
+D8에 따라 빠진 작업: runs 토큰 열, B 레인 usage 기록(`m-p5-usage-b`), C 레인 JSON 출력 전환(`m-p5-lane-c-usage`), `orch usage`. 이로써 묶음 1에서 안전 장치 경로 변경이 없어졌습니다.
+
+묶음 1이 끝나면 orch-deck v1을 시작할 수 있습니다. 각 묶음 뒤에 버전 PR, 태그, 승인 후 설치를 거칩니다. 새로 생기는 `roadmap.py`를 안전 장치 경로에 넣을지는 `h-docs-p5`에서 정합니다.
 
 ### orch-deck 저장소 준비
 
@@ -145,7 +156,8 @@ v1은 1주일 운용 범위, v2는 그 뒤입니다.
 
 - 터미널 연결은 원격 셸입니다. NF-1이 무너지면 Tailscale 안의 누구든 메인 세션에 입력할 수 있습니다.
 - 출력 계약을 정해도 orch 버전과 화면 버전이 어긋나는 기간이 생깁니다(NF-4).
-- 묶음 1만 해도 안전 장치 경로가 하나(`lanes/codex.py`) 들어갑니다.
+- 작업공간이 에이전트 세션 기록의 형식에 의존합니다. 에이전트를 업그레이드하면 W-M1·W-M2를 다시 측정해야 하므로, 허브의 재측정 항목(`h-pins`)에 작업공간 측정도 넣습니다.
+- 세션 기록에는 대화 전문이 있어 작업공간 서버가 읽는 범위가 넓어집니다(NF-6).
 
 ## 7. 저장소 구성 (D5)
 
@@ -163,3 +175,27 @@ C를 쓰더라도 사용자에게는 하나의 서비스처럼 보이게 할 수
 - 감시: `orch doctor`에 orch-deck 생존 점검 항목을 추가할 수 있습니다(선택, 경고만).
 - 진입점: `orch open` 출력에 orch-deck 주소를 함께 냅니다(선택).
 - 호환성: orch-deck이 지원하는 orch 버전 범위를 선언하고, 허브의 버전 PR 체크리스트에 "orch-deck 계약 테스트 통과"를 넣습니다.
+
+## 8. 스키마와 프로토콜의 정의 위치 (D9)
+
+원칙: **데이터를 만드는 쪽이 형식을 정의하고, 받는 쪽은 그 사본을 고정해 맞는지 확인합니다.** 만드는 쪽의 테스트가 형식을 지켜야 깨지는 변경이 원천에서 잡히기 때문입니다. 허브가 이미 `schemas/result.json`(서브가 만들고 orch가 검증)을 같은 방식으로 두고 있습니다.
+
+작업공간이 다루는 경계는 세 개이고, 각각 정의하는 곳이 다릅니다.
+
+| 경계 | 만드는 쪽 | 정의하는 곳 | 형식 |
+| --- | --- | --- | --- |
+| ① orch 출력 계약: `status`, `show`, `events`, `roadmap`, `versions`, `doctor`의 JSON | orch | **허브** `schemas/cli/<명령>.v<N>.json`, 규칙은 `docs/design/` | JSON Schema 2020-12. `events --follow`는 JSON Lines(한 줄에 이벤트 하나, `id`가 단조 증가) |
+| ② 작업공간 서버 ↔ 화면 클라이언트: WebSocket 메시지, 터미널 스트림, 레이아웃 상태, 인증 | 작업공간 서버 | **작업공간 저장소** 설계 문서와 코드(TypeScript 타입) | 작업공간이 정함. 허브는 관여하지 않음 |
+| ③ 에이전트 세션 기록(Codex rollout, Claude Code jsonl) | Codex, Claude Code | 어느 쪽도 정의하지 않음. **작업공간 저장소**에 고정 버전 기준 측정 결과로 기록(W-M1~W-M3) | 외부 형식. 읽는 필드만 최소로 |
+
+**① 허브 계약의 규칙 (권장)**
+
+- 각 출력에 `schema_version`(정수)을 넣습니다. 필드 추가는 같은 버전 안에서 허용하고, 받는 쪽은 모르는 필드를 무시합니다. 필드 삭제, 이름이나 의미 변경, 형식 변경은 버전을 올립니다.
+- 버전을 올릴 때는 orch가 바로 전 버전도 한 릴리스 동안 낼 수 있게 합니다(예: `--schema-version <N>`). 그 사이에 작업공간이 새 버전으로 옮깁니다.
+- 허브의 계약 테스트는 실제 명령 출력을 `schemas/cli/`의 스키마로 검증하고, G2에서 돕니다.
+- 작업공간 저장소는 지원하는 버전의 스키마 사본을 고정해 넣고(어느 orch 태그에서 가져왔는지 기록), 자체 테스트로 그 사본과 자기 타입이 맞는지 확인합니다. 사본은 허브 태그에서 가져오는 스크립트로만 갱신합니다.
+- `schemas/`는 이미 허브의 공유 경로입니다. 스키마 추가는 하네스 PR이나 `m-p5-contract`의 테스트 커밋에서 메인이 합니다.
+
+**별도 계약 저장소를 두지 않는 이유**: 출력을 만드는 쪽이 orch 하나이고 받는 쪽도 작업공간 하나뿐입니다. 저장소를 하나 더 두면 계약 변경마다 PR이 셋이 되고, 허브 테스트가 다른 저장소의 파일을 기준으로 삼게 됩니다. 만드는 쪽이나 받는 쪽이 둘 이상이 되면 다시 검토합니다.
+
+**②를 허브에 두지 않는 이유**: 작업공간 서버와 화면은 같은 저장소에서 함께 배포되므로, 그 사이의 메시지는 내부 구현입니다. 허브에 두면 작업공간의 화면 변경마다 허브 PR이 필요해집니다.
