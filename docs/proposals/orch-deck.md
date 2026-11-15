@@ -41,8 +41,8 @@ orch 안에는 LLM이 없습니다. 요청 해석, 분해, 지시서·테스트 
 
 | # | 항목 | 권장안 | 다른 안 | 상태 |
 | --- | --- | --- | --- | --- |
-| D1 | 클라이언트 형태 | 맥에서 서버, 브라우저 PWA (Windows·iPhone에 설치 없음) | 네이티브(Tauri), TUI | 미정 |
-| D2 | 기술 스택 | 7장. Python 서버(작업공간 전용 의존성) + 빌드 없는 화면(ES 모듈, xterm.js 등 고정 사본) | Python 서버 + TypeScript 빌드 화면, Node 서버 | 미정 (단일 저장소로 바뀌어 재검토) |
+| D1 | 클라이언트 형태 | NF-7(Windows·iPhone·iPad 동일 경험)을 한 코드베이스로 맞출 수 있는 형태. 후보: 브라우저 PWA, 크로스 플랫폼 네이티브 | — | 미정 |
+| D2 | 기술 스택 | **언어를 고정하지 않음** (2026-11-15, 사용자). 7장의 선정 기준으로 고름 | — | 미정 |
 | D3 | v1 범위 | 보기 전용 + 터미널 연결 | orch 명령 실행 포함 | 미정 |
 | D4 | 구성 요소 이름 | `orch deck` (하위 명령, 패키지 `orch.deck`) | 별도 제품명 | 미정 |
 | D5 | 저장소 구성 | — | — | **결정**: 단일 저장소 (2026-11-15, 사용자) |
@@ -53,6 +53,8 @@ orch 안에는 LLM이 없습니다. 요청 해석, 분해, 지시서·테스트 
 | D10 | Phase 5의 첫 실제 대상 | 단일 저장소로 작업공간도 허브 안에서 개발하므로, "실제 대상 1주일 운용"을 위한 다른 대상 저장소를 따로 정함 | Phase 5 종료 조건을 자기 적용 기준으로 바꿈 | 미정 |
 | D11 | 외부 에이전트 조작 | ACP(Agent Client Protocol) 클라이언트 | 에이전트별 개별 연동 | 미정 |
 | D12 | MCP 호출·입출력 관찰 | 먼저 OpenTelemetry 수신, MCP 중계는 선택 기능으로 나중 | 처음부터 MCP 중계 | 미정 |
+| D13 | 테스트 분리와 변경 부분만 테스트 | 9장 | — | **결정**: 파이프라인과 작업공간 테스트를 나누고, 기존 테스트도 기능별로 나눠 변경된 부분만 테스트 (2026-11-15, 사용자). 전체 테스트를 돌리는 조건은 미정(9장 권장안) |
+| D14 | "동일한 사용 경험"의 범위 | NF-7: 기능과 작업공간 상태는 같고, 화면 크기와 입력 수단에 따라 배치·조작 방식만 다름 | 화면까지 같은 배치 | 미정 (해석 확인 필요) |
 
 보류: 로컬 LLM(데스크톱 GPU) 레인은 추후 논의합니다.
 
@@ -73,14 +75,15 @@ v1은 첫 운용 범위, v2는 그 뒤입니다.
 
 | ID | 요건 | 출처 | 범위 |
 | --- | --- | --- | --- |
-| WS-1 | 맥에서 서버 하나를 띄우고 Windows·iPhone 브라우저가 Tailscale로 접속. 홈 화면 설치(PWA) | Tern `web serve`, `remote serve` | v1 |
+| WS-1 | 맥에서 서버 하나를 띄우고 Windows·iPhone·iPad 클라이언트가 Tailscale로 접속 | Tern `web serve`, `remote serve` | v1 |
 | WS-2 | 기존 tmux 세션 `orch-<target>`의 창을 xterm.js 터미널 타일로 연결. 세션 유지는 tmux와 `orch service restore`에 맡김 | Tern daemon | v1 |
 | WS-3 | 여러 기기가 같은 세션을 동시에 보고, 한쪽 입력이 다른 쪽에도 보임 | Tern 다중 클라이언트 | v1 |
 | WS-4 | Hyprland식 타일링: dwindle/master, 간격, 둥근 모서리, 활성 테두리 그라데이션, 베지어 애니메이션 | Tern 레이아웃 + Hyprland | v1 |
-| WS-5 | 분할·탭·플로팅, 대상마다 workspace(Super+숫자), 스크래치패드(special workspace) | Tern | v1 |
-| WS-6 | 키보드 위주 조작, 단축키 설정 파일 | Hyprland | v1 |
-| WS-7 | 기기별 레이아웃 저장과 재접속 시 복원 | Tern | v1 |
-| WS-8 | 휴대폰에서는 한 번에 한 패널, 스와이프 전환 | Tern iPhone | v1 |
+| WS-5 | 분할·탭·플로팅, 대상마다 workspace, 스크래치패드(special workspace) | Tern | v1 |
+| WS-6 | 모든 동작을 키보드와 터치 양쪽으로 할 수 있음. 키보드는 리더 키 방식(OS가 가로채는 Windows 키·Super 대신, 예: tmux의 prefix처럼 한 키 뒤에 명령 키), 단축키 설정 파일. 터치는 같은 동작을 제스처와 명령 팔레트로 | Hyprland | v1 |
+| WS-7 | 작업공간 상태(workspace, 열린 패널, 레이아웃)는 서버가 가지고 모든 기기가 공유. 한 기기에서 연 패널이 다른 기기에도 보임 | Tern 다중 클라이언트 | v1 |
+| WS-8 | 화면 크기에 맞춘 배치: 넓은 화면은 타일, 좁은 화면(iPhone 세로)은 같은 타일 트리를 한 번에 한 타일씩 보여 주고 제스처로 이동. 기능 차이는 없음 | Tern iPhone | v1 |
+| WS-9 | 터치 기기의 터미널 입력: Ctrl, Esc, Tab, 방향키를 담은 보조 키 줄. iPad의 하드웨어 키보드도 지원 | — | v1 |
 
 ### B. 블록 (Tern 채택, orch용으로 변경)
 
@@ -150,6 +153,8 @@ v1은 첫 운용 범위, v2는 그 뒤입니다.
 | NF-3 | 실행 호스트는 Intel 맥(x86_64). 가벼운 서버, launchd 시작·재기동 |
 | NF-4 | 계약 버전 확인. 실행 중인 서버가 설치본보다 오래된 경우를 포함해, 모르는 버전이면 해당 화면만 끄고 경고 |
 | NF-5 | 의존성 설치는 준비 단계에서만 네트워크 사용, 테스트·lint는 네트워크 없이 (게이트 조건) |
+| NF-7 | **Windows·iPhone·iPad에서 동일한 사용 경험** (2026-11-15, 사용자 요구). 세 기기에서 같은 기능, 같은 작업공간 상태, 같은 조작 모델을 제공하고, 화면 크기와 입력 수단(키보드, 터치, iPad 하드웨어 키보드)에 따라 배치만 달라짐(D14). 기기별 전용 기능을 두지 않음. 세 기기 모두에서 같은 인수 시나리오를 통과해야 출시 |
+| NF-8 | 클라이언트는 Windows 데스크톱 브라우저 또는 앱, iOS·iPadOS에서 동작. iOS 쪽 제약(브라우저 엔진, 백그라운드 연결 유지, 알림, 단축키 가로채기)은 W-M6에서 측정하고 D1을 정함 |
 | NF-6 | 에이전트 세션 기록과 OTel 이벤트에는 대화·도구 내용이 들어 있을 수 있으므로, 필요한 필드만 추출하고 나머지는 저장하거나 화면에 보내지 않음. 인증 파일(Codex `auth.json`, 키체인)은 읽지 않음 |
 
 ## 4. 측정 (코드 변경 없음, 작업보다 먼저)
@@ -165,6 +170,8 @@ v1은 첫 운용 범위, v2는 그 뒤입니다.
 | W-M3 | Claude 구독 한도(5시간·주간)를 비대화형으로 읽을 수 있는지 | AG-4 |
 | W-M4 | Claude Code·Codex의 OpenTelemetry 이벤트: 켜는 방법, 도구 호출 이벤트의 필드, MCP 도구 이름이 구별되는지 | MC-1 |
 | W-M5 | ACP 어댑터로 Claude Code·Codex·무료 에이전트 하나를 붙였을 때의 세션 생성, 권한 요청, 종료 | EX-1 |
+| W-M6 | iPhone·iPad·Windows에서 후보 클라이언트 형태의 동작: 터미널 입력(보조 키, 하드웨어 키보드), 리더 키가 OS나 브라우저에 가로채이지 않는지, 화면 잠금·앱 전환 뒤 연결 복구, 홈 화면 설치와 알림 | NF-7, NF-8, D1 |
+| T-M1 | 테스트 묶음 나누기 전후의 시간: 전체, 묶음별, 통합 테스트. 모듈 import 관계로 계산한 영향 범위가 실제 실패를 놓치지 않는지(최근 머지된 PR들로 되짚어 봄) | 9장 |
 
 확인된 사실(2026-11-15): Codex rollout에는 `session_meta`(`cwd`, `cli_version`, `session_id` 포함)와 `token_count` 이벤트가 있습니다. B 레인 실행 로그의 `turn.completed`에도 `usage`가 있지만, D8에 따라 파이프라인은 이를 기록하지 않습니다. 워크트리 경로로 만든 Claude Code 프로젝트 디렉터리가 있습니다. Notification 훅의 `input_wait`는 ntfy로만 보내고 기록을 남기지 않습니다. Claude Code 고정 버전은 `launcher.py`의 상수, Codex 버전은 `~/.orch/config`의 절대 경로에 들어 있습니다.
 
@@ -175,7 +182,8 @@ v1은 첫 운용 범위, v2는 그 뒤입니다.
 | ID | 내용 | user check |
 | --- | --- | --- |
 | `h-docs-p5` | 확정된 결정을 `docs/design/`에: 구성 요소와 경계, 계약 규칙, 로드맵 파일 형식, `milestone` 필드, Tern 항목 변경("보류" → "자체 작업공간으로 대체"), 측정 결과, Phase 5 계획 | — |
-| `h-deck-base` | 작업공간 전용 의존성과 그 예외 규칙(`AGENTS.md`의 표준 라이브러리 원칙은 파이프라인에만 적용), `pyproject.toml` 선택 의존성 묶음, `uv.lock`, `targets.toml`의 공유·안전 장치 경로 추가, 화면 고정 사본(vendored) 위치 | ✅ |
+| `h-tests-split` | 기존 테스트를 기능 묶음별 디렉터리로 옮기고(9장), 묶음 대응 파일을 만듦. 내용은 바꾸지 않고 옮기기만 하며, 옮기기 전후 테스트 수와 결과가 같은지 확인 | ✅ (`targets.toml`) |
+| `h-deck-base` | D2 확정 뒤. 작업공간 디렉터리, 의존성 선언과 lock, 예외 규칙(`AGENTS.md`의 표준 라이브러리 원칙은 파이프라인에만 적용), 작업공간 테스트 묶음, `targets.toml`의 공유·안전 장치 경로·준비 명령 | ✅ |
 | `h-pins` | 고정 버전과 버전별 재측정 항목(작업공간 측정 W-M* 포함)을 한 파일(예: `config/pins.toml`)로, `templates/task.md`에 `milestone` | ✅ |
 | `h-roadmap-hub` | 허브 `docs/roadmap.toml`, Phase 0~5 이관 | — |
 
@@ -187,6 +195,7 @@ v1은 첫 운용 범위, v2는 그 뒤입니다.
 | `m-p5-events` | `orch events --follow [--since <id>] [--target]`, JSON 한 줄씩 | L3 | `cli.py`, `store.py` | — |
 | `m-p5-show` | `orch show <id>`: 지시서, 결과, 게이트, 리뷰, PR, 로그 경로, 회차별 레인·모델·시작·종료 시각·워크트리 경로 | L2 | `cli.py`, `render.py` | schema6 |
 | `m-p5-contract` | 계약 출력에 `schema_version`, `schemas/cli/`의 JSON Schema와 계약 테스트, 파이프라인 → 작업공간 import 금지 테스트 | L2 | `cli.py` | 위 명령, `h-docs-p5` |
+| `m-p5-test-select` | 테스트 묶음 선택(9장): 대상 설정의 묶음 정의를 읽고, 변경 경로와 영향 범위로 G2·G2_PRE_PR에서 돌릴 묶음을 고름. 전체 실행 조건, 결과에 돌린 묶음과 이유를 기록 | L3 | `gate.py`(안전), `config.py`, `prflow.py` | `h-tests-split`, T-M1 |
 
 ### orch 작업 — 파이프라인 쪽 (묶음 2: 측정 뒤)
 
@@ -226,12 +235,20 @@ D8에 따라 빠진 작업: runs 토큰 열, B 레인 usage 기록, C 레인 JSO
 
 | 결과 | 대응 |
 | --- | --- |
-| `AGENTS.md`의 "런타임은 표준 라이브러리만" 원칙과 충돌 | 원칙을 파이프라인(`src/orch`의 작업공간 밖)에만 적용하고, 작업공간 의존성은 선택 의존성 묶음으로 분리(`h-deck-base`). 파이프라인이 작업공간 의존성 없이 설치·동작하는지 테스트 |
-| 두 번째 도구 체인(Node) | D2 권장안: 서버는 Python, 화면은 빌드 없는 ES 모듈과 고정 사본(xterm.js 등). 게이트에 Node가 들어오지 않음. 화면이 커지면 다시 검토 |
-| 게이트 시간: 전체 테스트가 이미 약 14분 반(2026-11-15 측정) | 작업공간 테스트는 빠른 단위 테스트 위주. 늘어나면 테스트 명령을 구성 요소별로 나누는 방안 검토(`targets.toml` 변경) |
+| `AGENTS.md`의 "런타임은 표준 라이브러리만" 원칙과 충돌 | 원칙을 파이프라인에만 적용. 작업공간은 자기 디렉터리(예: `deck/`)에 자기 의존성 선언과 lock 파일을 두고(`h-deck-base`), 파이프라인이 작업공간 없이 설치·동작하는지 테스트 |
+| 작업공간의 언어가 정해지지 않음(D2) | 아래 선정 기준으로 고름. 어떤 언어든 준비 명령은 샌드박스 밖에서, 테스트·lint는 네트워크 없이 샌드박스 안에서 돌아야 함 |
+| 게이트 시간: 전체 테스트가 이미 약 14분 반(2026-11-15 측정) | 9장: 구성 요소별·기능별 테스트 묶음과 변경 부분만 테스트 |
 | 하네스·안전 장치 경로와 화면 코드가 한 저장소 | 서버 골격·터미널·외부 에이전트 경로를 `safety_paths`에 추가. 파이프라인 → 작업공간 import 금지 테스트 |
 | 실행 중인 서버가 설치본보다 오래될 수 있음(launchd가 띄운 프로세스) | 계약 `schema_version` 확인(NF-4), 설치 절차에 서버 재기동 추가 |
 | Phase 5의 "실제 대상 운용"이 다시 자기 적용 | D10에서 다른 대상 저장소를 정하거나 종료 조건을 바꿈 |
+
+**작업공간 기술 스택 선정 기준 (D2)**
+
+1. NF-7: Windows·iPhone·iPad에서 한 코드베이스로 같은 경험을 낼 수 있음 (W-M6로 확인)
+2. 실행 호스트(Intel 맥, x86_64)에서 서버가 가볍게 24시간 돎
+3. 준비 명령 한 번 뒤 테스트·lint가 네트워크 없이 `sandbox-exec` 안에서 돎(게이트 조건). 테스트 묶음을 경로로 고를 수 있음(9장)
+4. 터미널 연결(pty, tmux), WebSocket, ACP(JSON-RPC), OTLP 수신을 지원하는 라이브러리가 있음
+5. 서브 에이전트(Codex, Claude)가 그 언어로 구현과 테스트를 잘 해 냄
 
 검토했던 다른 안: 저장소 분리 + 버전 붙은 출력 계약, 저장소 분리 + 서브모듈. 서브모듈은 `orch prepare`·워크트리·게이트 스냅샷이 다루지 않아 새 기능이 필요했습니다.
 
@@ -253,3 +270,40 @@ D8에 따라 빠진 작업: runs 토큰 열, B 레인 usage 기록, C 레인 JSO
 - 한 저장소라 버전이 함께 움직이므로, 이전 버전을 함께 내는 기간은 두지 않습니다. 다만 실행 중인 서버가 설치본보다 오래된 경우를 위해 서버는 버전을 확인합니다(NF-4).
 - 계약 테스트는 실제 명령 출력을 `schemas/cli/`의 스키마로 검증하고, G2에서 돕니다.
 - `schemas/`는 공유 경로입니다. 스키마 추가는 하네스 PR이나 해당 작업의 테스트 커밋에서 메인이 합니다.
+
+## 9. 테스트 구조 (D13)
+
+결정(2026-11-15, 사용자): 파이프라인과 작업공간의 테스트를 나누고, 기존 테스트도 기능별로 나눠 **변경된 부분만** 테스트합니다. 전체 테스트가 약 14분 반(3990건, 2026-11-15)이라 게이트와 메인 점검의 대부분을 차지하기 때문입니다.
+
+**묶음** (2026-11-15의 `tests/` 기준 초안. 지금은 대부분 모듈 하나에 테스트 파일 하나)
+
+| 묶음 | 소스 | 지금의 테스트 |
+| --- | --- | --- |
+| `core` | `models`, `store`, `taskfile`, `config`, `redact`, `results` | `test_models`, `test_store`, `test_taskfile`, `test_config`, `test_redact`, `test_results`, `test_targets_file`, `test_settings_file` |
+| `schedule` | `scheduler`, `lifecycle` | `test_scheduler`, `test_lifecycle` |
+| `execute` | `runner`, `lanes/`, `waiter` | `test_runner`, `test_lanes`, `test_waiter`, `test_kill`, `test_fake_agents` |
+| `gate` | `gate`, `sandbox`, `gitops` | `test_gate`, `test_sandbox`, `test_sandbox_run`, `test_sandbox_real`, `test_gitops` |
+| `review-pr` | `review`, `prflow`, `github`, `credentials` | `test_review`, `test_review_codex`, `test_prflow`, `test_github`, `test_credentials` |
+| `ops` | `doctor`, `gc`, `service`, `notify` | `test_doctor`, `test_gc`, `test_service`, `test_notify` |
+| `session` | `hooks`, `guard`, `launcher`, `terminal/`, `watch`, `render` | `test_hooks`, `test_guard`, `test_guard_regress`, `test_launcher`, `test_terminal`, `test_watch`, `test_render`, `test_cli_hook` |
+| `cli` | `cli` | `test_cli` |
+| `integration` | 여러 모듈을 거치는 흐름 | `tests/integration/*` |
+| `deck` | 작업공간 디렉터리 | 작업공간 언어의 테스트 (D2 뒤) |
+
+**선택 규칙 (권장)**
+
+1. 변경된 경로를 묶음에 대응시키고, 파이프라인 안에서는 모듈 import 관계를 따라 그 모듈을 쓰는 묶음까지 넣습니다(예: `store` 변경은 거의 모든 묶음). 대응은 손으로 쓴 목록이 아니라 import 관계로 계산하고, 손으로 쓴 대응은 import로 드러나지 않는 것(설정 파일, 고정 사본, fake 실행기)만 둡니다.
+2. 테스트 기반 파일(`tests/conftest.py`, fake 실행기, 공통 도우미), `pyproject.toml`, lock 파일, `targets.toml`, 묶음 대응 파일이 바뀌면 전체를 돌립니다.
+3. 파이프라인 변경은 `integration`을 함께 돌립니다. 작업공간만 바뀌면 `deck`과 계약 테스트만 돌립니다. 계약(`schemas/cli/`)이 바뀌면 양쪽을 돌립니다.
+4. 결과에는 돌린 묶음과 고른 이유를 남기고, PR 본문과 병합 표의 Tests 칸에 "선택 실행(묶음 목록)"으로 적습니다.
+
+**전체 실행 (미정, 권장안)**
+
+- 위 2번의 경우
+- 버전 PR(태그 전)
+- 하루 한 번 기본 브랜치에서 launchd로 실행하고, 실패하면 알림(새 이벤트)
+- 메인의 두 PR 합친 상태 점검에서 두 PR의 변경을 합쳐 선택
+
+**위험**: 선택이 영향을 놓치면 깨진 변경이 게이트를 통과합니다. 그래서 T-M1에서 최근 머지된 PR들로 되짚어 놓친 것이 없는지 확인한 뒤 켜고, 하루 한 번 전체 실행으로 늦게라도 잡습니다. 게이트 판정(요건 9장)이 바뀌므로 `h-docs-p5`에서 설계 문서를 먼저 고칩니다.
+
+**작업 순서**: T-M1 측정 → `h-tests-split`(옮기기만, 하네스 PR) → `m-p5-test-select`(파이프라인 기능) → 작업공간 테스트는 `h-deck-base`에서 `deck` 묶음으로. 테스트 묶음은 대상마다 정의할 수 있게 하여, 다른 대상 저장소도 같은 기능을 씁니다.
