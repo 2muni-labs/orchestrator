@@ -16,8 +16,6 @@ This repository is the hub. It is **public**.
 ## Design documents
 
 `docs/design/` is the source of truth. Change it only through a pull request.
-`docs/proposals/` holds drafts under discussion. They are not a specification:
-never implement from them or cite them as a confirmed fact.
 
 | Document | Defines |
 | --- | --- |
@@ -28,9 +26,9 @@ never implement from them or cite them as a confirmed fact.
 | `구축 절차.md` | What to do in the current phase |
 
 When documents conflict, the order of precedence is requirements, then technical
-design, then execution design, then screen design. The build procedure only decides what is done in
-the current phase. If you are a sub-agent and find a conflict that affects your
-task, stop and report `BLOCKED`.
+design, then execution design, then screen design. The build procedure only
+decides what is done in the current phase. If you are a sub-agent and find a
+conflict that affects your task, stop and report `BLOCKED`.
 
 ## Technical conventions
 
@@ -49,7 +47,6 @@ task, stop and report `BLOCKED`.
 
 ```
 docs/design/       design documents
-docs/proposals/    drafts under discussion, not a specification
 src/orch/          orch package
 tests/             tests, owned by the main agent
 templates/task.md  task spec template
