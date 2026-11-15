@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/status.v1.json",
+  "title": "orch status output",
+  "description": "JSON output of orch status (not --human). Version 1. Fields may be added within this version and readers must ignore fields they do not know; removing, renaming or changing a field's meaning or format needs version 2 (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "tasks",
+        "blocked_chains",
+        "paused"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "target",
+              "title",
+              "state",
+              "grade",
+              "lane",
+              "attempt",
+              "pr_url",
+              "elapsed_sec",
+              "head_sha"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "prepared",
+                  "queued",
+                  "reserved",
+                  "running",
+                  "judging",
+                  "gating",
+                  "reviewing",
+                  "ready",
+                  "conflict",
+                  "pr_open",
+                  "closed",
+                  "blocked",
+                  "discarded",
+                  "orphaned"
+                ]
+              },
+              "grade": {
+                "enum": [
+                  "L1",
+                  "L2",
+                  "L3",
+                  "L3R"
+                ]
+              },
+              "lane": {
+                "enum": [
+                  "B",
+                  "C",
+                  "D"
+                ]
+              },
+              "attempt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pr_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "elapsed_sec": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "head_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "blocked_chains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "task_id",
+              "state",
+              "causes"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "prepared",
+                  "queued",
+                  "reserved",
+                  "running",
+                  "judging",
+                  "gating",
+                  "reviewing",
+                  "ready",
+                  "conflict",
+                  "pr_open",
+                  "closed",
+                  "blocked",
+                  "discarded",
+                  "orphaned"
+                ]
+              },
+              "causes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "paused": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "reason",
+              "since",
+              "note"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "since": {
+                "type": "string"
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

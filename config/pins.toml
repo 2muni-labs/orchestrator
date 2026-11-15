@@ -1,0 +1,30 @@
+# Pinned agent versions and what must be measured again before a pin moves
+# (technical design 4.13). orch versions and doctor agent_versions read this file
+# from M19 (m-p5-versions); launcher moves its pinned Claude Code version here then.
+# Changing a pin is a harness pull request that records the new measurements.
+
+[claude]
+version = "2.1.319"
+# Where the latest version is published (measured P5-M3, 2026-11-15, no auth):
+# GET <url> returns HTTP 200 and the bare version string. Same source as install.sh.
+latest_url = "https://downloads.claude.ai/claude-code-releases/latest"
+remeasure = [
+  "m14-cli: only exit 2 or a deny output blocks a PreToolUse hook",
+  "S-M1: ! bash mode and PreToolUse; a finished pane falling back to a shell",
+  "P5-M4: hook events that end a permission wait",
+  "W-M2: session record location, run key and usage fields",
+  "orch open: --append-system-prompt-file and agent injection; a resumed session keeps its first system prompt",
+]
+
+[codex]
+version = "0.160.0"
+# npm registry: GET <url> returns HTTP 200 and JSON whose "version" is the latest.
+latest_url = "https://registry.npmjs.org/@openai/codex/latest"
+remeasure = [
+  "codex-review-measure: exec exit codes, -o behaviour, --output-schema strictness",
+  "isolation: --disable hooks --disable plugins leave no hooks or MCP servers",
+  "usage limit message and rate_limits in the rollout (BLOCKED_QUOTA)",
+  "P5-M5: read-only explore answer format, exit code, -o, usage per question",
+  "S-M2: sandbox reads outside -C; wrapping in an outer sandbox-exec",
+  "W-M1: rollout session_meta, token_count and rate_limits format",
+]

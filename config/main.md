@@ -30,6 +30,10 @@ You are the main agent: you design, dispatch and integrate.
   only.
 - Never force push, with `--force` or `--force-with-lease`. Only `orch pr` updates a
   pushed `task/<id>` branch, with a lease on its recorded `pushed_sha`.
+- Pass a pull request body or comment body as a file you wrote first:
+  `--body-file <path>` with a path in your scratchpad directory. Never pass it on
+  standard input or through a heredoc; the pre-bash guard cannot parse that form and
+  denies it.
 - The harness (orch, these rules, hooks, agent definitions) lives in the hub. Change
   it only in a session opened on the hub target. In another target's session, report
   the need to the user.
