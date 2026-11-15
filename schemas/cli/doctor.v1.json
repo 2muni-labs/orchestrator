@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/doctor.v1.json",
+  "title": "orch doctor output",
+  "description": "JSON output of orch doctor. Exit 70 prints ok false with error internal and the same report fields. Version 1. Fields may be added within this version and readers must ignore fields they do not know; removing, renaming or changing a field's meaning or format needs version 2 (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "checks",
+        "killed",
+        "paused",
+        "errors",
+        "gc"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "target",
+              "item",
+              "level",
+              "at",
+              "detail"
+            ],
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "level": {
+                "enum": [
+                  "ok",
+                  "warn",
+                  "fail"
+                ]
+              },
+              "at": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "killed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paused": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "gc": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "dry_run",
+            "removed_files",
+            "removed_worktrees",
+            "skipped_worktrees",
+            "unknown_worktrees",
+            "errors"
+          ],
+          "properties": {
+            "dry_run": {
+              "type": "boolean"
+            },
+            "removed_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "removed_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "skipped_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unknown_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "target",
+              "item",
+              "level",
+              "at",
+              "detail"
+            ],
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "level": {
+                "enum": [
+                  "ok",
+                  "warn",
+                  "fail"
+                ]
+              },
+              "at": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "killed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paused": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "gc": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "dry_run",
+            "removed_files",
+            "removed_worktrees",
+            "skipped_worktrees",
+            "unknown_worktrees",
+            "errors"
+          ],
+          "properties": {
+            "dry_run": {
+              "type": "boolean"
+            },
+            "removed_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "removed_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "skipped_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unknown_worktrees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

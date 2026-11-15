@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/show.v1.json",
+  "title": "orch show output",
+  "description": "JSON output of orch show <id>. Version 1. Fields may be added within this version and readers must ignore fields they do not know; removing, renaming or changing a field's meaning or format needs version 2 (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "task",
+        "spec",
+        "result",
+        "gates",
+        "review",
+        "triage",
+        "runs"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "task": {
+          "type": "object",
+          "required": [
+            "id",
+            "target",
+            "title",
+            "state",
+            "grade",
+            "lane",
+            "model",
+            "effort",
+            "attempt",
+            "depends_on",
+            "milestone",
+            "replaces",
+            "base_sha",
+            "test_sha",
+            "gated_sha",
+            "pushed_sha",
+            "pr_url",
+            "worktree",
+            "created_at",
+            "updated_at"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "state": {
+              "enum": [
+                "prepared",
+                "queued",
+                "reserved",
+                "running",
+                "judging",
+                "gating",
+                "reviewing",
+                "ready",
+                "conflict",
+                "pr_open",
+                "closed",
+                "blocked",
+                "discarded",
+                "orphaned"
+              ]
+            },
+            "grade": {
+              "enum": [
+                "L1",
+                "L2",
+                "L3",
+                "L3R"
+              ]
+            },
+            "lane": {
+              "enum": [
+                "B",
+                "C",
+                "D"
+              ]
+            },
+            "model": {
+              "type": "string"
+            },
+            "effort": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "depends_on": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "milestone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "replaces": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "base_sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "test_sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gated_sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pushed_sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pr_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worktree": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            }
+          }
+        },
+        "spec": {
+          "description": "Front matter of R/tasks/<id>.md as parsed, or null when the file is gone.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "result": {
+          "description": "R/results/<id>.json as stored (schemas/result.json), or null.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "attempt",
+              "gate",
+              "passed",
+              "detail",
+              "at"
+            ],
+            "properties": {
+              "attempt": {
+                "type": "integer"
+              },
+              "gate": {
+                "type": "string"
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "review": {
+          "description": "R/reviews/<id>.json as stored (schemas/review.json), or null.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "triage": {
+          "description": "Path of R/reviews/<id>.triage.md when it exists, else null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "run_id",
+              "attempt",
+              "lane",
+              "model",
+              "effort",
+              "started_at",
+              "ended_at",
+              "exit_code",
+              "outcome",
+              "failure_reason",
+              "worktree",
+              "log_path"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "integer"
+              },
+              "attempt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "lane": {
+                "enum": [
+                  "B",
+                  "C",
+                  "D"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "failure_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "log_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}
