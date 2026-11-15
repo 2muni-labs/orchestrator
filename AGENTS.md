@@ -24,10 +24,11 @@ never implement from them or cite them as a confirmed fact.
 | `요건 정의.md` | Requirements: roles, specs, gates, permissions |
 | `기술 설계.md` | Data model, state machine, command logic |
 | `실행 설계.md` | Lanes, directory layout, command templates, hooks |
+| `화면 설계.md` | Workspace screens, panels, interaction, acceptance scenarios |
 | `구축 절차.md` | What to do in the current phase |
 
 When documents conflict, the order of precedence is requirements, then technical
-design, then execution design. The build procedure only decides what is done in
+design, then execution design, then screen design. The build procedure only decides what is done in
 the current phase. If you are a sub-agent and find a conflict that affects your
 task, stop and report `BLOCKED`.
 
