@@ -16,6 +16,8 @@ This repository is the hub. It is **public**.
 ## Design documents
 
 `docs/design/` is the source of truth. Change it only through a pull request.
+`docs/proposals/` holds drafts under discussion. They are not a specification:
+never implement from them or cite them as a confirmed fact.
 
 | Document | Defines |
 | --- | --- |
@@ -46,6 +48,7 @@ task, stop and report `BLOCKED`.
 
 ```
 docs/design/       design documents
+docs/proposals/    drafts under discussion, not a specification
 src/orch/          orch package
 tests/             tests, owned by the main agent
 templates/task.md  task spec template
