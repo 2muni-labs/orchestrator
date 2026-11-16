@@ -44,6 +44,11 @@ You are the main agent: you design, dispatch and integrate.
   Rules and agent definitions load when a session starts, and a resumed conversation
   keeps the system prompt it recorded first (`--system-prompt-snapshot`, Claude Code
   2.1.319).
+- When a bundle ends, confirm that `R/TODO.md` shows the final state of its tasks,
+  record what `orch` does not track (an open harness pull request, the next step) in
+  your memory, and ask the user to run `/clear`. `/clear` keeps the process and the
+  rules it loaded, so if a harness pull request merged after this process started,
+  ask for a new `orch open` session instead.
 - The user starts the main session with `orch open <target>`, from a shell that
   exports `ORCH_HUB` as an absolute path. `orch open` injects the hub's
   `config/settings.json` (hooks and deny rules), this file and the agent definitions
@@ -66,24 +71,75 @@ You are the main agent: you design, dispatch and integrate.
 
 ## Merge policy
 
-- You and the sub-agents never merge, whatever the ruleset would allow.
-- A separate verification session on another device (claude.ai) may merge with the
-  user's account when all of these hold: the user explicitly told it to, the full
-  tests and lint pass on the combined state, and it leaves an approving review first,
-  then merges with a merge commit.
-- The user personally checks pull requests with the `review-overridden` label and
-  those that change a safety path: a path matched by the target's `safety_paths` in
-  the hub's `targets.toml`. That list is the only definition; do not copy it
-  elsewhere. `orch pr` reports `user_check` and sends the `needs_review` notification
-  for task pull requests.
+This section is the whole merge policy (requirements ch. 9, ADR 0020). The scheduled
+tasks that review and merge read it from the hub's `origin/main`, never from a pull
+request's branch.
+
+**Who merges**
+
+- You and the sub-agents never merge and never approve a pull request, whatever the
+  ruleset would allow.
+- Three cloud scheduled tasks on the user's account do the verification and the
+  merge: the light review, the deep review and the merge after approval. A label
+  event on the pull request starts each one.
+- The default branch ruleset requires one approval and the required checks. The
+  required check is the target's CI workflow, which runs the full tests and lint on
+  the pull request's combined state. `orch` never runs CI; it only reads the result.
+
+**Labels**
+
+| Label | Added by | Meaning |
+| --- | --- | --- |
+| `verify-light` | the bot (`orch wait`) | Grade L1 or L2 and no changed file under a safety path. The light review task approves and merges alone. |
+| `verify-deep` | the bot (`orch wait`) | Everything else, including every pull request without a task. The deep review task reviews; the merge task merges after the user adds `user-approved`. |
+| `changes-requested` | a review task | The review asks for a fix. It comes with a review comment. |
+| `needs-user` | a review task | Waiting for the user: the task cannot decide alone, or the deep review is done and waits for `user-approved`. |
+| `user-approved` | the user only | Permits the merge of a `verify-deep` pull request. The bot never adds or removes it; `orch` refuses in code. |
+| `review-overridden` | the bot (`orch pr`) | A `BLOCK` was overridden by triage. The user merges it personally; it gets no review label. Never removed. |
+
+- A safety path is a path matched by the target's `safety_paths` in the hub's
+  `targets.toml`. That list is the only definition; do not copy it elsewhere.
+- A review label goes on only after every required check has passed on the head
+  commit.
+
+**What a scheduled task checks before it merges.** All of these must hold. If one
+does not, it does not merge: it adds `needs-user`, or `changes-requested` with a
+review comment when the code must change.
+
+- The pull request is open, has no `review-overridden` label, and nothing was pushed
+  after the review label was added.
+- Every required check has passed on the head commit.
+- `verify-light`: the task itself confirms that no changed file is under a safety
+  path, reading `safety_paths` from `origin/main`, and that the review packet's grade
+  is L1 or L2. Otherwise it replaces the label with `verify-deep`.
+- `verify-deep`: `user-approved` is present, the actor of that label event is the
+  user, and nothing was pushed after it.
+- It leaves an approving review first, then merges with a merge commit.
+
+**What you do**
+
+- `orch pr` puts the review packet at the top of the body and adds no review label.
+  It still reports `user_check` and sends the `needs_review` notification for a
+  `review-overridden` label or a changed safety path.
+- `orch wait <id> --merged` adds the review label when the required checks pass and
+  handles the rest from GitHub alone. Until the installed `orch` does this, and for a
+  pull request without a task, confirm that the required checks passed and add the
+  label yourself with `gh pr edit <url> --add-label <label>`.
+- Required check failed: fix it, push, and wait again.
+- First `changes-requested` on a pull request: read the review comments, fix once,
+  push, remove `changes-requested` and the review label, and wait again.
+- Second `changes-requested` on the same pull request: do not fix. The user is
+  notified; report and wait for the user.
+- `needs-user`: the user is notified once. Keep waiting.
 - After opening pull requests, report every pull request waiting for merge in this
-  table, so the user can hand it to the verification session as it is:
+  table:
 
   | PR | Head commit | Default branch commit | Combined tests | Lint | Gates | Review | Merge by |
   | --- | --- | --- | --- | --- | --- | --- | --- |
 
-  `Merge by` is `verification session` or `user check`. The results hold only for
-  those two commits: if either one moves, run step 8a again.
+  `Merge by` is `verify-light`, `verify-deep` or `user` (for `review-overridden`).
+  The results hold only for those two commits: if either one moves, run step 8a
+  again.
 
 ## GitHub authentication
 
