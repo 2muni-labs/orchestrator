@@ -1,52 +1,91 @@
-# Pinned agent versions and what must be measured again before a pin moves
-# (technical design 4.13). orch versions and doctor agent_versions read this file
-# from M19 (m-p5-versions); launcher moves its pinned Claude Code version here then.
-# Changing a pin is a harness pull request that records the new measurements.
+# Agent versions, provenance values and what must be measured again before a version
+# moves (technical design 4.13, ADR 0019). orch versions and doctor agent_versions read
+# this file from M19 (m-p5-versions); launcher moves its Claude Code version here then.
+#
+# version   the baseline: the version a person last measured by hand. selfcheck never
+#           changes it. From m-selfcheck, the version in use is the one the user
+#           switched to with orch selfcheck --apply, recorded in ~/.orch/agents.json.
+# blocking  safety premises. orch selfcheck runs one automated check per id on the
+#           candidate's binary; every one must pass. An id without a check in
+#           selfcheck makes the candidate not_automated, and it is never switched to.
+# warn      reported as warnings; they do not stop a switch.
+#
+# Changing this file, config/keys/ or a provenance value is a pull request with a
+# user check (config/** is a safety path).
 
 [claude]
 version = "2.1.319"
 # Where the latest version is published (measured P5-M3, 2026-11-15, no auth):
 # GET <url> returns HTTP 200 and the bare version string. Same source as install.sh.
 latest_url = "https://downloads.claude.ai/claude-code-releases/latest"
-remeasure = [
-  "m14-cli: only exit 2 or a deny output blocks a PreToolUse hook",
+# FL-M3 (2026-11-16): <ver>/manifest.json.sig is an armored detached OpenPGP v4
+# signature (RSA, SHA-512) over manifest.json. The key is committed, never fetched.
+signing_key = "config/keys/claude-code.asc"
+signing_fingerprint = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+# Developer ID team of the binary: codesign --verify --strict with
+# anchor apple generic and certificate leaf[subject.OU] = "<team>" exits 0.
+codesign_team = "Q6L2SF6YDW"
+blocking = [
+  { id = "FL-M3", what = "manifest.json.sig verifies with the committed key; the binary's sha256 and size match the signed manifest; the code signature team matches codesign_team" },
+  { id = "m14-cli", what = "only exit 2 or a deny output blocks a PreToolUse hook; exit 1, other codes, bad JSON and a timeout allow" },
+  { id = "deny-rules", what = "the permissions.deny rules in config/settings.json deny the matching tool calls" },
+  { id = "injection", what = "--settings, --agents and --append-system-prompt-file as launcher assembles them load the hooks, the agent definitions and the main rules" },
+]
+warn = [
   "S-M1: ! bash mode and PreToolUse; a finished pane falling back to a shell",
   "P5-M4: hook events that end a permission wait",
   "W-M2: session record location, run key and usage fields",
-  "orch open: --append-system-prompt-file and agent injection; a resumed session keeps its first system prompt",
+  "orch open: a resumed session keeps its first system prompt",
+  "FL-M1: claude install switches ~/.local/bin/claude at once; versions/<ver> runs by absolute path",
 ]
 
 [codex]
 version = "0.160.0"
 # npm registry: GET <url> returns HTTP 200 and JSON whose "version" is the latest.
 latest_url = "https://registry.npmjs.org/@openai/codex/latest"
-remeasure = [
+# FL-M4 (2026-11-16): the release checksums are unsigned (SHA256SUMS, GitHub asset
+# digest; no sigstore bundle or attestation for macOS), so the publisher signature is
+# the macOS code signature of every Mach-O file in the package.
+codesign_team = "2DC432GLL2"
+blocking = [
+  { id = "FL-M4", what = "every Mach-O file in the installed package passes codesign --verify --strict for codesign_team; the lock checksum equals the release's codex-package_SHA256SUMS line" },
+  { id = "S-M2", what = "with the built-in sandbox off, the orch profile around codex denies reads outside the worktree" },
+  { id = "S-M2b", what = "codex follows HTTPS_PROXY and works behind the allowlist proxy with only localhost:<port> open; other hosts fail" },
+  { id = "isolation", what = "--disable hooks --disable plugins leave no hooks or MCP servers" },
+]
+warn = [
   "codex-review-measure: exec exit codes, -o behaviour, --output-schema strictness",
-  "isolation: --disable hooks --disable plugins leave no hooks or MCP servers",
   "usage limit message and rate_limits in the rollout (BLOCKED_QUOTA)",
   "P5-M5: read-only explore answer format, exit code, -o, usage per question",
-  "S-M2: sandbox reads outside -C; wrapping in an outer sandbox-exec",
-  "S-M2b: follows HTTPS_PROXY, hosts it connects to, works behind the allowlist proxy with only localhost:<port> open",
   "W-M1: rollout session_meta, token_count and rate_limits format",
+  "FL-M2: mise install does not switch or lock; mise lock --global prunes the old entry; a wrong checksum makes mise install exit 1",
+  "FL-M5: with MISE_CONFIG_DIR and the MISE_*_DIR variables on ~/.orch/mise, mise config ls lists only the orch config",
 ]
 
-# tmux and macOS have no latest_url: orch versions compares the installed version
-# (tmux -V, sw_vers -productVersion) with the pin only, and a mismatch is a warning.
+# tmux and macOS have no latest_url and selfcheck does not install them: orch versions
+# compares the installed version (tmux -V, sw_vers -productVersion) with the baseline,
+# and a mismatch is a warning. Their blocking items must be measured again, by hand
+# until selfcheck automates them, before the baseline moves.
 
 [tmux]
 version = "3.8"
-remeasure = [
-  "S-M1: a finished pane (argv command, remain-on-exit) never falls back to a shell; default key bindings that open a shell",
-  "S-M3: pty attach to a dedicated -S socket inside the server profile; the default socket is denied",
+blocking = [
+  { id = "S-M1", what = "a finished pane (argv command, remain-on-exit) never falls back to a shell; default key bindings that open a shell" },
+  { id = "S-M3", what = "pty attach to a dedicated -S socket inside the server profile; the default socket is denied" },
+]
+warn = [
   "orch terminal adapter: new-session/split-window/new-window -P -F '#{pane_id}', send-keys -l, pane_dead and pane_current_command formats",
+  "main pane liveness check (doctor, orch open): quoting format of #{pane_start_command}, which terminal/tmux.py splits with shlex",
 ]
 
 [macos]
 version = "15.8.1"
-remeasure = [
-  "gate profile: tests/test_sandbox_real.py and tests/integration/test_sandbox_gate.py outside the sandbox",
-  "S-M2: sandbox-exec inside sandbox-exec fails (sandbox_apply: Operation not permitted, exit 71)",
-  "S-M3: bind filter accepts only * or localhost and limits the port only",
-  "S-M2b: outbound (remote ip \"localhost:<port>\") limits the address to loopback",
+blocking = [
+  { id = "gate-profile", what = "tests/test_sandbox_real.py and tests/integration/test_sandbox_gate.py pass outside the sandbox" },
+  { id = "S-M2", what = "sandbox-exec inside sandbox-exec fails (sandbox_apply: Operation not permitted, exit 71)" },
+  { id = "S-M3", what = "bind filter accepts only * or localhost and limits the port only" },
+  { id = "S-M2b", what = "outbound (remote ip \"localhost:<port>\") limits the address to loopback" },
+]
+warn = [
   "P4-5: launchd agents start after reboot and auto login; keychain access for claude, codex and the App token",
 ]

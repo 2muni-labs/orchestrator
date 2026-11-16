@@ -151,8 +151,9 @@ You run tasks through the installed `orch` (`~/.local/bin/orch`).
   Otherwise an assertion on the capture sees an empty string: it either always fails
   or always passes, and the stubs fail earlier and hide it.
 - A spec that relies on an external tool's exit codes, output format or failure
-  handling is written from results measured on the pinned version, not from
-  documentation or memory. State the version and the measurement in the spec.
+  handling is written from results measured on the verified version in the hub's
+  `config/pins.toml`, not from documentation or memory. State the version and the
+  measurement in the spec.
 - Before naming a function in a spec, read its code and confirm its behavior matches
   the spec's intent.
 - When a test expects a result from an existing module, such as a classification or
