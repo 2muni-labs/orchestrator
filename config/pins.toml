@@ -26,5 +26,27 @@ remeasure = [
   "usage limit message and rate_limits in the rollout (BLOCKED_QUOTA)",
   "P5-M5: read-only explore answer format, exit code, -o, usage per question",
   "S-M2: sandbox reads outside -C; wrapping in an outer sandbox-exec",
+  "S-M2b: follows HTTPS_PROXY, hosts it connects to, works behind the allowlist proxy with only localhost:<port> open",
   "W-M1: rollout session_meta, token_count and rate_limits format",
+]
+
+# tmux and macOS have no latest_url: orch versions compares the installed version
+# (tmux -V, sw_vers -productVersion) with the pin only, and a mismatch is a warning.
+
+[tmux]
+version = "3.8"
+remeasure = [
+  "S-M1: a finished pane (argv command, remain-on-exit) never falls back to a shell; default key bindings that open a shell",
+  "S-M3: pty attach to a dedicated -S socket inside the server profile; the default socket is denied",
+  "orch terminal adapter: new-session/split-window/new-window -P -F '#{pane_id}', send-keys -l, pane_dead and pane_current_command formats",
+]
+
+[macos]
+version = "15.8.1"
+remeasure = [
+  "gate profile: tests/test_sandbox_real.py and tests/integration/test_sandbox_gate.py outside the sandbox",
+  "S-M2: sandbox-exec inside sandbox-exec fails (sandbox_apply: Operation not permitted, exit 71)",
+  "S-M3: bind filter accepts only * or localhost and limits the port only",
+  "S-M2b: outbound (remote ip \"localhost:<port>\") limits the address to loopback",
+  "P4-5: launchd agents start after reboot and auto login; keychain access for claude, codex and the App token",
 ]
