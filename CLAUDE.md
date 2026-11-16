@@ -20,14 +20,18 @@ applies to every target goes in `config/main.md`, not here. `R` below stands for
 
 ## Merge policy
 
-- The lint column of the merge table is ruff: `ruff check` and `ruff format --check`.
-- A harness pull request gets no `user_check` and no `needs_review` notification,
-  because it has no task. Check its changed files against the hub target's
-  `safety_paths` in `targets.toml` yourself and mark them in the table. The list
-  includes `targets.toml` itself, so a change to it is always a user check.
-- The `main` ruleset requires one approval and the bot cannot approve its own pull
-  request, so the bot cannot merge one without an approval. This does not stop a
-  merge after an approval, so the merge policy still applies.
+The merge policy is the Merge policy section of `config/main.md`. This adds only
+what is specific to the hub.
+
+- The required check is the `ci` job of `.github/workflows/ci.yml`: the full tests,
+  `ruff check` and `ruff format --check` on the combined state. The lint column of
+  the merge table is ruff. The bot has no `workflows` permission, so only the user
+  adds or changes a workflow file.
+- A harness pull request has no task, so it gets no `orch wait`, no `user_check` and
+  no `needs_review` notification. Its label is always `verify-deep`: after the `ci`
+  check passes, add it yourself. Check its changed files against the hub target's
+  `safety_paths` in `targets.toml` and mark them in the table. The list includes
+  `targets.toml` itself.
 
 ## Harness pull requests
 
