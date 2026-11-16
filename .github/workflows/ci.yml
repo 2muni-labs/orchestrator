@@ -1,0 +1,30 @@
+# The required check of the main ruleset (requirements ch. 9, ADR 0020).
+# A pull_request run checks out the merge of the pull request into its base, so the
+# tests and ruff run on the combined state. This file is a safety path.
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci
+    # macOS, because the sandbox tests start the real sandbox-exec.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --frozen
+      - run: .venv/bin/python -m pytest -rs
+      - run: .venv/bin/python -m ruff check .
+      - run: .venv/bin/python -m ruff format --check .
