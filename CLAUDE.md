@@ -93,8 +93,8 @@ outside the sandbox, before that code merges.
 - Run integration tests in the integration `Sandbox` with frozen commit dates. One
   test that expected two commits to have different ids passed 20 of 20 runs on one
   machine and failed on a faster one.
-- An external tool's behavior goes into a spec only as measured on the pinned version
-  (m14-cli: only exit 2 or a deny output blocks a PreToolUse hook).
+- An external tool's behavior goes into a spec only as measured on the verified version
+  in `config/pins.toml` (m14-cli: only exit 2 or a deny output blocks a PreToolUse hook).
 
 ## guard false-positive check
 

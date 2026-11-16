@@ -1,7 +1,9 @@
-# Pinned agent versions and what must be measured again before a pin moves
-# (technical design 4.13). orch versions and doctor agent_versions read this file
-# from M19 (m-p5-versions); launcher moves its pinned Claude Code version here then.
-# Changing a pin is a harness pull request that records the new measurements.
+# Verified agent versions and what must be measured again before a version moves
+# (technical design 4.13, ADR 0019). orch versions and doctor agent_versions read this
+# file from M19 (m-p5-versions); launcher moves its Claude Code version here then.
+# From m-selfcheck, orch selfcheck runs the automatable remeasure items on a new
+# version and switches only when they pass. Until then, changing a version is a
+# harness pull request that records the new measurements.
 
 [claude]
 version = "2.1.319"
@@ -14,6 +16,7 @@ remeasure = [
   "P5-M4: hook events that end a permission wait",
   "W-M2: session record location, run key and usage fields",
   "orch open: --append-system-prompt-file and agent injection; a resumed session keeps its first system prompt",
+  "FL-M1: <ver>/manifest.json platforms.<platform>.checksum (sha256) and size match the binary; claude install switches ~/.local/bin/claude at once; versions/<ver> runs by absolute path",
 ]
 
 [codex]
@@ -28,6 +31,7 @@ remeasure = [
   "S-M2: sandbox reads outside -C; wrapping in an outer sandbox-exec",
   "S-M2b: follows HTTPS_PROXY, hosts it connects to, works behind the allowlist proxy with only localhost:<port> open",
   "W-M1: rollout session_meta, token_count and rate_limits format",
+  "FL-M2: mise install does not switch or lock; mise lock writes checksums without installing and prunes the old entry; a wrong checksum makes mise install exit 1; mise reads an ancestor ~/.config/mise when the cwd is under the home",
 ]
 
 # tmux and macOS have no latest_url: orch versions compares the installed version
@@ -39,6 +43,7 @@ remeasure = [
   "S-M1: a finished pane (argv command, remain-on-exit) never falls back to a shell; default key bindings that open a shell",
   "S-M3: pty attach to a dedicated -S socket inside the server profile; the default socket is denied",
   "orch terminal adapter: new-session/split-window/new-window -P -F '#{pane_id}', send-keys -l, pane_dead and pane_current_command formats",
+  "main pane liveness check (doctor, orch open): quoting format of #{pane_start_command}, which terminal/tmux.py splits with shlex",
 ]
 
 [macos]
