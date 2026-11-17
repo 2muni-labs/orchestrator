@@ -143,7 +143,10 @@ def test_a_task_goes_from_target_add_to_close(sandbox: Sandbox) -> None:
     pull_request = sandbox.pull_request(url)
     assert pull_request["labels"] == []
     body = pull_request["body"]
-    assert body.startswith("## Summary")
+    assert body.startswith(f"## Review packet\n\n- task_id: `{TASK}`\n")
+    assert "\n- purpose: Integration test task.\n" in body
+    assert "\n- gates: G1 passed, G2 passed, G3 passed\n" in body
+    assert body.index("## Review packet") < body.index("## Summary")
     assert f"Task `{TASK}`: {TITLE}" in body
     assert f"- `{CHANGED}`" in body and f"- `{TEST_SCRIPT}`" in body
     for gate in ("G1", "G2", "G3", "G2_PRE_PR"):

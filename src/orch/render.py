@@ -112,6 +112,23 @@ def write_todo(path: Path, text: str) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def purpose_line(body: str) -> str:
+    """Return the first two sentences of a spec's Purpose section on one line."""
+    raise NotImplementedError
+
+
+def review_packet(
+    task: Task,
+    *,
+    body: str,
+    modify: Iterable[str],
+    gates: Iterable[GateResult],
+    review: Review | None,
+) -> str:
+    """Return the fixed-format review packet that the scheduled tasks read."""
+    raise NotImplementedError
+
+
 def build_body(
     task: Task,
     *,
@@ -119,8 +136,11 @@ def build_body(
     gates: Iterable[GateResult],
     review: Review | None,
     triage: Triage | None = None,
+    packet: str | None = None,
 ) -> str:
     """Return the minimal English pull request body."""
+    if packet is not None:
+        raise NotImplementedError
     review_summary = "Not required"
     if review is not None:
         counts = Counter(finding.severity for finding in review.findings)
