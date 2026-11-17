@@ -13,7 +13,7 @@ import tomllib
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -41,7 +41,15 @@ from orch.cli import main
 from orch.doctor import DoctorReport
 from orch.gate import GateReport, GateStatus
 from orch.gc import GcReport
-from orch.github import GitHubError, PullRequestStatus
+from orch.github import (
+    CheckResult,
+    Comparison,
+    GitHubError,
+    LabelEvent,
+    PullRequestStatus,
+    RequiredChecks,
+    ReviewState,
+)
 from orch.gitops import GitError, LeaseRejectedError
 from orch.models import (
     CheckLevel,
@@ -2138,101 +2146,333 @@ def token_call_count(env: Env) -> int:
     return len(env.token_calls.read_text(encoding="utf-8").splitlines())
 
 
-def test_wait_exits_0_on_a_merge(
-    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    insert(env, pr_url=URL)
-    add_token_script(env)
-    monkeypatch.setattr(github, "pull_request_status", merged_status())
-    code, data = orch("wait", TASK, "--merged")
-    assert code == 0, data
-    assert data == {
+WAIT_SHA = "d0f05422f4b72ff9df4d76762e42a42060a501f4"
+MERGED_AT = "2026-01-01T00:00:00Z"
+
+
+def pr_review(
+    state: str = "OPEN",
+    *,
+    labels: tuple[str, ...] = (),
+    events: tuple[LabelEvent, ...] = (),
+    checks: dict[str, CheckResult] | None = None,
+) -> ReviewState:
+    return ReviewState(
+        state=state,
+        merged=state == "MERGED",
+        merged_at=MERGED_AT if state == "MERGED" else None,
+        head_sha=WAIT_SHA,
+        labels=labels,
+        events=events,
+        checks={"ci": CheckResult.PASSED} if checks is None else checks,
+    )
+
+
+class FakeReview:
+    """Stands in for the GitHub reads and label calls of orch wait."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.states: list[ReviewState] = []
+        self.repeat: ReviewState | None = None
+        self.rules = RequiredChecks(names=("ci",), strict=True)
+        self.comparison = Comparison(
+            behind_by=0, files=("src/app.py",), truncated=False
+        )
+        self.error: Exception | None = None
+        self.labels: list[tuple[str, str]] = []
+        monkeypatch.setattr(github, "review_state", self.review_state)
+        monkeypatch.setattr(github, "check_rules", self.check_rules)
+        monkeypatch.setattr(github, "compare", self.compare)
+        monkeypatch.setattr(github, "add_label", self.add_label)
+        monkeypatch.setattr(github, "remove_label", self.remove_label)
+
+        def unexpected(**options: object) -> None:
+            pytest.fail("orch wait must not call pull_request_status")
+
+        monkeypatch.setattr(github, "pull_request_status", unexpected)
+
+    def review_state(self, *, url: str, token: str) -> ReviewState:
+        assert url == URL
+        assert token == TOKEN
+        if self.error is not None:
+            raise self.error
+        if self.states:
+            return self.states.pop(0)
+        assert self.repeat is not None, "More checks than the test expected"
+        return self.repeat
+
+    def check_rules(self, *, github: str, branch: str, token: str) -> RequiredChecks:
+        assert (github, branch, token) == ("owner/sample", "main", TOKEN)
+        return self.rules
+
+    def compare(self, *, github: str, base: str, head: str, token: str) -> Comparison:
+        assert (github, base, head, token) == ("owner/sample", "main", WAIT_SHA, TOKEN)
+        return self.comparison
+
+    def add_label(self, *, url: str, name: str, token: str) -> None:
+        assert (url, token) == (URL, TOKEN)
+        self.labels.append(("add", name))
+
+    def remove_label(self, *, url: str, name: str, token: str) -> None:
+        assert (url, token) == (URL, TOKEN)
+        self.labels.append(("remove", name))
+
+
+@pytest.fixture
+def reviews(monkeypatch: pytest.MonkeyPatch) -> FakeReview:
+    return FakeReview(monkeypatch)
+
+
+def wait_output(**values: object) -> dict[str, object]:
+    output: dict[str, object] = {
         "ok": True,
         "task_id": TASK,
         "state": "pr_open",
         "pr_url": URL,
         "pr_state": "MERGED",
         "merged": True,
-        "merged_at": None,
+        "merged_at": MERGED_AT,
         "checks": 1,
+        "outcome": "merged",
+        "review_label": None,
+        "failed_checks": [],
+        "notified": [],
     }
+    output.update(values)
+    return output
+
+
+@pytest.mark.usefixtures("target")
+def test_wait_exits_0_on_a_merge(orch: Call, env: Env, reviews: FakeReview) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    reviews.states = [pr_review("MERGED", labels=("verify-light",))]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 0, data
+    assert data == wait_output(review_label="verify-light")
     assert token_call_count(env) == 1
     assert state_of(env) is TaskState.PR_OPEN
 
 
+@pytest.mark.usefixtures("target")
 def test_wait_exits_50_on_a_close_without_a_merge(
-    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+    orch: Call, env: Env, reviews: FakeReview
 ) -> None:
     insert(env, pr_url=URL)
     add_token_script(env)
-    monkeypatch.setattr(github, "pull_request_status", merged_status("CLOSED"))
+    reviews.states = [pr_review("CLOSED")]
     code, data = orch("wait", TASK, "--merged")
     assert code == 50, data
-    assert data["ok"] is True
-    assert data["pr_state"] == "CLOSED"
-    assert data["merged"] is False
+    assert data == wait_output(
+        pr_state="CLOSED", merged=False, merged_at=None, outcome="closed"
+    )
     assert state_of(env) is TaskState.PR_OPEN
 
 
-@pytest.mark.usefixtures("fast_wait")
+@pytest.mark.usefixtures("target", "fast_wait")
 def test_wait_exits_60_at_the_limit_and_the_same_command_can_wait_again(
-    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+    orch: Call, env: Env, reviews: FakeReview
 ) -> None:
     insert(env, pr_url=URL)
     add_token_script(env)
-    monkeypatch.setattr(github, "pull_request_status", merged_status("OPEN"))
+    reviews.repeat = pr_review(checks={})
     code, data = orch("wait", TASK, "--merged", "--max-wait", "1")
     assert code == 60, data
-    assert data == {
-        "ok": True,
-        "task_id": TASK,
-        "state": "pr_open",
-        "pr_url": URL,
-        "pr_state": "OPEN",
-        "merged": False,
-        "merged_at": None,
-        "checks": 2,
-    }
+    assert data == wait_output(
+        pr_state="OPEN", merged=False, merged_at=None, checks=2, outcome="limit"
+    )
     assert token_call_count(env) == 2
     assert state_of(env) is TaskState.PR_OPEN
 
-    monkeypatch.setattr(github, "pull_request_status", merged_status())
+    reviews.repeat = pr_review("MERGED")
     code, data = orch("wait", TASK, "--merged", "--max-wait", "1")
     assert code == 0, data
     assert data["merged"] is True
 
 
-@pytest.mark.usefixtures("fast_wait")
-def test_wait_exits_60_with_no_known_state_when_every_check_failed(
-    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.usefixtures("target")
+def test_wait_exits_61_on_a_failed_required_check(
+    orch: Call, env: Env, reviews: FakeReview
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    reviews.states = [pr_review(checks={"ci": CheckResult.FAILED})]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 61, data
+    assert data == wait_output(
+        pr_state="OPEN",
+        merged=False,
+        merged_at=None,
+        outcome="checks_failed",
+        failed_checks=["ci"],
+    )
+    assert reviews.labels == []
+
+
+@pytest.mark.usefixtures("target")
+def test_wait_exits_62_on_the_first_changes_requested(
+    orch: Call, env: Env, reviews: FakeReview
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    at = datetime(2026, 11, 17, tzinfo=UTC)
+    reviews.states = [
+        pr_review(
+            labels=("changes-requested",),
+            events=(LabelEvent(name="changes-requested", added=True, at=at),),
+        )
+    ]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 62, data
+    assert data["outcome"] == "changes_requested"
+    assert reviews.labels == []
+
+
+@pytest.mark.usefixtures("target")
+def test_wait_exits_63_when_the_head_is_behind_a_strict_branch(
+    orch: Call, env: Env, reviews: FakeReview
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    reviews.states = [pr_review()]
+    reviews.comparison = Comparison(behind_by=1, files=("src/app.py",), truncated=False)
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 63, data
+    assert data["outcome"] == "behind"
+    assert reviews.labels == []
+
+
+@pytest.mark.usefixtures("target", "fast_wait")
+def test_wait_adds_the_review_label_of_the_task(
+    orch: Call, env: Env, reviews: FakeReview
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    reviews.states = [pr_review(), pr_review("MERGED", labels=("verify-light",))]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 0, data
+    assert data == wait_output(review_label="verify-light", checks=2)
+    assert reviews.labels == [("add", "verify-light")]
+
+
+@pytest.mark.usefixtures("target")
+def test_wait_refuses_a_branch_without_required_checks(
+    orch: Call, env: Env, reviews: FakeReview
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    reviews.states = [pr_review()]
+    reviews.rules = RequiredChecks(names=(), strict=True)
+    assert_error(orch("wait", TASK, "--merged"), USAGE, "refused")
+    assert reviews.labels == []
+
+
+@pytest.mark.usefixtures("target", "fast_wait")
+def test_wait_notifies_needs_user_once_for_the_task(
+    orch: Call, env: Env, reviews: FakeReview, sent: list[dict[str, object]]
+) -> None:
+    insert(env, pr_url=URL)
+    add_token_script(env)
+    waiting = pr_review(labels=("needs-user",))
+    reviews.states = [waiting, waiting, pr_review("MERGED")]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 0, data
+    assert data["notified"] == ["user_wait"]
+    assert len(sent) == 1
+    assert_notified(sent[0], env, "user_wait")
+    assert sent[0]["dedup"] is True
+
+
+@pytest.mark.usefixtures("target", "fast_wait")
+def test_a_failed_notification_does_not_change_the_wait(
+    orch: Call,
+    env: Env,
+    reviews: FakeReview,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     insert(env, pr_url=URL)
     add_token_script(env)
 
-    def failing(*, url: str, token: str) -> PullRequestStatus:
-        raise GitHubError("pr view: failed")
+    def failed(event: str, **kwargs: object) -> notify.Outcome:
+        raise RuntimeError(f"cannot send with {TOKEN}")
 
-    monkeypatch.setattr(github, "pull_request_status", failing)
-    code, data = orch("wait", TASK, "--merged", "--max-wait", "1")
-    assert code == 60, data
-    assert data["ok"] is True
-    assert data["pr_state"] is None
-    assert data["merged"] is False
+    monkeypatch.setattr(notify, "send", failed)
+    waiting = pr_review(labels=("needs-user",))
+    reviews.states = [waiting, pr_review("MERGED")]
+    code, data = orch("wait", TASK, "--merged")
+    assert code == 0, data
+    assert data["notified"] == ["user_wait"]
+    assert TOKEN not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("outcome", "code"),
+    [
+        ("merged", 0),
+        ("closed", 50),
+        ("limit", 60),
+        ("checks_failed", 61),
+        ("changes_requested", 62),
+        ("behind", 63),
+    ],
+)
+@pytest.mark.usefixtures("target")
+def test_wait_exits_by_the_outcome(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    code: int,
+) -> None:
+    insert(env, pr_url=URL)
+
+    def fake(
+        conn: sqlite3.Connection, task_id: str, **kwargs: object
+    ) -> waiter.MergeWaitReport:
+        return waiter.MergeWaitReport(
+            task_id=task_id,
+            state=TaskState.PR_OPEN,
+            pr_url=URL,
+            pr_state="OPEN",
+            merged=False,
+            merged_at=None,
+            checks=1,
+            outcome=waiter.Outcome(outcome),
+            review_label="verify-deep",
+            failed_checks=("ci",),
+            notified=("user_wait",),
+        )
+
+    monkeypatch.setattr(waiter, "wait_for_merge", fake)
+    result = orch("wait", TASK, "--merged")
+    assert result[0] == code, result
+    assert result[1] == wait_output(
+        pr_state="OPEN",
+        merged=False,
+        merged_at=None,
+        outcome=outcome,
+        review_label="verify-deep",
+        failed_checks=["ci"],
+        notified=["user_wait"],
+    )
 
 
 @pytest.mark.parametrize(
     ("options", "interval", "limit"),
     [
-        ((), 60, 90),
-        (("--interval", "5"), 5, 90),
+        ((), 60, 720),
+        (("--interval", "5"), 5, 720),
         (("--max-wait", "7"), 60, 7),
         (("--interval", "5", "--max-wait", "7"), 5, 7),
     ],
 )
-def test_wait_passes_its_options_to_the_waiter(
+@pytest.mark.usefixtures("target")
+def test_wait_passes_its_options_and_the_target_to_the_waiter(
     orch: Call,
     env: Env,
     monkeypatch: pytest.MonkeyPatch,
+    sent: list[dict[str, object]],
     options: tuple[str, ...],
     interval: int,
     limit: int,
@@ -2252,6 +2492,10 @@ def test_wait_passes_its_options_to_the_waiter(
             merged=True,
             merged_at=None,
             checks=1,
+            outcome=waiter.Outcome.MERGED,
+            review_label=None,
+            failed_checks=(),
+            notified=(),
         )
 
     monkeypatch.setattr(waiter, "wait_for_merge", fake)
@@ -2260,9 +2504,21 @@ def test_wait_passes_its_options_to_the_waiter(
     assert seen["task_id"] == TASK
     assert seen["interval_sec"] == interval
     assert seen["max_wait_min"] == limit
+    target = seen["target"]
+    assert isinstance(target, config.Target)
+    assert (target.name, target.github, target.default_branch) == (
+        TARGET,
+        "owner/sample",
+        "main",
+    )
     assert callable(seen["token"])
     # Nothing is issued until the waiter asks for a token.
     assert token_call_count(env) == 0
+    notify_event = seen["notify"]
+    assert callable(notify_event)
+    notify_event("review_stalled")
+    assert len(sent) == 1
+    assert_notified(sent[0], env, "review_stalled")
 
 
 def test_wait_without_merged_is_a_usage_error(orch: Call, env: Env) -> None:
@@ -2287,6 +2543,7 @@ def test_wait_refuses_a_bad_number(orch: Call, env: Env, flag: str, value: str) 
     assert not env.token_calls.exists()
 
 
+@pytest.mark.usefixtures("target")
 def test_wait_refuses_a_task_in_another_state(orch: Call, env: Env) -> None:
     insert(env, state=TaskState.READY, pr_url=URL)
     add_token_script(env)
@@ -2294,6 +2551,7 @@ def test_wait_refuses_a_task_in_another_state(orch: Call, env: Env) -> None:
     assert not env.token_calls.exists()
 
 
+@pytest.mark.usefixtures("target")
 def test_wait_refuses_a_task_without_a_pull_request(orch: Call, env: Env) -> None:
     insert(env)
     add_token_script(env)
@@ -2301,6 +2559,7 @@ def test_wait_refuses_a_task_without_a_pull_request(orch: Call, env: Env) -> Non
     assert not env.token_calls.exists()
 
 
+@pytest.mark.usefixtures("target")
 def test_wait_refuses_an_unknown_task_before_a_token_is_issued(
     orch: Call, env: Env
 ) -> None:
@@ -2309,6 +2568,7 @@ def test_wait_refuses_an_unknown_task_before_a_token_is_issued(
     assert not env.token_calls.exists()
 
 
+@pytest.mark.usefixtures("target")
 def test_wait_refuses_a_task_of_another_session_target(
     orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2319,28 +2579,24 @@ def test_wait_refuses_a_task_of_another_session_target(
     assert not env.token_calls.exists()
 
 
-def test_wait_does_not_need_the_hub(
+@pytest.mark.usefixtures("target")
+def test_wait_needs_the_hub_for_the_target(
     orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     insert(env, pr_url=URL)
     add_token_script(env)
     monkeypatch.delenv("ORCH_HUB")
-    monkeypatch.setattr(github, "pull_request_status", merged_status())
-    code, data = orch("wait", TASK, "--merged")
-    assert code == 0, data
+    assert_error(orch("wait", TASK, "--merged"), USAGE, "usage")
+    assert not env.token_calls.exists()
 
 
-@pytest.mark.usefixtures("fast_wait")
+@pytest.mark.usefixtures("target", "fast_wait")
 def test_wait_exits_70_after_ten_failed_checks_without_the_token(
-    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+    orch: Call, env: Env, reviews: FakeReview
 ) -> None:
     insert(env, pr_url=URL)
     add_token_script(env)
-
-    def failing(*, url: str, token: str) -> PullRequestStatus:
-        raise GitHubError(f"pr view: failed with {token}")
-
-    monkeypatch.setattr(github, "pull_request_status", failing)
+    reviews.error = GitHubError(f"api graphql: failed with {TOKEN}")
     result = orch("wait", TASK, "--merged")
     assert_error(result, INTERNAL, "internal")
     assert TOKEN not in str(result[1])
@@ -2348,7 +2604,7 @@ def test_wait_exits_70_after_ten_failed_checks_without_the_token(
     assert state_of(env) is TaskState.PR_OPEN
 
 
-@pytest.mark.usefixtures("fast_wait")
+@pytest.mark.usefixtures("target", "fast_wait")
 def test_wait_exits_70_after_ten_token_failures_without_the_script_output(
     orch: Call, env: Env
 ) -> None:

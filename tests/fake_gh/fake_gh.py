@@ -4,13 +4,20 @@ State lives in $ORCH_FAKE_GH_DIR/state.json and every call is appended to calls.
 including refused ones. Unknown commands and flags, a wrong token, an unknown label and
 a branch that is not on the bare repository all fail, as they would on GitHub. The
 flags come from the help text of gh 2.102.0.
+
+gh api answers the three reads of orch wait in the shapes measured on gh 2.102.0: the
+review GraphQL query, the rules of main and the comparison of main with a head commit.
+Each pull request keeps its label events; adding a label already there or removing
+one that is not there makes no event, as measured.
 """
 
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 VIEW_FIELDS = {"state", "mergedAt", "mergeable"}
@@ -146,10 +153,14 @@ def pr_create(state: dict, options: dict[str, list[str]], stdin: str) -> str:
             "base": base,
             "title": title,
             "body": body,
-            "labels": labels,
+            "labels": [],
+            "events": [],
+            "checks": {"ci": ["COMPLETED", "SUCCESS"]},
+            "review_states": [],
             "comments": [],
         }
     )
+    edit_labels(state["pull_requests"][-1], labels, [])
     return url + "\n"
 
 
@@ -182,17 +193,174 @@ def pr_edit(state: dict, options: dict[str, list[str]], url: str) -> str:
     for name in added + removed:
         if name not in state["labels"]:
             raise Refused(f"unknown label: {name}")
-    item = find_pull_request(state, url)
-    for name in added:
-        if name not in item["labels"]:
-            item["labels"].append(name)
-    item["labels"] = [name for name in item["labels"] if name not in removed]
+    edit_labels(find_pull_request(state, url), added, removed)
     return url + "\n"
 
 
+def now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def edit_labels(item: dict, added: list[str], removed: list[str]) -> None:
+    for name in added:
+        if name not in item["labels"]:
+            item["labels"].append(name)
+            item["events"].append({"name": name, "added": True, "at": now()})
+    for name in removed:
+        if name in item["labels"]:
+            item["labels"].remove(name)
+            item["events"].append({"name": name, "added": False, "at": now()})
+
+
+def git(bare: str, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "--git-dir", bare, *args], capture_output=True, text=True
+    )
+    if done.returncode != 0:
+        raise Refused(f"HTTP 404: git {args[0]} failed")
+    return done.stdout.strip()
+
+
+def api(state: dict, args: list[str]) -> str:
+    if not args:
+        raise Refused("api needs an endpoint")
+    endpoint, rest = args[0], args[1:]
+    if endpoint == "graphql":
+        return graphql(state, rest)
+    if rest:
+        raise Refused(f"unexpected api arguments: {rest}")
+    prefix = f"repos/{state['repo']}/"
+    path = endpoint.removeprefix(prefix)
+    if path == endpoint:
+        raise Refused(f"unknown endpoint: {endpoint}")
+    if path == "rules/branches/main?per_page=100":
+        return rules(state)
+    if path.startswith("compare/main..."):
+        return compare(state, path.removeprefix("compare/main..."))
+    raise Refused(f"unknown endpoint: {endpoint}")
+
+
+def graphql(state: dict, rest: list[str]) -> str:
+    fields: dict[str, str] = {}
+    rest = list(rest)
+    while rest:
+        flag = rest.pop(0)
+        if flag not in ("-f", "-F") or not rest:
+            raise Refused(f"unknown graphql argument: {flag}")
+        key, sep, value = rest.pop(0).partition("=")
+        if not sep or key in fields:
+            raise Refused(f"bad graphql field: {key}")
+        fields[key] = value
+    if set(fields) != {"query", "owner", "name", "number"}:
+        raise Refused(f"unexpected graphql fields: {sorted(fields)}")
+    if not fields["query"].startswith("query("):
+        raise Refused("not a query")
+    if f"{fields['owner']}/{fields['name']}" != state["repo"]:
+        raise Refused("unknown repository")
+    item = find_pull_request(
+        state, f"https://github.com/{state['repo']}/pull/{fields['number']}"
+    )
+    # A test can change the pull request at an exact check, with no race with polling.
+    if item["review_states"]:
+        item.update(item["review_states"].pop(0))
+    head = git(state["bare"], "rev-parse", f"refs/heads/{item['head']}")
+    contexts = [
+        {"__typename": "CheckRun", "name": name, "status": status, "conclusion": result}
+        for name, (status, result) in item["checks"].items()
+    ]
+    events = [
+        {
+            "__typename": "LabeledEvent" if event["added"] else "UnlabeledEvent",
+            "createdAt": event["at"],
+            "label": {"name": event["name"]},
+        }
+        for event in item["events"]
+    ]
+    answer = {
+        "state": item["state"],
+        "mergedAt": item["mergedAt"],
+        "headRefOid": head,
+        "labels": {"nodes": [{"name": name} for name in item["labels"]]},
+        "timelineItems": {"nodes": events},
+        "commits": {
+            "nodes": [
+                {
+                    "commit": {
+                        "oid": head,
+                        "statusCheckRollup": (
+                            {"contexts": {"nodes": contexts}} if contexts else None
+                        ),
+                    }
+                }
+            ]
+        },
+    }
+    return json.dumps({"data": {"repository": {"pullRequest": answer}}}) + "\n"
+
+
+def rules(state: dict) -> str:
+    answer: list[dict] = [{"type": "deletion", "ruleset_id": 1}]
+    required = state["rules"]["required"]
+    if required:
+        answer.append(
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "do_not_enforce_on_create": False,
+                    "required_status_checks": [
+                        {"context": name, "integration_id": 15368} for name in required
+                    ],
+                    "strict_required_status_checks_policy": state["rules"]["strict"],
+                },
+                "ruleset_id": 1,
+            }
+        )
+    return json.dumps(answer) + "\n"
+
+
+def compare(state: dict, head: str) -> str:
+    bare = state["bare"]
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise Refused("HTTP 404: No commit found")
+    git(bare, "cat-file", "-e", f"{head}^{{commit}}")
+    base = git(bare, "rev-parse", "refs/heads/main")
+    behind = int(git(bare, "rev-list", "--count", f"{head}..{base}"))
+    ahead = int(git(bare, "rev-list", "--count", f"{base}..{head}"))
+    fork = git(bare, "merge-base", base, head)
+    files = []
+    for line in git(bare, "diff", "--name-status", "-M", fork, head).splitlines():
+        parts = line.split("\t")
+        if parts[0].startswith("R"):
+            files.append(
+                {
+                    "filename": parts[2],
+                    "status": "renamed",
+                    "previous_filename": parts[1],
+                }
+            )
+        else:
+            kind = {"A": "added", "D": "removed"}.get(parts[0][0], "modified")
+            files.append({"filename": parts[1], "status": kind})
+    status = (
+        "identical"
+        if not ahead and not behind
+        else "ahead"
+        if not behind
+        else "behind"
+        if not ahead
+        else "diverged"
+    )
+    answer = {"status": status, "ahead_by": ahead, "behind_by": behind, "files": files}
+    return json.dumps(answer) + "\n"
+
+
 def handle(state: dict, args: list[str], stdin: str, token: str | None) -> str:
-    command, options, positional = parse(args)
     digest = hashlib.sha256((token or "").encode()).hexdigest()
+    if args[:1] == ["api"]:
+        if digest != state["token_sha256"]:
+            raise Refused("bad credentials")
+        return api(state, args[1:])
+    command, options, positional = parse(args)
     if digest != state["token_sha256"]:
         raise Refused("bad credentials")
     if command == ("label", "list"):
