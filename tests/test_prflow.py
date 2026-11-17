@@ -2716,8 +2716,14 @@ def test_a_passing_new_attempt_keeps_the_label_and_names_the_attempt(
     assert "Verdict: PASS" in body
 
 
-def test_github_has_no_way_to_remove_a_label() -> None:
-    assert not [name for name in dir(github) if "remove" in name.lower()]
+def test_github_removes_a_label_only_through_remove_label() -> None:
+    # remove_label refuses review-overridden and user-approved (tests/test_github.py).
+    removers = [
+        name
+        for name in dir(github)
+        if "remove" in name.lower() and callable(getattr(github, name))
+    ]
+    assert removers == ["remove_label"]
 
 
 def test_a_resolution_replaces_the_first_line_of_a_new_attempt_comment(

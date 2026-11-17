@@ -4,19 +4,26 @@ import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from orch import github
 from orch.github import (
+    CheckResult,
     GitHubError,
+    LabelEvent,
     PullRequestStatus,
+    ReviewState,
     add_label,
     comment_on_pull_request,
     create_pull_request,
     label_exists,
     pull_request_status,
+    remove_label,
+    required_checks,
+    review_state,
 )
 from orch.redact import ResidualPathError, SecretFoundError
 
@@ -676,4 +683,494 @@ def test_add_label_refuses_bad_arguments_without_running_gh(
     with pytest.raises(GitHubError) as caught:
         add(**options)
     assert gh.calls() == []
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+# The bot never adds or removes user-approved (ADR 0020)
+
+
+@pytest.mark.parametrize("name", ["user-approved", "User-Approved", "USER-APPROVED"])
+def test_add_label_refuses_user_approved_without_running_gh(
+    gh: FakeGh, name: str
+) -> None:
+    with pytest.raises(GitHubError):
+        add(name=name)
+    assert gh.calls() == []
+
+
+@pytest.mark.parametrize("name", ["user-approved", "User-Approved"])
+def test_create_refuses_user_approved_without_running_gh(gh: FakeGh, name: str) -> None:
+    with pytest.raises(GitHubError):
+        create(labels=("verify-deep", name))
+    assert gh.calls() == []
+
+
+def test_add_label_still_adds_the_review_labels(gh: FakeGh) -> None:
+    for name in github.REVIEW_LABELS:
+        add(name=name)
+    assert gh.calls() == [
+        ["pr", "edit", URL, "--add-label", "verify-light"],
+        ["pr", "edit", URL, "--add-label", "verify-deep"],
+    ]
+
+
+# Removing a label
+
+
+def remove(**options: str) -> None:
+    values = {"url": URL, "name": "verify-light", "token": TOKEN}
+    values.update(options)
+    remove_label(**values)
+
+
+def test_remove_label_runs_the_exact_edit_command(gh: FakeGh) -> None:
+    assert remove() is None
+    remove(name="changes-requested")
+    assert gh.calls() == [
+        ["pr", "edit", URL, "--remove-label", "verify-light"],
+        ["pr", "edit", URL, "--remove-label", "changes-requested"],
+    ]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["user-approved", "User-Approved", "review-overridden", "Review-Overridden"],
+)
+def test_remove_label_refuses_the_labels_the_bot_never_removes(
+    gh: FakeGh, name: str
+) -> None:
+    with pytest.raises(GitHubError):
+        remove(name=name)
+    assert gh.calls() == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"url": "https://example.com/owner/sample/pull/7"},
+        {"name": "-x"},
+        {"name": "two words"},
+        {"token": ""},
+    ],
+)
+def test_remove_label_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        remove(**options)
+    assert gh.calls() == []
+
+
+def test_remove_label_raises_without_the_token_when_gh_fails(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"'x' not found {TOKEN}\n"
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        remove()
+    assert "not found" in str(caught.value)
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+# Reading the review state
+
+
+SHA = "d0f05422f4b72ff9df4d76762e42a42060a501f4"
+
+
+def review_answer(**pull_request: object) -> str:
+    values: dict[str, object] = {
+        "state": "OPEN",
+        "mergedAt": None,
+        "headRefOid": SHA,
+        "labels": {"nodes": []},
+        "timelineItems": {"nodes": []},
+        "commits": {"nodes": [{"commit": {"oid": SHA, "statusCheckRollup": None}}]},
+    }
+    values.update(pull_request)
+    return json.dumps({"data": {"repository": {"pullRequest": values}}})
+
+
+def rollup(*nodes: dict[str, object]) -> dict[str, object]:
+    commit = {"oid": SHA, "statusCheckRollup": {"contexts": {"nodes": list(nodes)}}}
+    return {"nodes": [{"commit": commit}]}
+
+
+def run(name: str, status: str, conclusion: str | None) -> dict[str, object]:
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+def read_review(gh: FakeGh, **pull_request: object) -> ReviewState:
+    gh.stdout = review_answer(**pull_request)
+    gh.write()
+    return review_state(url=URL, token=TOKEN)
+
+
+def test_review_state_runs_the_exact_graphql_command(gh: FakeGh) -> None:
+    read_review(gh)
+    assert gh.calls() == [
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={github.REVIEW_QUERY}",
+            "-f",
+            "owner=owner",
+            "-f",
+            "name=sample",
+            "-F",
+            "number=7",
+        ]
+    ]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+    assert not any(TOKEN in arg for arg in gh.calls()[0])
+
+
+def test_review_state_reads_the_measured_answer(gh: FakeGh) -> None:
+    state = read_review(
+        gh,
+        state="MERGED",
+        mergedAt="2026-11-16T12:46:05Z",
+        labels={"nodes": [{"name": "needs-user"}, {"name": "verify-deep"}]},
+        timelineItems={
+            "nodes": [
+                {
+                    "__typename": "LabeledEvent",
+                    "createdAt": "2026-11-16T13:09:45Z",
+                    "label": {"name": "needs-user"},
+                },
+                {
+                    "__typename": "UnlabeledEvent",
+                    "createdAt": "2026-11-16T13:09:47Z",
+                    "label": {"name": "needs-user"},
+                },
+            ]
+        },
+        commits=rollup(run("ci", "COMPLETED", "SUCCESS")),
+    )
+    assert state == ReviewState(
+        state="MERGED",
+        merged=True,
+        merged_at="2026-11-16T12:46:05Z",
+        head_sha=SHA,
+        labels=("needs-user", "verify-deep"),
+        events=(
+            LabelEvent(
+                name="needs-user",
+                added=True,
+                at=datetime(2026, 11, 16, 13, 9, 45, tzinfo=UTC),
+            ),
+            LabelEvent(
+                name="needs-user",
+                added=False,
+                at=datetime(2026, 11, 16, 13, 9, 47, tzinfo=UTC),
+            ),
+        ),
+        checks={"ci": CheckResult.PASSED},
+    )
+    assert state.events[0].at.utcoffset() is not None
+
+
+def test_review_state_of_an_open_pull_request_without_checks(gh: FakeGh) -> None:
+    state = read_review(gh)
+    assert state == ReviewState(
+        state="OPEN",
+        merged=False,
+        merged_at=None,
+        head_sha=SHA,
+        labels=(),
+        events=(),
+        checks={},
+    )
+
+
+def test_review_state_of_a_closed_pull_request(gh: FakeGh) -> None:
+    state = read_review(gh, state="CLOSED")
+    assert (state.state, state.merged, state.merged_at) == ("CLOSED", False, None)
+
+
+def test_review_state_sorts_events_oldest_first(gh: FakeGh) -> None:
+    def event(kind: str, at: str, name: str) -> dict[str, object]:
+        return {"__typename": kind, "createdAt": at, "label": {"name": name}}
+
+    state = read_review(
+        gh,
+        timelineItems={
+            "nodes": [
+                event("LabeledEvent", "2026-11-16T13:00:02Z", "c"),
+                event("UnlabeledEvent", "2026-11-16T13:00:01Z", "b"),
+                event("LabeledEvent", "2026-11-16T13:00:01Z", "a"),
+            ]
+        },
+    )
+    assert [(item.name, item.added) for item in state.events] == [
+        ("b", False),
+        ("a", True),
+        ("c", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "expected"),
+    [
+        ("COMPLETED", "SUCCESS", CheckResult.PASSED),
+        ("COMPLETED", "NEUTRAL", CheckResult.PASSED),
+        ("COMPLETED", "SKIPPED", CheckResult.PASSED),
+        ("COMPLETED", "STALE", CheckResult.PENDING),
+        ("COMPLETED", "FAILURE", CheckResult.FAILED),
+        ("COMPLETED", "CANCELLED", CheckResult.FAILED),
+        ("COMPLETED", "TIMED_OUT", CheckResult.FAILED),
+        ("COMPLETED", "ACTION_REQUIRED", CheckResult.FAILED),
+        ("COMPLETED", "STARTUP_FAILURE", CheckResult.FAILED),
+        ("IN_PROGRESS", None, CheckResult.PENDING),
+        ("QUEUED", None, CheckResult.PENDING),
+        ("PENDING", None, CheckResult.PENDING),
+        ("WAITING", None, CheckResult.PENDING),
+        ("REQUESTED", None, CheckResult.PENDING),
+        ("IN_PROGRESS", "", CheckResult.PENDING),
+    ],
+)
+def test_review_state_classifies_a_check_run(
+    gh: FakeGh, status: str, conclusion: str | None, expected: CheckResult
+) -> None:
+    state = read_review(gh, commits=rollup(run("ci", status, conclusion)))
+    assert state.checks == {"ci": expected}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("SUCCESS", CheckResult.PASSED),
+        ("PENDING", CheckResult.PENDING),
+        ("EXPECTED", CheckResult.PENDING),
+        ("FAILURE", CheckResult.FAILED),
+        ("ERROR", CheckResult.FAILED),
+    ],
+)
+def test_review_state_classifies_a_status_context(
+    gh: FakeGh, value: str, expected: CheckResult
+) -> None:
+    node = {"__typename": "StatusContext", "context": "legacy", "state": value}
+    state = read_review(gh, commits=rollup(node, run("ci", "COMPLETED", "SUCCESS")))
+    assert state.checks == {"legacy": expected, "ci": CheckResult.PASSED}
+
+
+@pytest.mark.parametrize(
+    ("conclusions", "expected"),
+    [
+        (("SUCCESS", "FAILURE"), CheckResult.FAILED),
+        (("FAILURE", "SUCCESS"), CheckResult.FAILED),
+        (("SUCCESS", None), CheckResult.PENDING),
+        ((None, "SUCCESS"), CheckResult.PENDING),
+        ((None, "FAILURE"), CheckResult.FAILED),
+        (("SUCCESS", "SUCCESS"), CheckResult.PASSED),
+    ],
+)
+def test_review_state_takes_the_worst_result_of_one_name(
+    gh: FakeGh, conclusions: tuple[str | None, ...], expected: CheckResult
+) -> None:
+    nodes = [
+        run("ci", "COMPLETED" if conclusion else "IN_PROGRESS", conclusion)
+        for conclusion in conclusions
+    ]
+    assert read_review(gh, commits=rollup(*nodes)).checks == {"ci": expected}
+
+
+def bad_event(**changes: object) -> dict[str, object]:
+    node: dict[str, object] = {
+        "__typename": "LabeledEvent",
+        "createdAt": "2026-11-16T13:09:45Z",
+        "label": {"name": "needs-user"},
+    }
+    node.update(changes)
+    return {"nodes": [node]}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not json",
+        "[]",
+        "{}",
+        '{"data": {"repository": {"pullRequest": null}}}',
+        '{"data": {"repository": null}}',
+        review_answer(state="WEIRD"),
+        review_answer(state="MERGED"),
+        review_answer(mergedAt=5),
+        review_answer(headRefOid=None),
+        review_answer(labels={"nodes": [{"name": 5}]}),
+        review_answer(labels=None),
+        review_answer(timelineItems=bad_event(__typename="ClosedEvent")),
+        review_answer(timelineItems=bad_event(createdAt="yesterday")),
+        review_answer(timelineItems=bad_event(createdAt=None)),
+        review_answer(timelineItems=bad_event(label=None)),
+        review_answer(commits={"nodes": []}),
+        review_answer(commits=rollup(run("ci", "COMPLETED", "WEIRD"))),
+        review_answer(commits=rollup(run("ci", "COMPLETED", None))),
+        review_answer(commits=rollup(run("ci", "WEIRD", None))),
+        review_answer(commits=rollup(run(5, "COMPLETED", "SUCCESS"))),  # type: ignore[arg-type]
+        review_answer(commits=rollup({"__typename": "Other", "name": "ci"})),
+        review_answer(
+            commits=rollup(
+                {"__typename": "StatusContext", "context": "x", "state": "WEIRD"}
+            )
+        ),
+    ],
+)
+def test_review_state_refuses_an_unexpected_answer(gh: FakeGh, stdout: str) -> None:
+    gh.stdout = stdout
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        review_state(url=URL, token=TOKEN)
+    assert str(caught.value) == "api graphql: Invalid response"
+
+
+def test_review_state_failure_hides_the_token(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"HTTP 401 {TOKEN}\n"
+    gh.stdout = review_answer()
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        review_state(url=URL, token=TOKEN)
+    assert "HTTP 401" in str(caught.value)
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"url": "https://example.com/owner/sample/pull/7"}, {"token": "a b"}],
+)
+def test_review_state_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    values = {"url": URL, "token": TOKEN}
+    values.update(options)
+    with pytest.raises(GitHubError):
+        review_state(**values)
+    assert gh.calls() == []
+
+
+# Reading the required checks of a branch
+
+
+RULES = [
+    {"type": "deletion", "ruleset_id": 1},
+    {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+    {
+        "type": "required_status_checks",
+        "parameters": {
+            "do_not_enforce_on_create": False,
+            "required_status_checks": [{"context": "ci"}],
+            "strict_required_status_checks_policy": True,
+        },
+        "ruleset_id": 1,
+    },
+]
+
+
+def required(gh: FakeGh, answer: object, **options: str) -> tuple[str, ...]:
+    gh.stdout = answer if isinstance(answer, str) else json.dumps(answer)
+    gh.write()
+    values = {"github": "owner/sample", "branch": "main", "token": TOKEN}
+    values.update(options)
+    return required_checks(**values)
+
+
+def test_required_checks_runs_the_exact_read_only_command(gh: FakeGh) -> None:
+    assert required(gh, RULES) == ("ci",)
+    assert gh.calls() == [
+        ["api", "repos/owner/sample/rules/branches/main?per_page=100"]
+    ]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+def test_required_checks_is_empty_without_the_rule(gh: FakeGh) -> None:
+    assert required(gh, RULES[:2]) == ()
+    assert required(gh, []) == ()
+
+
+def test_required_checks_joins_every_rule_without_duplicates(gh: FakeGh) -> None:
+    def rule(*names: str) -> dict[str, object]:
+        checks = [{"context": name, "integration_id": 15368} for name in names]
+        return {
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": checks},
+        }
+
+    assert required(gh, [rule("ci", "lint"), rule("lint", "docs")]) == (
+        "ci",
+        "lint",
+        "docs",
+    )
+
+
+def test_required_checks_accepts_a_branch_with_a_slash(gh: FakeGh) -> None:
+    required(gh, [], branch="release/1.x")
+    assert gh.calls() == [
+        ["api", "repos/owner/sample/rules/branches/release/1.x?per_page=100"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "not json",
+        "{}",
+        "[5]",
+        [{"type": "required_status_checks"}],
+        [{"type": "required_status_checks", "parameters": {}}],
+        [
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": [{"context": 5}]},
+            }
+        ],
+        [
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": ["ci"]},
+            }
+        ],
+    ],
+)
+def test_required_checks_refuses_an_unexpected_answer(
+    gh: FakeGh, answer: object
+) -> None:
+    with pytest.raises(GitHubError) as caught:
+        required(gh, answer)
+    assert str(caught.value) == "api: Invalid response"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"github": "owner"},
+        {"github": "owner/sample/x"},
+        {"branch": ""},
+        {"branch": "-main"},
+        {"branch": "a..b"},
+        {"branch": "main?x=1"},
+        {"branch": "two words"},
+        {"token": ""},
+    ],
+)
+def test_required_checks_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        required(gh, RULES, **options)
+    assert gh.calls() == []
+
+
+def test_required_checks_failure_hides_the_token(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"HTTP 403 {TOKEN}\n"
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        required_checks(github="owner/sample", branch="main", token=TOKEN)
     assert TOKEN not in error_chain_text(caught.value)
