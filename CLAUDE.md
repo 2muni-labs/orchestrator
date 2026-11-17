@@ -73,14 +73,12 @@ outside the sandbox, before that code merges.
 - Apply `config/main.md` GitHub work tracking to the hub itself. Seed the runtime
   bindings from `docs/github-tracking.json`; it records the existing eight groups
   and their issues. Projects #3 (oldest group) and #2 (Codex work) are reused.
-- A harness PR has a tracking issue even though it has no orch task. Keep that issue
-  open until its PR merges; checks or a review label alone do not complete it.
-- Runtime bindings and pending updates stay in `R/github-tracking.json`; update the
-  reviewed seed only through a PR when recovery data or group definitions change.
-  Do not commit runtime sync status or replace generated `TODO.md` with GitHub data.
-- These instructions take effect after this harness change merges, the hub clone
-  is updated and a fresh `orch open orchestrator` loads it. They require no CLI
-  upgrade; the main agent performs the GitHub operations.
+- A harness pull request has a tracking issue even though it has no orch task. Its
+  record names the `task/<id>` branch, so the sync can close the issue when the pull
+  request merges.
+- Update the reviewed seed only through a pull request, when recovery data or group
+  definitions change. Never commit the runtime file or replace `TODO.md` with
+  GitHub data.
 
 ## Releases and the installed orch
 

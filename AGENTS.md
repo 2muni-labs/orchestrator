@@ -64,7 +64,7 @@ config/agents/     read-only sub-agent definitions that orch open injects
 config/subagent.md implementation sub-agent rules that orch run adds to the prompt
 
 ~/.orch/orchestrator/   runtime data, never committed
-  github-tracking.json  main-owned bindings and unconfirmed GitHub updates
+  github-tracking.json  record-to-issue bindings for GitHub work tracking
   tasks/<id>.md         task specs
   results/<id>.json     result reports
   reviews/<id>.json     review reports
