@@ -176,6 +176,7 @@ class Sandbox:
                 "bare": str(self.bare),
                 "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(),
                 "labels": [LABEL, *REVIEW_LABELS],
+                "rules": {"required": ["ci"], "strict": True},
                 "pull_requests": [],
             }
         )

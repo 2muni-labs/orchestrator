@@ -12,12 +12,16 @@ import pytest
 from orch import github
 from orch.github import (
     CheckResult,
+    Comparison,
     GitHubError,
     LabelEvent,
     PullRequestStatus,
+    RequiredChecks,
     ReviewState,
     add_label,
+    check_rules,
     comment_on_pull_request,
+    compare,
     create_pull_request,
     label_exists,
     pull_request_status,
@@ -1041,6 +1045,18 @@ def test_review_state_failure_hides_the_token(gh: FakeGh) -> None:
     assert TOKEN not in error_chain_text(caught.value)
 
 
+def test_review_state_refuses_a_last_commit_that_is_not_the_head(
+    gh: FakeGh,
+) -> None:
+    # The head moved between the two parts of the answer: its checks are not the head's.
+    other = {"nodes": [{"commit": {"oid": "f" * 40, "statusCheckRollup": None}}]}
+    gh.stdout = review_answer(commits=other)
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        review_state(url=URL, token=TOKEN)
+    assert str(caught.value) == "api graphql: Invalid response"
+
+
 @pytest.mark.parametrize(
     "options",
     [{"url": "https://example.com/owner/sample/pull/7"}, {"token": "a b"}],
@@ -1173,4 +1189,223 @@ def test_required_checks_failure_hides_the_token(gh: FakeGh) -> None:
     gh.write()
     with pytest.raises(GitHubError) as caught:
         required_checks(github="owner/sample", branch="main", token=TOKEN)
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+# Reading the rules of a branch, with the strict policy
+
+
+def rules_of(gh: FakeGh, answer: object, **options: str) -> RequiredChecks:
+    gh.stdout = answer if isinstance(answer, str) else json.dumps(answer)
+    gh.write()
+    values = {"github": "owner/sample", "branch": "main", "token": TOKEN}
+    values.update(options)
+    return check_rules(**values)
+
+
+def checks_rule(*names: str, strict: object = None) -> dict[str, object]:
+    parameters: dict[str, object] = {
+        "required_status_checks": [{"context": name} for name in names]
+    }
+    if strict is not None:
+        parameters["strict_required_status_checks_policy"] = strict
+    return {"type": "required_status_checks", "parameters": parameters}
+
+
+def test_check_rules_runs_the_same_read_only_command(gh: FakeGh) -> None:
+    assert rules_of(gh, RULES) == RequiredChecks(names=("ci",), strict=True)
+    assert gh.calls() == [
+        ["api", "repos/owner/sample/rules/branches/main?per_page=100"]
+    ]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+def test_check_rules_without_the_rule_is_empty_and_not_strict(gh: FakeGh) -> None:
+    assert rules_of(gh, RULES[:2]) == RequiredChecks(names=(), strict=False)
+    assert rules_of(gh, []) == RequiredChecks(names=(), strict=False)
+
+
+@pytest.mark.parametrize("strict", [None, False])
+def test_check_rules_without_the_policy_is_not_strict(
+    gh: FakeGh, strict: object
+) -> None:
+    answer = [checks_rule("ci", strict=strict)]
+    assert rules_of(gh, answer) == RequiredChecks(names=("ci",), strict=False)
+
+
+def test_check_rules_is_strict_if_any_rule_is_strict(gh: FakeGh) -> None:
+    answer = [checks_rule("ci", "lint", strict=False), checks_rule("lint", strict=True)]
+    assert rules_of(gh, answer) == RequiredChecks(names=("ci", "lint"), strict=True)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "not json",
+        "{}",
+        "[5]",
+        [{"type": "required_status_checks"}],
+        [{"type": "required_status_checks", "parameters": {}}],
+        [checks_rule("ci", strict="yes")],
+        [checks_rule("ci", strict=1)],
+        [
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": [{"context": 5}]},
+            }
+        ],
+    ],
+)
+def test_check_rules_refuses_an_unexpected_answer(gh: FakeGh, answer: object) -> None:
+    with pytest.raises(GitHubError) as caught:
+        rules_of(gh, answer)
+    assert str(caught.value) == "api: Invalid response"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"github": "owner"},
+        {"branch": "-main"},
+        {"branch": "a..b"},
+        {"branch": "main?x=1"},
+        {"token": ""},
+    ],
+)
+def test_check_rules_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        rules_of(gh, RULES, **options)
+    assert gh.calls() == []
+
+
+def test_check_rules_failure_hides_the_token(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"HTTP 403 {TOKEN}\n"
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        check_rules(github="owner/sample", branch="main", token=TOKEN)
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+# Comparing a head with the default branch
+
+# The shape measured on gh 2.102.0 with the bot token (2026-11-17, #143).
+COMPARED = {
+    "status": "diverged",
+    "ahead_by": 2,
+    "behind_by": 3,
+    "total_commits": 2,
+    "files": [
+        {"filename": "src/a.py", "status": "modified", "additions": 1},
+        {
+            "filename": "docs/new.md",
+            "status": "renamed",
+            "previous_filename": "docs/old.md",
+        },
+        {"filename": "gone.py", "status": "removed"},
+    ],
+}
+
+
+def compared(gh: FakeGh, answer: object, **options: str) -> Comparison:
+    gh.stdout = answer if isinstance(answer, str) else json.dumps(answer)
+    gh.write()
+    values = {"github": "owner/sample", "base": "main", "head": SHA, "token": TOKEN}
+    values.update(options)
+    return compare(**values)
+
+
+def with_files(files: object, **values: object) -> dict[str, object]:
+    return {**COMPARED, "files": files, **values}
+
+
+def test_compare_runs_the_exact_read_only_command(gh: FakeGh) -> None:
+    assert compared(gh, COMPARED) == Comparison(
+        behind_by=3,
+        files=("src/a.py", "docs/new.md", "docs/old.md", "gone.py"),
+        truncated=False,
+    )
+    assert gh.calls() == [["api", f"repos/owner/sample/compare/main...{SHA}"]]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+def test_compare_of_an_up_to_date_head(gh: FakeGh) -> None:
+    answer = with_files([], status="identical", ahead_by=0, behind_by=0)
+    assert compared(gh, answer) == Comparison(behind_by=0, files=(), truncated=False)
+
+
+def test_compare_lists_a_path_once(gh: FakeGh) -> None:
+    files = [
+        {"filename": "a.py", "status": "renamed", "previous_filename": "b.py"},
+        {"filename": "b.py", "status": "added"},
+    ]
+    assert compared(gh, with_files(files)).files == ("a.py", "b.py")
+
+
+@pytest.mark.parametrize(("count", "truncated"), [(299, False), (300, True)])
+def test_compare_marks_a_list_of_300_files_as_truncated(
+    gh: FakeGh, count: int, truncated: bool
+) -> None:
+    files = [{"filename": f"f{n}.py", "status": "added"} for n in range(count)]
+    result = compared(gh, with_files(files))
+    assert result.truncated is truncated
+    assert len(result.files) == count
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "not json",
+        "[]",
+        "{}",
+        {key: value for key, value in COMPARED.items() if key != "behind_by"},
+        {**COMPARED, "behind_by": "3"},
+        {**COMPARED, "behind_by": -1},
+        {**COMPARED, "behind_by": True},
+        with_files(None),
+        with_files([5]),
+        with_files([{"status": "added"}]),
+        with_files([{"filename": 5, "status": "added"}]),
+        with_files([{"filename": "", "status": "added"}]),
+        with_files([{"filename": "a.py", "previous_filename": 5}]),
+    ],
+)
+def test_compare_refuses_an_unexpected_answer(gh: FakeGh, answer: object) -> None:
+    with pytest.raises(GitHubError) as caught:
+        compared(gh, answer)
+    assert str(caught.value) == "api: Invalid response"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"github": "owner"},
+        {"base": "-main"},
+        {"base": "a..b"},
+        {"base": "main?x=1"},
+        {"head": "abc"},
+        {"head": "-" + "a" * 39},
+        {"head": "A" * 40},
+        {"head": SHA + "?x=1"},
+        {"token": ""},
+    ],
+)
+def test_compare_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, options: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        compared(gh, COMPARED, **options)
+    assert gh.calls() == []
+
+
+def test_compare_failure_hides_the_token(gh: FakeGh) -> None:
+    # Measured: an unknown commit makes gh exit 1 with HTTP 404.
+    gh.code = 1
+    gh.stderr = f"HTTP 404: No commit found {TOKEN}\n"
+    gh.write()
+    with pytest.raises(GitHubError) as caught:
+        compare(github="owner/sample", base="main", head=SHA, token=TOKEN)
+    assert "HTTP 404" in str(caught.value)
     assert TOKEN not in error_chain_text(caught.value)

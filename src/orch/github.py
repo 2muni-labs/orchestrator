@@ -79,6 +79,27 @@ class ReviewState:
     checks: Mapping[str, CheckResult]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RequiredChecks:
+    """A branch's required checks, and whether a head must be up to date to merge."""
+
+    names: tuple[str, ...]
+    strict: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Comparison:
+    """How a head compares with a base branch.
+
+    files holds every changed path, a renamed file's old path too. truncated is True
+    when GitHub may have left files out (300 or more files listed).
+    """
+
+    behind_by: int
+    files: tuple[str, ...]
+    truncated: bool
+
+
 def _validate_token(token: str) -> None:
     if not token or any(character.isspace() for character in token):
         raise GitHubError("Invalid token")
@@ -455,3 +476,13 @@ def required_checks(*, github: str, branch: str, token: str) -> tuple[str, ...]:
     except KeyError, TypeError, ValueError:
         pass
     raise GitHubError("api: Invalid response")
+
+
+def check_rules(*, github: str, branch: str, token: str) -> RequiredChecks:
+    """Return a branch's required checks and its strict up-to-date policy."""
+    raise NotImplementedError
+
+
+def compare(*, github: str, base: str, head: str, token: str) -> Comparison:
+    """Compare a head commit with a base branch."""
+    raise NotImplementedError
