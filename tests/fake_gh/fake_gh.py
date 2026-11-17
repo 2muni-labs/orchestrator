@@ -32,6 +32,11 @@ COMMANDS = {
         "positional": 1,
     },
     ("pr", "view"): {"flags": {"--json"}, "required": {"--json"}, "positional": 1},
+    ("pr", "edit"): {
+        "flags": {"--add-label", "--remove-label"},
+        "required": set(),
+        "positional": 1,
+    },
 }
 
 
@@ -169,6 +174,22 @@ def pr_view(state: dict, options: dict[str, list[str]], url: str) -> str:
     return json.dumps({field: values[field] for field in fields}) + "\n"
 
 
+def pr_edit(state: dict, options: dict[str, list[str]], url: str) -> str:
+    added = options.get("--add-label", [])
+    removed = options.get("--remove-label", [])
+    if not added and not removed:
+        raise Refused("nothing to edit")
+    for name in added + removed:
+        if name not in state["labels"]:
+            raise Refused(f"unknown label: {name}")
+    item = find_pull_request(state, url)
+    for name in added:
+        if name not in item["labels"]:
+            item["labels"].append(name)
+    item["labels"] = [name for name in item["labels"] if name not in removed]
+    return url + "\n"
+
+
 def handle(state: dict, args: list[str], stdin: str, token: str | None) -> str:
     command, options, positional = parse(args)
     digest = hashlib.sha256((token or "").encode()).hexdigest()
@@ -180,6 +201,8 @@ def handle(state: dict, args: list[str], stdin: str, token: str | None) -> str:
         return pr_create(state, options, stdin)
     if command == ("pr", "comment"):
         return pr_comment(state, options, positional[0], stdin)
+    if command == ("pr", "edit"):
+        return pr_edit(state, options, positional[0])
     return pr_view(state, options, positional[0])
 
 

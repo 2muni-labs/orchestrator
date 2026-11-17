@@ -336,10 +336,17 @@ def task_changed_paths(worktree: Path, since: str, main_ref: str) -> frozenset[s
     """Return the task's changes since a revision, without main_ref's merged files."""
     _validate_value(since)
     _validate_value(main_ref)
-    tip = task_tip(worktree, main_ref)
-    if tip == rev_parse(worktree, "HEAD"):
-        return changed_paths(worktree, since)
-    committed = _git(worktree, "diff", "--name-only", "--no-renames", "-z", since, tip)
+    committed = _git(
+        worktree,
+        "log",
+        "--no-merges",
+        "--format=",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        f"{since}..HEAD",
+        f"^{main_ref}",
+    )
     uncommitted = _git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD")
     untracked = _git(worktree, "ls-files", "--others", "--exclude-standard", "-z")
     return frozenset(

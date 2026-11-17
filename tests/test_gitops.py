@@ -993,6 +993,56 @@ def test_task_changed_paths_reports_a_deletion_through_a_merge(
     assert task_changed_paths(worktree, since, MAIN) == {"first.txt"}
 
 
+def test_task_changed_paths_leaves_out_main_files_of_a_pushed_merge(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "committed.txt")
+    move_main(repo, worktree, "main1.txt")
+    temporary_merge(worktree, MAIN)
+    assert task_changed_paths(worktree, since, MAIN) == {"committed.txt"}
+
+
+def test_task_changed_paths_looks_through_every_merge_of_main(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "committed.txt")
+    move_main(repo, worktree, "main1.txt")
+    temporary_merge(worktree, MAIN)
+    move_main(repo, worktree, "main2.txt")
+    temporary_merge(worktree, MAIN)
+    write(worktree / "untracked.txt")
+    assert task_changed_paths(worktree, since, MAIN) == {
+        "committed.txt",
+        "untracked.txt",
+    }
+
+
+def test_task_changed_paths_counts_task_commits_after_a_merge(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    move_main(repo, worktree, "main1.txt")
+    temporary_merge(worktree, MAIN)
+    add_commit(worktree, "fix.txt")
+    move_main(repo, worktree, "main2.txt")
+    temporary_merge(worktree, MAIN)
+    assert task_changed_paths(worktree, since, MAIN) == {"fix.txt"}
+
+
+def test_task_changed_paths_counts_a_task_edit_of_a_merged_main_file(
+    worktree: Path, repo: Path
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    move_main(repo, worktree, "main1.txt")
+    temporary_merge(worktree, MAIN)
+    add_commit(worktree, "main1.txt", "edited by the task\n")
+    move_main(repo, worktree, "main2.txt")
+    temporary_merge(worktree, MAIN)
+    assert task_changed_paths(worktree, since, MAIN) == {"main1.txt"}
+
+
 def test_task_changed_paths_ignores_ignored_files(worktree: Path) -> None:
     since = task_commit(worktree)
     write(worktree / ".orch-result.json", "{}\n")
