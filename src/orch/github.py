@@ -533,3 +533,140 @@ def compare(*, github: str, base: str, head: str, token: str) -> Comparison:
     except KeyError, TypeError, ValueError:
         pass
     raise GitHubError("api: Invalid response")
+
+
+# GitHub work tracking: issues and Projects v2 (measured on gh 2.102.0, 2026-11-18)
+
+ISSUE_MARKER_PATTERN = (
+    r"<!-- orch-task:[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._-]* -->"
+)
+BLOCK_BEGIN = "<!-- orch-progress:begin -->"
+BLOCK_END = "<!-- orch-progress:end -->"
+ISSUE_REASONS = ("completed", "not_planned")
+ISSUE_LIST_LIMIT = 100
+
+PROJECT_QUERY = (
+    "query($owner:String!,$number:Int!){organization(login:$owner){"
+    'projectV2(number:$number){id number field(name:"Status"){'
+    "... on ProjectV2SingleSelectField{id options{id name}}}}}}"
+)
+ADD_ITEM_MUTATION = (
+    "mutation($project:ID!,$content:ID!){addProjectV2ItemById("
+    "input:{projectId:$project,contentId:$content}){item{id}}}"
+)
+ISSUE_ITEMS_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){"
+    "repository(owner:$owner,name:$name){issue(number:$number){"
+    'projectItems(first:50){nodes{id project{id} fieldValueByName(name:"Status"){'
+    "... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}"
+)
+SET_STATUS_MUTATION = (
+    "mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){"
+    "updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,"
+    "fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}"
+)
+
+
+class GitHubNotFoundError(GitHubError):
+    """gh reported HTTP 404 for a REST call."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Issue:
+    """An issue as GitHub reports it."""
+
+    number: int
+    node_id: str
+    url: str
+    title: str
+    state: str
+    state_reason: str | None
+    body: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Project:
+    """An organization project and its Status field."""
+
+    id: str
+    owner: str
+    number: int
+    status_field_id: str
+    status_options: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProjectItem:
+    """An issue's item in one project and its Status, if set."""
+
+    id: str
+    project_id: str
+    status: str | None
+
+
+def issue_number(*, github: str, url: str) -> int:
+    """Return the number of an issue URL in the repository, or raise."""
+    raise NotImplementedError
+
+
+def project_number(*, owner: str, url: str) -> int:
+    """Return the number of an organization project URL of the owner, or raise."""
+    raise NotImplementedError
+
+
+def replace_managed_block(body: str, block: str) -> str:
+    """Replace or append the orch progress block, keeping the rest of the body."""
+    raise NotImplementedError
+
+
+def get_issue(*, github: str, number: int, token: str) -> Issue:
+    """Read one issue of the repository."""
+    raise NotImplementedError
+
+
+def find_issues_by_marker(*, github: str, marker: str, token: str) -> tuple[int, ...]:
+    """Return the numbers of recent issues whose body has the marker line."""
+    raise NotImplementedError
+
+
+def create_issue(
+    *, github: str, title: str, body: str, token: str, home: Path, orch_home: Path
+) -> Issue:
+    """Create an issue from redacted text."""
+    raise NotImplementedError
+
+
+def update_issue_body(
+    *, github: str, number: int, body: str, token: str, home: Path, orch_home: Path
+) -> Issue:
+    """Replace an issue's body with redacted text."""
+    raise NotImplementedError
+
+
+def set_issue_state(
+    *, github: str, number: int, state: str, reason: str | None, token: str
+) -> Issue:
+    """Open an issue, or close it with a reason."""
+    raise NotImplementedError
+
+
+def get_project(*, owner: str, number: int, token: str) -> Project:
+    """Read an organization project and its Status options."""
+    raise NotImplementedError
+
+
+def add_project_item(*, project: Project, issue: Issue, token: str) -> str:
+    """Add an issue to a project and return the item id. Adding twice is harmless."""
+    raise NotImplementedError
+
+
+def issue_project_item(
+    *, github: str, number: int, project: Project, token: str
+) -> ProjectItem | None:
+    """Return the issue's item in the project with its Status, or None."""
+    raise NotImplementedError
+
+
+def set_item_status(*, project: Project, item_id: str, status: str, token: str) -> None:
+    """Set an item's Status by option name."""
+    raise NotImplementedError
