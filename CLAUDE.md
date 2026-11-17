@@ -68,6 +68,20 @@ Report both counts. Only those two files run outside, because only they need to.
 remaining risk: they run the branch's `sandbox.py`, `gate.py` and what those import
 outside the sandbox, before that code merges.
 
+## Hub GitHub tracking
+
+- Apply `config/main.md` GitHub work tracking to the hub itself. Seed the runtime
+  bindings from `docs/github-tracking.json`; it records the existing eight groups
+  and inventory issues. Projects #3 (oldest group) and #2 (Codex work) are reused.
+- A harness PR has a tracking issue even though it has no orch task. Keep that issue
+  open until its PR merges; checks or a review label alone do not complete it.
+- Runtime bindings and pending updates stay in `R/github-tracking.json`; update the
+  reviewed seed only through a PR when recovery data or group definitions change.
+  Do not commit runtime sync status or replace generated `TODO.md` with GitHub data.
+- These instructions take effect after this harness change merges, the hub clone
+  is updated and a fresh `orch open orchestrator` loads it. They require no CLI
+  upgrade; the main agent performs the GitHub operations.
+
 ## Releases and the installed orch
 
 - After step 9, update the hub clone's `main` to `origin/main`. `orch open` reads the
