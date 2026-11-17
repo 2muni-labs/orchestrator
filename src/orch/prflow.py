@@ -81,10 +81,23 @@ def open_pull_request(
     task = store.get_task(conn, spec.id)
     if task is None:
         raise PullRequestFlowError(f"Task not found: {spec.id}")
-    if task.state not in (TaskState.READY, TaskState.CONFLICT):
-        raise PullRequestFlowError(f"Task must be ready or conflict: {spec.id}")
+    if task.state not in (TaskState.READY, TaskState.CONFLICT, TaskState.PR_OPEN):
+        raise PullRequestFlowError(
+            f"Task must be ready, conflict or pr_open: {spec.id}"
+        )
     if not task.worktree or not task.test_sha:
         raise PullRequestFlowError(f"Task needs a worktree and test commit: {spec.id}")
+
+    fixing = task.state == TaskState.PR_OPEN
+    if fixing:
+        if not resolution:
+            raise PullRequestFlowError(f"Task needs a resolution: {spec.id}")
+        if not task.pushed_sha or not task.pr_url:
+            raise PullRequestFlowError(
+                f"Task needs a pushed commit and PR URL: {spec.id}"
+            )
+        if gitops.rev_parse(Path(task.worktree), "HEAD") == task.pushed_sha:
+            raise PullRequestFlowError(f"Task needs a new commit: {spec.id}")
 
     new_attempt = task.state == TaskState.READY and task.pr_url is not None
     review = None
@@ -114,9 +127,9 @@ def open_pull_request(
     gitops.fetch(worktree)
     rebased = gitops.rebase(worktree, main_ref)
     if not rebased.ok:
-        if task.state == TaskState.READY:
+        if task.state in (TaskState.READY, TaskState.PR_OPEN):
             store.transition(
-                conn, spec.id, TaskState.READY, TaskState.CONFLICT, actor="orch"
+                conn, spec.id, task.state, TaskState.CONFLICT, actor="orch"
             )
         return PullRequestReport(state=TaskState.CONFLICT, conflicts=rebased.conflicts)
 
@@ -154,9 +167,14 @@ def open_pull_request(
     if not skipped:
         gitops.reset_to(worktree, head)
     if detail is not None:
+        if fixing:
+            raise PullRequestFlowError(f"Pre-PR G2 failed: {detail}")
         store.transition(conn, spec.id, task.state, TaskState.JUDGING, actor="orch")
         return PullRequestReport(state=TaskState.JUDGING, detail=detail)
 
+    if fixing:
+        for name in ("changes-requested", "verify-light", "verify-deep"):
+            github.remove_label(url=task.pr_url, name=name, token=token)
     if task.pushed_sha:
         gitops.update_task_branch(worktree, spec.id, task.pushed_sha)
     else:
@@ -236,7 +254,8 @@ def open_pull_request(
 
     with store.transaction(conn):
         store.update_task(conn, spec.id, pr_url=url)
-        store.transition(conn, spec.id, task.state, TaskState.PR_OPEN, actor="orch")
+        if not fixing:
+            store.transition(conn, spec.id, task.state, TaskState.PR_OPEN, actor="orch")
     return PullRequestReport(
         state=TaskState.PR_OPEN,
         pr_url=url,
@@ -257,7 +276,7 @@ def update_pull_request(
     orch_home: Path,
     timeout_sec: int | None = None,
 ) -> UpdateReport:
-    """Check an open pull request against the moved default branch, without pushing."""
+    """Check an open pull request and push a clean merge of the default branch."""
     task = store.get_task(conn, spec.id)
     if task is None:
         raise PullRequestFlowError(f"Task not found: {spec.id}")
@@ -271,13 +290,14 @@ def update_pull_request(
     worktree = Path(task.worktree)
     main_ref = f"origin/{target.default_branch}"
     gitops.fetch(worktree)
-    merged = gitops.temporary_merge(worktree, main_ref)
-    if not merged.ok:
+    merge = gitops.temporary_merge(worktree, main_ref)
+    if not merge.ok:
         store.transition(
             conn, spec.id, TaskState.PR_OPEN, TaskState.CONFLICT, actor="orch"
         )
-        return UpdateReport(state=TaskState.CONFLICT, conflicts=merged.conflicts)
+        return UpdateReport(state=TaskState.CONFLICT, conflicts=merge.conflicts)
 
+    merged = gitops.rev_parse(worktree, "HEAD")
     try:
         report = gate.run_gates(
             spec,
@@ -288,9 +308,11 @@ def update_pull_request(
             log_path=log_path,
             timeout_sec=timeout_sec,
         )
-    finally:
+    except BaseException:
         gitops.reset_to(worktree, task.pushed_sha)
+        raise
     if not report.passed:
+        gitops.reset_to(worktree, task.pushed_sha)
         github.comment_on_pull_request(
             url=task.pr_url,
             body=INTEGRATION_FAILED,
@@ -298,7 +320,28 @@ def update_pull_request(
             home=home,
             orch_home=orch_home,
         )
-    return UpdateReport(state=TaskState.PR_OPEN, gates=report)
+        return UpdateReport(state=TaskState.PR_OPEN, gates=report)
+    if merged == task.pushed_sha:
+        gitops.reset_to(worktree, task.pushed_sha)
+        return UpdateReport(state=TaskState.PR_OPEN, gates=report)
+
+    gitops.reset_to(worktree, merged)
+    try:
+        for name in ("verify-light", "verify-deep", "needs-user"):
+            github.remove_label(url=task.pr_url, name=name, token=token)
+        gitops.update_task_branch(worktree, spec.id, task.pushed_sha)
+    except BaseException:
+        gitops.reset_to(worktree, task.pushed_sha)
+        raise
+    store.update_task(conn, spec.id, pushed_sha=merged, gated_sha=merged)
+    github.comment_on_pull_request(
+        url=task.pr_url,
+        body=f"Updated to the latest {target.default_branch}.\n\nCommit: `{merged}`",
+        token=token,
+        home=home,
+        orch_home=orch_home,
+    )
+    return UpdateReport(state=TaskState.PR_OPEN, gates=report, pushed_sha=merged)
 
 
 def close_task(
