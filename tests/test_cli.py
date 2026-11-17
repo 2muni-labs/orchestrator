@@ -1568,6 +1568,7 @@ def test_update_reports_the_check_and_exits_by_it(
         "state": report.state.value,
         "conflicts": list(report.conflicts),
         "gates": gates,
+        "pushed_sha": report.pushed_sha,
     }
     assert calls[0]["spec"].id == TASK
     assert calls[0]["token"] == TOKEN

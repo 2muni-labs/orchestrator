@@ -398,20 +398,39 @@ def test_a_discarded_dependency_blocks_the_chain_and_resume_keeps_it_blocked(
 # An open pull request when main moves
 
 
-def test_main_moving_without_a_conflict_pushes_nothing(sandbox: Sandbox) -> None:
+def test_main_moving_without_a_conflict_pushes_a_merge_commit(
+    sandbox: Sandbox,
+) -> None:
     worktree, url = sandbox.open_pull_request(TASK)
     pushed = sandbox.head(worktree)
     sandbox.advance_main("docs/other.md", "other\n")
 
     data = sandbox.ok("update", TASK)
+    merged = sandbox.head(worktree)
     assert data["state"] == "pr_open"
     assert data["gates"]["passed"] is True
-    assert sandbox.remote_sha(f"task/{TASK}") == pushed
-    assert sandbox.head(worktree) == pushed
-    assert not (worktree / "docs" / "other.md").exists()
+    assert data["pushed_sha"] == merged
+    assert merged != pushed
+    assert sandbox.git(worktree, "rev-parse", "HEAD^1") == pushed
+    assert sandbox.remote_sha(f"task/{TASK}") == merged
+    assert (worktree / "docs" / "other.md").exists()
     assert sandbox.git(worktree, "status", "--porcelain") == ""
-    assert comments(sandbox, url) == []
+    assert comments(sandbox, url) == [
+        f"Updated to the latest main.\n\nCommit: `{merged}`"
+    ]
+    edits = calls_named(sandbox, "pr", "edit")
+    assert [call["argv"][3:] for call in edits] == [
+        ["--remove-label", "verify-light"],
+        ["--remove-label", "verify-deep"],
+        ["--remove-label", "needs-user"],
+    ]
+    assert all(call["refused"] is None for call in edits)
     assert sandbox.state(TASK) == "pr_open"
+
+    # Nothing new on main: the branch is up to date and nothing is pushed.
+    again = sandbox.ok("update", TASK)
+    assert again["pushed_sha"] is None
+    assert sandbox.remote_sha(f"task/{TASK}") == merged
 
 
 def test_main_breaking_the_tests_warns_on_the_pull_request(sandbox: Sandbox) -> None:

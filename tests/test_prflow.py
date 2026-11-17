@@ -3,6 +3,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -258,7 +259,11 @@ class FakeGitHub:
         self.comment_error: Exception | None = None
         self.added: list[dict[str, object]] = []
         self.add_error: Exception | None = None
+        self.removed: list[dict[str, object]] = []
+        self.remove_error: Exception | None = None
+        self.on_remove: Callable[[], None] = lambda: None
         monkeypatch.setattr(github, "add_label", self.add_label)
+        monkeypatch.setattr(github, "remove_label", self.remove_label)
         monkeypatch.setattr(github, "create_pull_request", self.create)
         monkeypatch.setattr(github, "comment_on_pull_request", self.comment)
         monkeypatch.setattr(github, "pull_request_status", self.status)
@@ -272,6 +277,12 @@ class FakeGitHub:
         self.added.append(options)
         if self.add_error is not None:
             raise self.add_error
+
+    def remove_label(self, **options: object) -> None:
+        self.on_remove()
+        self.removed.append(options)
+        if self.remove_error is not None:
+            raise self.remove_error
 
     def create(self, **options: object) -> str:
         self.created.append(options)
@@ -1560,24 +1571,154 @@ def test_rerunning_after_a_failed_create_skips_the_pre_pr_gate(
 # orch update
 
 
-def test_update_without_a_conflict_runs_the_gates_and_pushes_nothing(
+UPDATE_LABELS = ["verify-light", "verify-deep", "needs-user"]
+FIX_LABELS = ["changes-requested", "verify-light", "verify-deep"]
+
+
+def removals(*names: str) -> list[dict[str, object]]:
+    return [{"url": URL, "name": name, "token": TOKEN} for name in names]
+
+
+def updated_comment(head: str) -> dict[str, object]:
+    body = f"Updated to the latest main.\n\nCommit: `{head}`"
+    return {"url": URL, "body": body, "token": TOKEN, **REDACT}
+
+
+def test_update_without_a_conflict_pushes_the_merge_commit(
     conn: sqlite3.Connection,
     repo: Path,
     remote: Path,
     worktree: Path,
     opened: str,
     tmp_path: Path,
+    hub: FakeGitHub,
 ) -> None:
-    move_main(repo)
+    main_tip = move_main(repo)
     report = update_pr(conn, repo, tmp_path)
+    head = git(worktree, "rev-parse", "HEAD")
     assert report.state is TaskState.PR_OPEN
     assert report.conflicts == ()
     assert report.gates is not None
     assert report.gates.passed is True
+    assert report.pushed_sha == head
+    assert git(worktree, "rev-parse", "HEAD^1") == opened
+    assert git(worktree, "rev-parse", "HEAD^2") == main_tip
+    assert git(worktree, "status", "--porcelain") == ""
+    assert remote_tip(remote) == head
+    task = task_of(conn)
+    assert task.state is TaskState.PR_OPEN
+    assert task.pushed_sha == head
+    assert task.gated_sha == head
+    assert hub.removed == removals(*UPDATE_LABELS)
+    assert hub.comments == [updated_comment(head)]
+    assert events_of(conn)[-1] == ("ready", "pr_open")
+
+
+def test_update_removes_the_labels_before_the_push(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    tips: list[str | None] = []
+    hub.on_remove = lambda: tips.append(remote_tip(remote))
+    move_main(repo)
+    update_pr(conn, repo, tmp_path)
+    assert tips == [opened, opened, opened]
+
+
+def test_an_up_to_date_branch_is_checked_and_not_pushed(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    report = update_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert report.gates is not None
+    assert report.gates.passed is True
+    assert report.pushed_sha is None
     assert git(worktree, "rev-parse", "HEAD") == opened
     assert remote_tip(remote) == opened
-    assert task_of(conn).state is TaskState.PR_OPEN
     assert task_of(conn).pushed_sha == opened
+    assert hub.removed == []
+    assert hub.comments == []
+
+
+def test_a_second_update_merges_again_and_then_finds_the_branch_up_to_date(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo, "outside/first.py")
+    first = update_pr(conn, repo, tmp_path).pushed_sha
+    assert first is not None
+    move_main(repo, "outside/second.py")
+    second = update_pr(conn, repo, tmp_path)
+    assert second.gates is not None
+    assert second.gates.passed is True
+    assert second.pushed_sha is not None
+    assert git(worktree, "rev-parse", "HEAD^1") == first
+    assert remote_tip(remote) == second.pushed_sha
+    third = update_pr(conn, repo, tmp_path)
+    assert third.pushed_sha is None
+    assert remote_tip(remote) == second.pushed_sha
+    assert len(hub.comments) == 2
+
+
+def test_a_failed_label_removal_pushes_nothing_and_can_be_retried(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo)
+    hub.remove_error = GitHubError("boom")
+    with pytest.raises(GitHubError):
+        update_pr(conn, repo, tmp_path)
+    assert git(worktree, "rev-parse", "HEAD") == opened
+    assert git(worktree, "status", "--porcelain") == ""
+    assert remote_tip(remote) == opened
+    assert task_of(conn).pushed_sha == opened
+    assert task_of(conn).gated_sha == opened
+    assert hub.comments == []
+    hub.remove_error = None
+    report = update_pr(conn, repo, tmp_path)
+    assert report.pushed_sha is not None
+    assert remote_tip(remote) == report.pushed_sha
+
+
+def test_a_rejected_lease_on_update_restores_the_worktree(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    other = move_main(repo)
+    git(repo, "push", "-qf", "origin", f"{other}:refs/heads/{BRANCH}")
+    with pytest.raises(LeaseRejectedError):
+        update_pr(conn, repo, tmp_path)
+    assert git(worktree, "rev-parse", "HEAD") == opened
+    assert git(worktree, "status", "--porcelain") == ""
+    assert remote_tip(remote) == other
+    assert task_of(conn).pushed_sha == opened
+    assert task_of(conn).state is TaskState.PR_OPEN
+    assert hub.comments == []
 
 
 def test_update_ignores_files_from_the_default_branch_in_the_scope_check(
@@ -1586,6 +1727,7 @@ def test_update_ignores_files_from_the_default_branch_in_the_scope_check(
     worktree: Path,
     opened: str,
     tmp_path: Path,
+    hub: FakeGitHub,
 ) -> None:
     move_main(repo, "outside/main_only.py")
     report = update_pr(conn, repo, tmp_path)
@@ -1614,9 +1756,11 @@ def test_update_still_passes_scope_after_open_rebased_the_task(
 def test_a_failing_update_gate_reports_and_discards_the_merge(
     conn: sqlite3.Connection,
     repo: Path,
+    remote: Path,
     worktree: Path,
     opened: str,
     tmp_path: Path,
+    hub: FakeGitHub,
 ) -> None:
     move_main(repo)
     report = update_pr(
@@ -1626,8 +1770,12 @@ def test_a_failing_update_gate_reports_and_discards_the_merge(
     assert report.gates is not None
     assert report.gates.passed is False
     assert report.gates.failed_gate == "G2"
+    assert report.pushed_sha is None
     assert git(worktree, "rev-parse", "HEAD") == opened
+    assert remote_tip(remote) == opened
     assert task_of(conn).state is TaskState.PR_OPEN
+    assert task_of(conn).pushed_sha == opened
+    assert hub.removed == []
 
 
 def test_an_error_during_update_still_discards_the_merge(
@@ -1655,6 +1803,7 @@ def test_update_removes_files_left_by_the_gates(
     worktree: Path,
     opened: str,
     tmp_path: Path,
+    hub: FakeGitHub,
 ) -> None:
     move_main(repo)
     update_pr(
@@ -1743,7 +1892,7 @@ def test_a_failing_update_gate_comments_on_the_pull_request(
     assert remote_tip(remote) == opened
 
 
-def test_a_passing_update_gate_leaves_no_comment(
+def test_a_passing_update_gate_leaves_only_the_update_comment(
     conn: sqlite3.Connection,
     repo: Path,
     opened: str,
@@ -1754,7 +1903,8 @@ def test_a_passing_update_gate_leaves_no_comment(
     report = update_pr(conn, repo, tmp_path)
     assert report.gates is not None
     assert report.gates.passed is True
-    assert hub.comments == []
+    assert report.pushed_sha is not None
+    assert hub.comments == [updated_comment(report.pushed_sha)]
 
 
 def test_an_update_conflict_leaves_no_integration_comment(
@@ -1801,6 +1951,197 @@ def test_a_failed_integration_comment_raises_and_still_discards_the_merge(
         update_pr(conn, repo, tmp_path, target=make_target(repo, test_command="exit 1"))
     assert git(worktree, "rev-parse", "HEAD") == opened
     assert task_of(conn).state is TaskState.PR_OPEN
+    assert hub.removed == []
+
+
+# A fix pushed to an open pull request
+
+
+def fix_commit(worktree: Path) -> str:
+    write(worktree / "src" / "app.py", "fixed\n")
+    return commit_all(worktree, "fix")
+
+
+def fix_comment(head: str, text: str = "Addressed the review.") -> dict[str, object]:
+    return {"url": URL, "body": f"{text}\n\nCommit: `{head}`", "token": TOKEN, **REDACT}
+
+
+def test_a_fix_on_an_open_pull_request_is_pushed_with_a_lease(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fixed = fix_commit(worktree)
+    report = open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert report.state is TaskState.PR_OPEN
+    assert report.pr_url == URL
+    assert report.conflicts == ()
+    assert report.detail is None
+    assert remote_tip(remote) == fixed
+    task = task_of(conn)
+    assert task.state is TaskState.PR_OPEN
+    assert task.pushed_sha == fixed
+    assert task.gated_sha == fixed
+    assert task.pr_url == URL
+    assert len(hub.created) == 1
+    assert hub.removed == removals(*FIX_LABELS)
+    assert hub.comments == [fix_comment(fixed)]
+    assert events_of(conn) == [("ready", "pr_open")]
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is True
+
+
+def test_a_fix_removes_the_labels_before_the_push(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fix_commit(worktree)
+    tips: list[str | None] = []
+    hub.on_remove = lambda: tips.append(remote_tip(remote))
+    open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert tips == [opened, opened, opened]
+
+
+def assert_fix_not_pushed(
+    conn: sqlite3.Connection, remote: Path, opened: str, hub: FakeGitHub
+) -> None:
+    assert remote_tip(remote) == opened
+    assert task_of(conn).pushed_sha == opened
+    assert hub.removed == []
+    assert hub.comments == []
+    assert len(hub.created) == 1
+
+
+def test_a_fix_needs_a_resolution(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fixed = fix_commit(worktree)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path)
+    assert task_of(conn).state is TaskState.PR_OPEN
+    assert git(worktree, "rev-parse", "HEAD") == fixed
+    assert_fix_not_pushed(conn, remote, opened, hub)
+
+
+def test_an_open_pull_request_without_a_new_commit_is_refused(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    with pytest.raises(PullRequestFlowError):
+        open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert task_of(conn).state is TaskState.PR_OPEN
+    assert_fix_not_pushed(conn, remote, opened, hub)
+
+
+def test_a_fix_that_fails_the_pre_pr_gate_is_refused_and_stays_open(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fixed = fix_commit(worktree)
+    with pytest.raises(PullRequestFlowError):
+        open_pr(
+            conn,
+            repo,
+            tmp_path,
+            target=make_target(repo, test_command="exit 1"),
+            resolution="Addressed the review.",
+        )
+    task = task_of(conn)
+    assert task.state is TaskState.PR_OPEN
+    assert task.gated_sha == opened
+    assert gates_of(conn)[Gate.G2_PRE_PR].passed is False
+    assert git(worktree, "rev-parse", "HEAD") == fixed
+    assert git(worktree, "status", "--porcelain") == ""
+    assert events_of(conn) == [("ready", "pr_open")]
+    assert_fix_not_pushed(conn, remote, opened, hub)
+
+
+def test_a_fix_that_conflicts_with_main_moves_to_conflict(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fix_commit(worktree)
+    move_main(repo, "src/app.py")
+    report = open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert report.state is TaskState.CONFLICT
+    assert report.conflicts == ("src/app.py",)
+    assert task_of(conn).state is TaskState.CONFLICT
+    assert events_of(conn)[-1] == ("pr_open", "conflict")
+    assert_fix_not_pushed(conn, remote, opened, hub)
+
+
+def test_a_failed_label_removal_on_a_fix_pushes_nothing_and_can_be_retried(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    fixed = fix_commit(worktree)
+    hub.remove_error = GitHubError("boom")
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert remote_tip(remote) == opened
+    assert task_of(conn).pushed_sha == opened
+    assert task_of(conn).state is TaskState.PR_OPEN
+    assert hub.comments == []
+    hub.remove_error = None
+    report = open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    assert report.state is TaskState.PR_OPEN
+    assert remote_tip(remote) == fixed
+    assert hub.comments == [fix_comment(fixed)]
+
+
+def test_a_fix_after_an_update_merge_is_rebased_without_merge_commits(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    opened: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    move_main(repo, "outside/first.py")
+    merged = update_pr(conn, repo, tmp_path).pushed_sha
+    assert merged is not None
+    fix_commit(worktree)
+    report = open_pr(conn, repo, tmp_path, resolution="Addressed the review.")
+    head = git(worktree, "rev-parse", "HEAD")
+    assert report.state is TaskState.PR_OPEN
+    assert remote_tip(remote) == head
+    assert task_of(conn).pushed_sha == head
+    assert git(worktree, "rev-list", "--merges", f"{MAIN}..HEAD") == ""
+    assert git(worktree, "merge-base", MAIN, "HEAD") == git(worktree, "rev-parse", MAIN)
 
 
 def test_update_refuses_a_task_with_no_pull_request_url(

@@ -38,11 +38,15 @@ class PullRequestReport:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UpdateReport:
-    """How orch update ended. Gates are None when the merge conflicted."""
+    """How orch update ended. Gates are None when the merge conflicted.
+
+    pushed_sha is the merge commit that was pushed, or None when nothing was pushed.
+    """
 
     state: TaskState
     conflicts: tuple[str, ...] = ()
     gates: GateReport | None = None
+    pushed_sha: str | None = None
 
 
 def user_check(

@@ -28,6 +28,13 @@ TOKEN = "gh" + "s_" + "integration0sandbox0token0" * 2
 GITHUB = "owner/sample"
 TARGET = "sample"
 LABEL = "review-overridden"
+REVIEW_LABELS = (
+    "verify-light",
+    "verify-deep",
+    "changes-requested",
+    "needs-user",
+    "user-approved",
+)
 # One value, not increasing per commit. Identical commits then always get the same id,
 # so a check that expects different ids fails every time, on a machine of any speed.
 COMMIT_DATE = "2026-01-01T00:00:00+0000"
@@ -168,7 +175,7 @@ class Sandbox:
                 "repo": GITHUB,
                 "bare": str(self.bare),
                 "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(),
-                "labels": [LABEL],
+                "labels": [LABEL, *REVIEW_LABELS],
                 "pull_requests": [],
             }
         )
