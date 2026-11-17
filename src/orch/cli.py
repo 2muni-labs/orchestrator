@@ -139,7 +139,7 @@ def _parser() -> argparse.ArgumentParser:
     wait.add_argument("id")
     wait.add_argument("--merged", action="store_true")
     wait.add_argument("--interval", type=_positive_int, default=60)
-    wait.add_argument("--max-wait", type=_positive_int, default=90)
+    wait.add_argument("--max-wait", type=_positive_int, default=720)
     commands.add_parser("next")
     commands.add_parser("notify").add_subparsers(
         dest="notify_command", required=True
@@ -210,6 +210,7 @@ def _environment(
         "update",
         "close",
         "discard",
+        "wait",
     }:
         value = os.environ.get("ORCH_HUB")
         if not value or not Path(value).is_absolute():
@@ -681,11 +682,29 @@ def _command(
         report = waiter.wait_for_merge(
             conn,
             task_id,
+            target=target,
             token=lambda: credentials.issue_token(orch_home, secrets),
+            notify=lambda event: _send_notification(
+                event,
+                settings=settings,
+                orch_home=orch_home,
+                home=home,
+                secrets=secrets,
+                target=task.target,
+                task_id=task_id,
+                dedup=True,
+            ),
             interval_sec=args.interval,
             max_wait_min=args.max_wait,
         )
-        code = 0 if report.merged else 50 if report.pr_state == "CLOSED" else 60
+        code = {
+            waiter.Outcome.MERGED: 0,
+            waiter.Outcome.CLOSED: 50,
+            waiter.Outcome.LIMIT: 60,
+            waiter.Outcome.CHECKS_FAILED: 61,
+            waiter.Outcome.CHANGES_REQUESTED: 62,
+            waiter.Outcome.BEHIND: 63,
+        }[report.outcome]
         return code, asdict(report)
     if command == "kill":
         return 0, _kill(conn, task_id, paths)

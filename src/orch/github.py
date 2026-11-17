@@ -79,6 +79,27 @@ class ReviewState:
     checks: Mapping[str, CheckResult]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RequiredChecks:
+    """A branch's required checks, and whether a head must be up to date to merge."""
+
+    names: tuple[str, ...]
+    strict: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Comparison:
+    """How a head compares with a base branch.
+
+    files holds every changed path, a renamed file's old path too. truncated is True
+    when GitHub may have left files out (300 or more files listed).
+    """
+
+    behind_by: int
+    files: tuple[str, ...]
+    truncated: bool
+
+
 def _validate_token(token: str) -> None:
     if not token or any(character.isspace() for character in token):
         raise GitHubError("Invalid token")
@@ -400,6 +421,8 @@ def review_state(*, url: str, token: str) -> ReviewState:
         commits = _nodes(answer["commits"])
         if len(commits) != 1:
             raise ValueError
+        if commits[0]["commit"]["oid"] != head_sha:
+            raise ValueError
         rollup = commits[0]["commit"]["statusCheckRollup"]
         checks: dict[str, CheckResult] = {}
         severity = {
@@ -428,6 +451,11 @@ def review_state(*, url: str, token: str) -> ReviewState:
 
 def required_checks(*, github: str, branch: str, token: str) -> tuple[str, ...]:
     """Return the names of the checks a branch's rules require."""
+    return check_rules(github=github, branch=branch, token=token).names
+
+
+def check_rules(*, github: str, branch: str, token: str) -> RequiredChecks:
+    """Return a branch's required checks and its strict up-to-date policy."""
     _validate_token(token)
     if re.fullmatch(_GITHUB_PATTERN, github) is None:
         raise GitHubError("Invalid repository")
@@ -439,19 +467,69 @@ def required_checks(*, github: str, branch: str, token: str) -> tuple[str, ...]:
         if not isinstance(rules, list):
             raise ValueError
         names: dict[str, None] = {}
+        strict = False
         for rule in rules:
             if not isinstance(rule, dict):
                 raise ValueError
             if rule["type"] != "required_status_checks":
                 continue
-            checks = rule["parameters"]["required_status_checks"]
+            parameters = rule["parameters"]
+            if not isinstance(parameters, dict):
+                raise ValueError
+            policy = parameters.get("strict_required_status_checks_policy", False)
+            if not isinstance(policy, bool):
+                raise ValueError
+            strict = strict or policy
+            checks = parameters["required_status_checks"]
             if not isinstance(checks, list):
                 raise ValueError
             for check in checks:
                 if not isinstance(check, dict) or not isinstance(check["context"], str):
                     raise ValueError
                 names[check["context"]] = None
-        return tuple(names)
+        return RequiredChecks(names=tuple(names), strict=strict)
+    except KeyError, TypeError, ValueError:
+        pass
+    raise GitHubError("api: Invalid response")
+
+
+def compare(*, github: str, base: str, head: str, token: str) -> Comparison:
+    """Compare a head commit with a base branch."""
+    _validate_token(token)
+    if re.fullmatch(_GITHUB_PATTERN, github) is None:
+        raise GitHubError("Invalid repository")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", base) is None or ".." in base:
+        raise GitHubError("Invalid branch")
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise GitHubError("Invalid head commit")
+    stdout = _gh(token, "api", f"repos/{github}/compare/{base}...{head}")
+    try:
+        answer = json.loads(stdout)
+        behind_by = answer["behind_by"]
+        files = answer["files"]
+        if (
+            not isinstance(behind_by, int)
+            or isinstance(behind_by, bool)
+            or behind_by < 0
+            or not isinstance(files, list)
+        ):
+            raise ValueError
+        paths: dict[str, None] = {}
+        for item in files:
+            if not isinstance(item, dict):
+                raise ValueError
+            filename = item["filename"]
+            if not isinstance(filename, str) or not filename:
+                raise ValueError
+            paths[filename] = None
+            if "previous_filename" in item:
+                previous = item["previous_filename"]
+                if not isinstance(previous, str):
+                    raise ValueError
+                paths[previous] = None
+        return Comparison(
+            behind_by=behind_by, files=tuple(paths), truncated=len(files) >= 300
+        )
     except KeyError, TypeError, ValueError:
         pass
     raise GitHubError("api: Invalid response")

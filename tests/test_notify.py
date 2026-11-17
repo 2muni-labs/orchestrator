@@ -129,6 +129,9 @@ def test_notify_state_path_sits_in_orch_home(tmp_path: Path) -> None:
         "needs_review",
         "input_wait",
         "test",
+        "user_wait",
+        "changes_requested_again",
+        "review_stalled",
         "doctor_disk",
         "doctor_a_1",
     ],
@@ -154,6 +157,14 @@ def test_unknown_events_raise(event: str) -> None:
         ("blocked", "orchestrator", "m-x", "orchestrator|blocked|m-x"),
         ("needs_review", "orchestrator", "m-x", "orchestrator|needs_review|m-x"),
         ("input_wait", "orchestrator", "", "orchestrator|input_wait|"),
+        ("user_wait", "orchestrator", "m-x", "orchestrator|user_wait|m-x"),
+        (
+            "changes_requested_again",
+            "orchestrator",
+            "m-x",
+            "orchestrator|changes_requested_again|m-x",
+        ),
+        ("review_stalled", "orchestrator", "m-x", "orchestrator|review_stalled|m-x"),
     ],
 )
 def test_dedup_key_per_event(event: str, target: str, task_id: str, key: str) -> None:
