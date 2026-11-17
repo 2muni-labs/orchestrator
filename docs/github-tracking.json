@@ -1,0 +1,2812 @@
+{
+  "schema_version": 1,
+  "target": "orchestrator",
+  "repository": "2muni-labs/orchestrator",
+  "seeded_at": "2026-11-17",
+  "projects": {
+    "G01": {
+      "title": "orch 01 — 초기 구축과 MVP (Phase 0–2)",
+      "url": "https://github.com/orgs/2muni-labs/projects/3"
+    },
+    "G02": {
+      "title": "orch 02 — 자기 적용과 운용 자동화 (Phase 3)",
+      "url": "https://github.com/orgs/2muni-labs/projects/4"
+    },
+    "G03": {
+      "title": "orch 03 — 샌드박스 강화와 H2 주입",
+      "url": "https://github.com/orgs/2muni-labs/projects/5"
+    },
+    "G04": {
+      "title": "orch 04 — 실환경과 재부팅 검증 (Phase 4)",
+      "url": "https://github.com/orgs/2muni-labs/projects/6"
+    },
+    "G05": {
+      "title": "orch 05 — 파이프라인 확장과 무인 운용 (Phase 5a)",
+      "url": "https://github.com/orgs/2muni-labs/projects/7"
+    },
+    "G06": {
+      "title": "orch 06 — 작업공간 v1 (Phase 5b · M20–M21)",
+      "url": "https://github.com/orgs/2muni-labs/projects/8"
+    },
+    "G07": {
+      "title": "orch 07 — Codex 위임과 제한된 무인 실행 (CU0–CU6)",
+      "url": "https://github.com/orgs/2muni-labs/projects/2"
+    },
+    "G08": {
+      "title": "orch 08 — 운영 확대와 작업공간 v2·v3",
+      "url": "https://github.com/orgs/2muni-labs/projects/9"
+    }
+  },
+  "records": {
+    "pr-1": {
+      "title": "[History PR #1] Add minimal Phase 1 harness",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/158",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/1"
+    },
+    "pr-2": {
+      "title": "[History PR #2] Tighten the manual procedure for test commits and Codex",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/159",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/2"
+    },
+    "pr-3": {
+      "title": "[History PR #3] Clarify schema risk grading and complete the state transitions",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/160",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/3"
+    },
+    "pr-4": {
+      "title": "[History PR #4] Implement models and the state transition table",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/161",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/4"
+    },
+    "pr-5": {
+      "title": "[History PR #5] Add a manual sub-agent runner and tighten the procedure",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/162",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/5"
+    },
+    "pr-6": {
+      "title": "[History PR #6] Move the Tern reassessment to before M13",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/163",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/6"
+    },
+    "pr-7": {
+      "title": "[History PR #7] Implement the SQLite state store",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/164",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/7"
+    },
+    "pr-8": {
+      "title": "[History PR #8] Review tests with the implementation and tighten harness rules",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/165",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/8"
+    },
+    "pr-9": {
+      "title": "[History PR #9] Triage review findings and keep secrets out of the runtime directory",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/166",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/9"
+    },
+    "pr-10": {
+      "title": "[History PR #10] Record bundle 2 decisions in the design documents",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/167",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/10"
+    },
+    "pr-11": {
+      "title": "[History PR #11] Add redact for text leaving the machine",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/168",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/11"
+    },
+    "pr-12": {
+      "title": "[History PR #12] Add config paths, target collisions and task spec parsing",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/169",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/12"
+    },
+    "pr-13": {
+      "title": "[History PR #13] Require ~/ paths from orch target add",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/170",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/13"
+    },
+    "pr-14": {
+      "title": "[History PR #14] Add gitops as the single place for git calls",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/171",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/14"
+    },
+    "pr-15": {
+      "title": "[History PR #15] Add result validation and fake agents",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/172",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/15"
+    },
+    "pr-16": {
+      "title": "[History PR #16] Define how an open pull request's branch is updated",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/173",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/16"
+    },
+    "pr-17": {
+      "title": "[History PR #17] Block Claude Code temporary paths and the encoded home directory",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/174",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/17"
+    },
+    "pr-18": {
+      "title": "[History PR #18] Add update_task_branch for conflicted open pull requests",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/175",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/18"
+    },
+    "pr-19": {
+      "title": "[History PR #19] Record bundle 3 design decisions",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/176",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/19"
+    },
+    "pr-20": {
+      "title": "[History PR #20] Add temporary merges and narrow remote names in gitops",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/177",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/20"
+    },
+    "pr-21": {
+      "title": "[History PR #21] Add store operations and schema v2 for bundle 3",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/178",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/21"
+    },
+    "pr-22": {
+      "title": "[History PR #22] Add the gh wrapper",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/179",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/22"
+    },
+    "pr-23": {
+      "title": "[History PR #23] Add the B and C lane adapters",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/180",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/23"
+    },
+    "pr-24": {
+      "title": "[History PR #24] Add the scheduler",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/181",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/24"
+    },
+    "pr-25": {
+      "title": "[History PR #25] Add the gates",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/182",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/25"
+    },
+    "pr-26": {
+      "title": "[History PR #26] Add the runner",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/183",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/26"
+    },
+    "pr-27": {
+      "title": "[History PR #27] Add the pull request flow",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/184",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/27"
+    },
+    "pr-28": {
+      "title": "[History PR #28] Add review rules and the design changes for hardening",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/185",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/28"
+    },
+    "pr-29": {
+      "title": "[History PR #29] Give each run-sub.sh run its own log",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/186",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/29"
+    },
+    "pr-30": {
+      "title": "[History PR #30] Harden gate recovery, reruns and the review flag",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/187",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/30"
+    },
+    "pr-31": {
+      "title": "[History PR #31] Lease push whenever pushed_sha exists and comment on failed updates",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/188",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/31"
+    },
+    "pr-32": {
+      "title": "[History PR #32] Block tasks whose dependency was discarded",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/189",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/32"
+    },
+    "pr-33": {
+      "title": "[History PR #33] Number run logs and stop stranding tasks in running",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/190",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/33"
+    },
+    "pr-34": {
+      "title": "[History PR #34] Record the M9 design and check targets.toml for personal paths",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/191",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/34"
+    },
+    "pr-35": {
+      "title": "[History PR #35] Require full checks on harness pull requests before push",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/192",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/35"
+    },
+    "pr-36": {
+      "title": "[History PR #36] Report blocked chains from next and status",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/193",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/36"
+    },
+    "pr-37": {
+      "title": "[History PR #37] Add the task title, review paths and target registration",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/194",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/37"
+    },
+    "pr-38": {
+      "title": "[History PR #38] Add prepare, retry, resume and discard",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/195",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/38"
+    },
+    "pr-39": {
+      "title": "[History PR #39] Add review save, triage and the override label",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/196",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/39"
+    },
+    "pr-40": {
+      "title": "[History PR #40] Keep existing specs in prepare and check the retry attempt",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/197",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/40"
+    },
+    "pr-41": {
+      "title": "[History PR #41] Add the orch command line",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/198",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/41"
+    },
+    "pr-42": {
+      "title": "[History PR #42] Remove the token from all command output",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/199",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/42"
+    },
+    "pr-43": {
+      "title": "[History PR #43] Add a security regression test for tokens in error messages",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/200",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/43"
+    },
+    "pr-44": {
+      "title": "[History PR #44] Add six procedure rules for tests, specs and combined checks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/201",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/44"
+    },
+    "pr-45": {
+      "title": "[History PR #45] Change the merge policy to allow a verification session",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/202",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/45"
+    },
+    "pr-46": {
+      "title": "[History PR #46] Route status --human output through redaction",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/203",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/46"
+    },
+    "pr-47": {
+      "title": "[History PR #47] Add integration tests for the normal flow and sandbox isolation",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/204",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/47"
+    },
+    "pr-48": {
+      "title": "[History PR #48] Add integration tests for the review BLOCK paths",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/205",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/48"
+    },
+    "pr-49": {
+      "title": "[History PR #49] Add integration tests for failures and open pull requests",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/206",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/49"
+    },
+    "pr-50": {
+      "title": "[History PR #50] Freeze commit dates in the sandbox and widen waits not under test",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/207",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/50"
+    },
+    "pr-51": {
+      "title": "[History PR #51] Add session process age and integration test date rules",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/208",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/51"
+    },
+    "pr-52": {
+      "title": "[History PR #52] Classify a lease rejection as a refusal with exit 64",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/209",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/52"
+    },
+    "pr-53": {
+      "title": "[History PR #53] Refuse dispatch unless the range holds exactly one test commit",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/210",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/53"
+    },
+    "pr-54": {
+      "title": "[History PR #54] Update the design for the Phase 3 entry decisions",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/211",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/54"
+    },
+    "pr-55": {
+      "title": "[History PR #55] Add orch --version and run git in the C locale",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/212",
+      "project_key": "G01",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/55"
+    },
+    "pr-56": {
+      "title": "[History PR #56] Register the hub as a target and switch the procedure to orch",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/213",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/56"
+    },
+    "pr-57": {
+      "title": "[History PR #57] Add orch wait --merged to wait for a pull request merge",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/214",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/57"
+    },
+    "pr-58": {
+      "title": "[History PR #58] Document orch wait --merged and bump to 0.2.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/215",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/58"
+    },
+    "pr-59": {
+      "title": "[History PR #59] Define M11 scope and the Tern reassessment step in the design",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/216",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/59"
+    },
+    "pr-60": {
+      "title": "[History PR #60] Add the orch watch refresh loop",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/217",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/60"
+    },
+    "pr-61": {
+      "title": "[History PR #61] Add render for TODO.md, status rows and the pull request body",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/218",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/61"
+    },
+    "pr-62": {
+      "title": "[History PR #62] Connect render and orch watch to the command line",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/219",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/62"
+    },
+    "pr-63": {
+      "title": "[History PR #63] Bump to 0.3.0 and document the tag order and the transition check",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/220",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/63"
+    },
+    "pr-64": {
+      "title": "[History PR #64] Record the Tern reassessment and adopt ntfy for notifications",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/221",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/64"
+    },
+    "pr-65": {
+      "title": "[History PR #65] Settle the m-notify formats in the design documents",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/222",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/65"
+    },
+    "pr-66": {
+      "title": "[History PR #66] Add ntfy notification sending and safety_paths in targets.toml",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/223",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/66"
+    },
+    "pr-67": {
+      "title": "[History PR #67] Validate the ntfy topic format in the configuration",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/224",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/67"
+    },
+    "pr-68": {
+      "title": "[History PR #68] Send notifications from orch run and orch pr and add orch notify test",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/225",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/68"
+    },
+    "pr-69": {
+      "title": "[History PR #69] Bump to 0.4.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/226",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/69"
+    },
+    "pr-70": {
+      "title": "[History PR #70] List the hub safety paths and tighten two test rules",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/227",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/70"
+    },
+    "pr-71": {
+      "title": "[History PR #71] Design M13 and M14: orch open, tmux adapter and hooks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/228",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/71"
+    },
+    "pr-72": {
+      "title": "[History PR #72] Assemble the orch open launch plan and check the pinned Claude Code",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/229",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/72"
+    },
+    "pr-73": {
+      "title": "[History PR #73] Add the tmux terminal adapter with a record of created panes",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/230",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/73"
+    },
+    "pr-74": {
+      "title": "[History PR #74] Add session-start recovery, subagent-stop log and input_wait hooks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/231",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/74"
+    },
+    "pr-75": {
+      "title": "[History PR #75] Add the pre-bash guard that blocks lane bypasses",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/232",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/75"
+    },
+    "pr-76": {
+      "title": "[History PR #76] Open and close run log panels from orch watch",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/233",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/76"
+    },
+    "pr-77": {
+      "title": "[History PR #77] Add orch open and orch watch --panels",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/234",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/77"
+    },
+    "pr-78": {
+      "title": "[History PR #78] Make the pre-bash guard rules independent of option positions",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/235",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/78"
+    },
+    "pr-79": {
+      "title": "[History PR #79] Treat substitutions inside single quotes as text in the pre-bash guard",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/236",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/79"
+    },
+    "pr-80": {
+      "title": "[History PR #80] Block pre-bash on every hook failure",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/237",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/80"
+    },
+    "pr-81": {
+      "title": "[History PR #81] Wire the Claude Code hooks to orch hook",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/238",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/81"
+    },
+    "pr-82": {
+      "title": "[History PR #82] Move the hook runner into hooks.py and deny a missing tool name",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/239",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/82"
+    },
+    "pr-83": {
+      "title": "[History PR #83] Bump to 0.5.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/240",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/83"
+    },
+    "pr-84": {
+      "title": "[History PR #84] Start the main session with orch open",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/241",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/84"
+    },
+    "pr-85": {
+      "title": "[History PR #85] Design the pre-PR gate skip and require measured facts in specs",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/242",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/85"
+    },
+    "pr-86": {
+      "title": "[History PR #86] Skip the pre-PR gate on a commit that already passed G2",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/243",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/86"
+    },
+    "pr-87": {
+      "title": "[History PR #87] Add a guard false-positive regression check",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/244",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/87"
+    },
+    "pr-88": {
+      "title": "[History PR #88] Bump to 0.6.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/245",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/88"
+    },
+    "pr-89": {
+      "title": "[History PR #89] Run Codex cross-reviews and isolate Codex from user hooks and plugins",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/246",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/89"
+    },
+    "pr-90": {
+      "title": "[History PR #90] Design orch kill, Codex review runs and Codex isolation",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/247",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/90"
+    },
+    "pr-91": {
+      "title": "[History PR #91] Add task kill with an abort request and close merged PRs in conflict",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/248",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/91"
+    },
+    "pr-92": {
+      "title": "[History PR #92] Bump version to 0.7.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/249",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/92"
+    },
+    "pr-93": {
+      "title": "[History PR #93] Add orch kill to the command line",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/250",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/93"
+    },
+    "pr-94": {
+      "title": "[History PR #94] Ask the user before orch kill in the pre-bash guard",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/251",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/94"
+    },
+    "pr-95": {
+      "title": "[History PR #95] Add orch review --by codex to the command line",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/252",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/95"
+    },
+    "pr-96": {
+      "title": "[History PR #96] Document Codex cross-reviews and the orch kill ask",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/253",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/96"
+    },
+    "pr-97": {
+      "title": "[History PR #97] Bump version to 0.8.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/254",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/97"
+    },
+    "pr-98": {
+      "title": "[History PR #98] Show more flagged commands in guard_regress --show",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/255",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/98"
+    },
+    "pr-99": {
+      "title": "[History PR #99] Design M15 doctor, gc and service and the G2/G3 sandbox",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/256",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/99"
+    },
+    "pr-100": {
+      "title": "[History PR #100] Isolate recovery errors per task in the session-start hook",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/257",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/100"
+    },
+    "pr-101": {
+      "title": "[History PR #101] Add schema v5 with dispatch pauses and doctor check levels",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/258",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/101"
+    },
+    "pr-102": {
+      "title": "[History PR #102] Report whether the recorded main pane is alive and runs Claude",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/259",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/102"
+    },
+    "pr-103": {
+      "title": "[History PR #103] Add gc for expired task files and finished worktrees",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/260",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/103"
+    },
+    "pr-104": {
+      "title": "[History PR #104] Add launchd agent install, uninstall and session restore",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/261",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/104"
+    },
+    "pr-105": {
+      "title": "[History PR #105] Add doctor checks, dispatch pauses and stuck task kills",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/262",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/105"
+    },
+    "pr-106": {
+      "title": "[History PR #106] Wire doctor, gc and service commands and pause reporting",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/263",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/106"
+    },
+    "pr-107": {
+      "title": "[History PR #107] Add the task id and check level to the doctor dedup key",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/264",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/107"
+    },
+    "pr-108": {
+      "title": "[History PR #108] Record the M15 decisions and measurements in the design documents",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/265",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/108"
+    },
+    "pr-109": {
+      "title": "[History PR #109] Bump version to 0.9.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/266",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/109"
+    },
+    "pr-110": {
+      "title": "[History PR #110] Clean up after the pre-PR gate and label an open PR on a new override",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/267",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/110"
+    },
+    "pr-111": {
+      "title": "[History PR #111] Record pre-PR cleanup and labels on a new override in the design",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/268",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/111"
+    },
+    "pr-112": {
+      "title": "[History PR #112] Bump version to 0.10.0 and raise the gate command limit to 30 minutes",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/269",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/112"
+    },
+    "pr-113": {
+      "title": "[History PR #113] Read the gate command time limit from [gate] timeout_min",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/270",
+      "project_key": "G02",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/113"
+    },
+    "pr-114": {
+      "title": "[History PR #114] Record the [gate] timeout_min setting in the design",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/271",
+      "project_key": "G02",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/114"
+    },
+    "pr-115": {
+      "title": "[History PR #115] Run gate commands under a sandbox-exec profile",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/272",
+      "project_key": "G03",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/115"
+    },
+    "pr-116": {
+      "title": "[History PR #116] Record the gate sandbox design and its first measurement",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/273",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/116"
+    },
+    "pr-117": {
+      "title": "[History PR #117] Bump version to 0.11.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/274",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/117"
+    },
+    "pr-118": {
+      "title": "[History PR #118] Extend the gate sandbox profile against spawning and credential reads",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/275",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/118"
+    },
+    "pr-119": {
+      "title": "[History PR #119] Fail the gates when the worktree changes while they run",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/276",
+      "project_key": "G03",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/119"
+    },
+    "pr-120": {
+      "title": "[History PR #120] Record the gate snapshot design and the target ignore rule",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/277",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/120"
+    },
+    "pr-121": {
+      "title": "[History PR #121] Add orch sandbox run for the main agent's checks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/278",
+      "project_key": "G03",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/121"
+    },
+    "pr-122": {
+      "title": "[History PR #122] Bump the version to 0.12.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/279",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/122"
+    },
+    "pr-123": {
+      "title": "[History PR #123] Run the main agent's checks under the gate profile",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/280",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/123"
+    },
+    "pr-124": {
+      "title": "[History PR #124] Record the M16 injection measurements and add config copies",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/281",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/124"
+    },
+    "pr-125": {
+      "title": "[History PR #125] Add the hub sub-agent rules and result schema to the lane prompt",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/282",
+      "project_key": "G03",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/125"
+    },
+    "pr-126": {
+      "title": "[History PR #126] Inject the hub main rules and agent definitions in orch open",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/283",
+      "project_key": "G03",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/126"
+    },
+    "pr-127": {
+      "title": "[History PR #127] Bump the version to 0.13.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/284",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/127"
+    },
+    "pr-128": {
+      "title": "[History PR #128] Switch the hub to injected main rules and agent definitions",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/285",
+      "project_key": "G03",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/128"
+    },
+    "pr-129": {
+      "title": "[History PR #129] Record Phase 3 completion and the Phase 4 plan",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/286",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/129"
+    },
+    "pr-130": {
+      "title": "[History PR #130] Register the orch-sample target",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/287",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/130"
+    },
+    "pr-131": {
+      "title": "[History PR #131] Drop the Glob and Write deny rules that never match",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/288",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/131"
+    },
+    "pr-132": {
+      "title": "[History PR #132] List only the session target's tasks as newly orphaned in the summary",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/289",
+      "project_key": "G04",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/132"
+    },
+    "pr-133": {
+      "title": "[History PR #133] Bump the version to 0.14.0",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/290",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/133"
+    },
+    "pr-134": {
+      "title": "[History PR #134] Record the Phase 4 results and unregister the sample target",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/291",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "pr-135": {
+      "title": "[History PR #135] Formalize the workspace design and Codex-first allocation",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/292",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/135"
+    },
+    "pr-136": {
+      "title": "[History PR #136] Add the security design, decision records and the Phase 5 split",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/293",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/136"
+    },
+    "pr-137": {
+      "title": "[History PR #137] Add pinned agent versions, CLI output schemas and jsonschema for tests",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/294",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/137"
+    },
+    "pr-138": {
+      "title": "[History PR #138] Record the Phase 5 measurements and the decisions they forced",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/295",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "pr-139": {
+      "title": "[History PR #139] Record S-M2b, route Codex through an allowlist proxy and pin tmux and macOS",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/296",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/139"
+    },
+    "pr-140": {
+      "title": "[History PR #140] Switch agent versions only by user approval after signed, blocking selfchecks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/297",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "pr-141": {
+      "title": "[History PR #141] Move review and merge to label-triggered scheduled tasks",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/298",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/141"
+    },
+    "pr-142": {
+      "title": "[History PR #142] add workflows",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/299",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/142"
+    },
+    "pr-143": {
+      "title": "[History PR #143] Read review labels and required checks and guard user-approved",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/300",
+      "project_key": "G05",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/143"
+    },
+    "pr-144": {
+      "title": "[History PR #144] Put a fixed-format review packet at the top of the pull request body",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/301",
+      "project_key": "G05",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/144"
+    },
+    "pr-145": {
+      "title": "[History PR #145] Add workspace tiling, fullscreen, pin, blur and wallpaper design",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/302",
+      "project_key": "G06",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/145"
+    },
+    "pr-146": {
+      "title": "[History PR #146] Bring a behind pull request branch up to date in orch update",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/303",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/146"
+    },
+    "pr-147": {
+      "title": "[History PR #147] Let the deep review merge alone and keep user-approved for refusals",
+      "kind": "history",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/304",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/147"
+    },
+    "existing-148": {
+      "title": "[Codex utilization] Establish a reviewed preparation and bounded execution workflow",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/148",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-149": {
+      "title": "[CU0] Define Codex delegation policy and evaluation baseline",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/149",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-150": {
+      "title": "[CU1] Prioritize safe Codex exploration with bounded evidence output",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/150",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-151": {
+      "title": "[CU2] Add reviewed task drafts and evidence-based failure investigation",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/151",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-152": {
+      "title": "[CU3] Pilot Claude-approved Codex test drafts for eligible L1 and L2 tasks",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/152",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-153": {
+      "title": "[CU4] Create an immutable approved work bank using existing scheduler contracts",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/153",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-154": {
+      "title": "[CU5] Implement bounded drain execution through G1 to G3",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/154",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-155": {
+      "title": "[CU6] Validate Codex delegation with workspace measurements and a two-week pilot",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/155",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-156": {
+      "title": "[Codex utilization] Milestone index and orch kickoff instructions",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/156",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "existing-157": {
+      "title": "[Codex utilization] Define task-level model and reasoning allocation",
+      "kind": "existing",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/157",
+      "project_key": "G07",
+      "completion_owner": "manual"
+    },
+    "roadmap-01": {
+      "title": "[FL] m-guard-wrapper",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/305",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-02": {
+      "title": "[FL] m-selfcheck",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/306",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-03": {
+      "title": "[FL] orch selfcheck --apply·--rollback, 원자적 링크 전환, 직전 버전 보존, binary/pins digest 재검증",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/307",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-04": {
+      "title": "[FL] orch 전용 mise 격리, agents.json, open/doctor 불일치 시 agent_unverified pause",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/308",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-05": {
+      "title": "[FL] 릴리스·승인 설치 후 Claude 첫 전환과 Code Mode 설정",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/309",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-06": {
+      "title": "[M17] m-p5-schema6",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/310",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-07": {
+      "title": "[M17] m-p5-events",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/311",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-08": {
+      "title": "[M17] m-p5-show",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/312",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-09": {
+      "title": "[M17] m-p5-contract",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/313",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-10": {
+      "title": "[M17] 버전 PR·태그·승인 설치",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/314",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-11": {
+      "title": "[M18] h-tests-split",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/315",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-12": {
+      "title": "[M18] m-p5-test-select",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/316",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-13": {
+      "title": "[M18] m-p5-safety-review",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/317",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-14": {
+      "title": "[M18] m-p5-fulltest",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/318",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-15": {
+      "title": "[M18] m-p5-lane-b3",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/319",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-16": {
+      "title": "[M19] m-p5-versions",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/320",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-17": {
+      "title": "[M19] m-p5-input-wait",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/321",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-18": {
+      "title": "[M19] h-roadmap-hub",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/322",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-19": {
+      "title": "[M19] m-p5-roadmap",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/323",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "explore-contract": {
+      "title": "[M19] Implement the existing orch explore contract",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/324",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-21": {
+      "title": "[M19] schemas/explore.json 준비 하네스 PR",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/325",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-22": {
+      "title": "[M19] m-p5-codex-sandbox",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/326",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-23": {
+      "title": "[M19] 프록시 모듈 safety_paths 등록, exact host 검사·IP literal 거부, 프록시 시작/실행 중 실패 시 fail closed, 직접 연결/DNS 차단, 실행 이벤트 없는 거짓 성공 차단",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/327",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-24": {
+      "title": "[5a] M17~M19 설치 뒤 실제 1주 무인 운용, 장애·조치 기록·미처리 장애 없음 확인",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/328",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-25": {
+      "title": "[5a] 기기 분실 런북을 운용에 적용할 준비 확인",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/329",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "roadmap-26": {
+      "title": "[M20] W-M6/W-M7 및 선택 스택 S-M3 재측정 뒤 서버/클라이언트 기술 스택 결정",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/330",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-27": {
+      "title": "[M20] h-docs-workspace-stack",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/331",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-28": {
+      "title": "[M20] h-workspace-base",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/332",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-29": {
+      "title": "[M20] 서버 골격",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/333",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-30": {
+      "title": "[M20] pty/tmux 터미널 연결, 전용 소켓·셸 생성 키 제거·비셸 default-command, 종료 후 읽기 전용",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/334",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-31": {
+      "title": "[M20] 기기별 보기/입력 권한·소유권·동시 입력 거부·입력 감사·lock/unlock 영속화",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/335",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-32": {
+      "title": "[M20] 계약 어댑터·버전 불일치 시 해당 화면 비활성화, 서버 공유 상태·메시지 스키마·별도 저장소",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/336",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-33": {
+      "title": "[M21] 타일/dwindle/master, 분할·탭·플로팅·가상 화면·스크래치패드·공유 포커스·이 기기만 보기",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/337",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-34": {
+      "title": "[M21] 키보드/터치·명령 팔레트·리더 설정·보조 키 줄·iPad 키보드·좁은 화면",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/338",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-35": {
+      "title": "[M21] v1 패널",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/339",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-36": {
+      "title": "[M21] 에이전트 세션 로그 파서·회차 연결·토큰 집계·한도/리셋 시각·버전/selfcheck 화면",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/340",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-37": {
+      "title": "[M21] 로그/diff redact·클라이언트 영구 캐시 금지·출력 마크업 비실행·허용 필드 파서·자원 상한/보존 테스트",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/341",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-38": {
+      "title": "[M21] Windows/iPhone/iPad에서 v1 인수 시나리오 1~11 전부 통과",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/342",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-39": {
+      "title": "[#145 추가안] 동적 재배치 상세·최대화/전체화면·pin·그림자/블러/배경화면·효과 수준·호스트 wallpaper CLI",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/343",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "roadmap-40": {
+      "title": "[Phase 6] 실제 외부 대상 등록·상시 운영 확대",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/344",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "m-pr-fix-3": {
+      "title": "[LR] Complete open-PR fixes and clean-merge pushes",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/345",
+      "project_key": "G05",
+      "completion_owner": "task",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/484"
+    },
+    "m-wait-review": {
+      "title": "[LR] Implement review-aware waiting and behind handling",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/346",
+      "project_key": "G05",
+      "completion_owner": "task"
+    },
+    "lr-release": {
+      "title": "[LR] Release the review workflow and update the main procedure",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/347",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "scheduled-policy": {
+      "title": "[LR] Verify scheduled review tasks match ADR 0022",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/348",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "visual-decisions": {
+      "title": "[Workspace] Confirm the proposed visual and shared-state decisions",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/349",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "terminal-dimensions": {
+      "title": "[Workspace] Define terminal rows and columns across devices",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/350",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "workspace-tabs": {
+      "title": "[Workspace] Specify the tabs interaction required by WS-5",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/351",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "workspace-lock-table": {
+      "title": "[Workspace] Add lock and unlock to the execution command design",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/352",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "B03": {
+      "title": "[Backlog B03] redact Windows 이중 역슬래시·슬래시 경로 지원. Windows 실행 계획 없음",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/353",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B04": {
+      "title": "[Backlog B04] src/home/page.py 같은 상대 경로 과차단. 실제 대상에서 문제 발생 시 재검토",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/354",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B05": {
+      "title": "[Backlog B05] encoded home의 점·밑줄 등 비영숫자→하이픈 변환 미지원",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/355",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B06": {
+      "title": "[Backlog B06] home 밖 orch_home의 encoded 형태 검사 누락",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/356",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B07": {
+      "title": "[Backlog B07] test_redact의 runtime path 검사에서 /root 형태 커버리지 확인/보강",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/357",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B08": {
+      "title": "[Backlog B08] ghapp.py 토큰 발급·credential helper 내장화. 현재 외부 스크립트 사용, 마일스톤 미지정",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/358",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B12": {
+      "title": "[Backlog B12] 게이트 결과 재기록 시 rowid 순서가 뒤로 가는 동작 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/359",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B13": {
+      "title": "[Backlog B13] scheduler timezone 없는 expiry 및 빈 glob·슬래시뿐인 glob 경계 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/360",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B15": {
+      "title": "[Backlog B15] 리더 회수 후 killpg의 PID 재사용 위험은 유지. G3 skip 범위 재검사/run_command 예외 테스트는 #30에서 추가",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/361",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B17": {
+      "title": "[Backlog B17] runner.stop_process의 오래된 자손 PID 목록에 SIGKILL. 시작 시각 재검증 등 검토",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/362",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B20": {
+      "title": "[Backlog B20] stop_process 내부 실패의 ABORTED 분류, finish_run DB 오류 뒤 재시도 시 ABORTED 덮어쓰기·테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/363",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B21": {
+      "title": "[Backlog B21] 샌드박스 판별 skip과 실제 sandbox 테스트 외부 재실행 절차는 도입. 임의 skip의 G2 기계적 실패 처리는 남은 정책/구현 검토. m-pr-fix-2도 ps 권한으로 2 skipped 보고",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/364",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B23": {
+      "title": "[Backlog B23] load_targets가 직접 편집한 절대 경로를 허용. 등록 명령의 ~/ 강제와 차이",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/365",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B24": {
+      "title": "[Backlog B24] add_target의 저장 상대 디렉터리명 redact 및 민감 이름/github 개인 경로 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/366",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B26": {
+      "title": "[Backlog B26] triage path의 redact/backtick/newline 검증을 push 전에 수행할지",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/367",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B27": {
+      "title": "[Backlog B27] github.create_pull_request(labels)에 str 하나가 오면 문자 순회. 현재 tuple 호출",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/368",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B28": {
+      "title": "[Backlog B28] lifecycle cleanup의 except/pass를 suppress로 정리",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/369",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B29": {
+      "title": "[Backlog B29] 출력 print/OSError/broken pipe·fallback JSON 재실패 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/370",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B30": {
+      "title": "[Backlog B30] cli._redact의 token repr escaping 지원. 실제 토큰은 영숫자",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/371",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B31": {
+      "title": "[Backlog B31] stale approval 유지/봇 키로 승인된 PR 머지 가능. ADR 0020/0022의 필수 CI·최신 head 판정과 사용자 계정 검증으로 다룸. 자동으로 ruleset 변경할 작업 아님",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/372",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B32": {
+      "title": "[Backlog B32] orch(env=...) 격리 재검사는 완료. GIT_ASKPASS/SSH_AUTH_SOCK/GH_HOST/GIT_CONFIG_COUNT 검사, clone/worktree 비도달 압축 객체 누출 검사는 후속",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/373",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "B33": {
+      "title": "[Backlog B33] 통합 테스트/전체 suite 성능. 73건·9분 등 과거 수치는 폐기하고 M18 측정 기반으로 관리",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/374",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B34": {
+      "title": "[Backlog B34] fault fake agent 시작이 10초를 넘으면 불안정할 수 있음. 현실 문제 발생 시 동기화/대기 개선",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/375",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B36": {
+      "title": "[Backlog B36] status elapsed/head, orch pr head, 동일 commit pre-PR skip은 완료. 남은 것은 pr 테스트 수 출력, full suite와 verify 중복, 통합 테스트 5회 반복의 기계 강제 여부. 버전 bump 후 uv sync 재실행은 운용 주의 사항",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/376",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B37": {
+      "title": "[Backlog B37] TODO.md mode 0600. 현재 적절한 기본값으로 결정, 변경 필요 없음",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/377",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B38": {
+      "title": "[Backlog B38] wait poll마다 GitHub 설치 token 발급 대신 만료 직전 재발급·재사용",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/378",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B39": {
+      "title": "[Backlog B39] notifications disabled 테스트에서 notify.send 비호출/결과를 직접 검사",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/379",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B41": {
+      "title": "[Backlog B41] watch tick+frame 동시 실패 출력, save_panel_map 실패 시 기존 파일 보존/temp 삭제 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/380",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B43": {
+      "title": "[Backlog B43] Codex review stale-output의 항상 참 단언, timeout/정상 종료 후 그룹·자식 정리 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/381",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B44": {
+      "title": "[Backlog B44] 분류 중 BEGIN IMMEDIATE로 kill 지연; kill 직접 기록 실패 rollback·결과/거부 파일 부작용 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/382",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B45": {
+      "title": "[Backlog B45] 서버에서 취소된 인증은 report_missing 유지. 실제 발생 시 auth regex→BLOCKED+pause 확장 검토",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/383",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B46": {
+      "title": "[Backlog B46] doctor_checks가 30분 이상 오래되면 status/세션 시작 요약에 'doctor 미실행' 표시",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/384",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B47": {
+      "title": "[Backlog B47] doctor 판정 후 send/저장 실패 시 checks와 errors에 중복 노출되는 동작 결정/고정",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/385",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B48": {
+      "title": "[Backlog B48] doctor list_tasks/list_pauses DB 오류가 전체 pass를 끝내는 경로의 격리 범위",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/386",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B49": {
+      "title": "[Backlog B49] FakeTerminal.probe_session 예외 분기 미사용 테스트/fixture 정리",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/387",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B51": {
+      "title": "[Backlog B51] prepare setup은 gate timeout_min과 무관하게 30분 유지한다는 회귀 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/388",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B53": {
+      "title": "[Backlog B53] guard_regress 두 테스트가 긴 TMPDIR에서 실패하는 경로 길이 의존성",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/389",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B54": {
+      "title": "[Backlog B54] gate TMPDIR shutil.rmtree 오류가 원래 exit/SandboxError를 가리는 문제",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/390",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B55": {
+      "title": "[Backlog B55] sandbox timeout에서 손자까지 실제 프로세스 그룹 종료 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/391",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B56": {
+      "title": "[Backlog B56] 임시 index snapshot이 실제 git object store에 미참조 blob 남김. 임시 GIT_OBJECT_DIRECTORY 검토",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/392",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B57": {
+      "title": "[Backlog B57] git 복원 테스트 marker 단언이 복원 타이밍을 직접 보장하지 않음. byte 비교는 존재",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/393",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B58": {
+      "title": "[Backlog B58] sandbox run의 non-SandboxError에서도 finally/.git 복원 실행 테스트",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/394",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B59": {
+      "title": "[Backlog B59] guard_regress가 미머지 branch guard를 sandbox 밖에서 실행하는 운용 범위",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/395",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B60": {
+      "title": "[Backlog B60] runner 테스트 마지막 조건부 assert 가독성",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/396",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B61": {
+      "title": "[Backlog B61] secrets 경로를 단순 언급한 문서/heredoc도 guard가 접근으로 오판",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/397",
+      "project_key": "G03",
+      "completion_owner": "manual"
+    },
+    "B62": {
+      "title": "[Backlog B62] orphaned 복구 뒤 run ended_at/outcome이 열린 채 남음. Phase 4 이월과 같은 작업",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/398",
+      "project_key": "G04",
+      "completion_owner": "manual"
+    },
+    "B63": {
+      "title": "[Backlog B63] 긴 Python heredoc의 guard unparsable 오탐. 차단 후 재작성 우회 금지, 사전 파일 작성 절차와 구분",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/399",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "B64": {
+      "title": "[Backlog B64] kill CI flake: fake agent SIGTERM handler readiness 동기화",
+      "kind": "backlog",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/400",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "measure-01": {
+      "title": "[Decision / Measurement] 동시 실행 적정성",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/401",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "measure-02": {
+      "title": "[Decision / Measurement] 소비자 구독 운용",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/402",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "measure-03": {
+      "title": "[Decision / Measurement] Herdr",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/403",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "measure-04": {
+      "title": "[Decision / Measurement] 실제 대상 조기 등록",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/404",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "measure-05": {
+      "title": "[Decision / Measurement] 로컬 LLM 레인",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/405",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "measure-06": {
+      "title": "[Decision / Measurement] W-M1",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/406",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-07": {
+      "title": "[Decision / Measurement] W-M2",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/407",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-08": {
+      "title": "[Decision / Measurement] W-M3",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/408",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-09": {
+      "title": "[Decision / Measurement] W-M6",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/409",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-10": {
+      "title": "[Decision / Measurement] W-M7",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/410",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-11": {
+      "title": "[Decision / Measurement] S-M3 재측정",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/411",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-12": {
+      "title": "[Decision / Measurement] 토큰 갱신 host",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/412",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "measure-13": {
+      "title": "[Decision / Measurement] 자원 예산",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/413",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "measure-14": {
+      "title": "[Decision / Measurement] C 레인 lint",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/414",
+      "project_key": "G04",
+      "completion_owner": "manual"
+    },
+    "measure-16": {
+      "title": "[Decision / Measurement] PID 재사용 실환경 증거",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/415",
+      "project_key": "G04",
+      "completion_owner": "manual"
+    },
+    "measure-17": {
+      "title": "[Decision / Measurement] PR #145 세부 측정",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/416",
+      "project_key": "G06",
+      "completion_owner": "manual"
+    },
+    "review-extra-01": {
+      "title": "[Review follow-up] github review_state의 commits.nodes[0].commit.oid와 headRefOid 일치 검사",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/417",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "review-extra-02": {
+      "title": "[Review follow-up] GitHub labels/timelineItems/contexts 100개 제한과 pagination",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/418",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "review-extra-03": {
+      "title": "[Review follow-up] wait 기본 sleep/clock 테스트가 첫 poll에서 끝남",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/419",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-04": {
+      "title": "[Review follow-up] redact의 orch_home==home·입력 예외 메시지 비밀 미노출 테스트",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/420",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "review-extra-05": {
+      "title": "[Review follow-up] runner 환경 격리 테스트가 변수 두 개만 검사",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/421",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-06": {
+      "title": "[Review follow-up] lifecycle discard 중간 실패 뒤 재호출·resume try_reserve 실패 상태 보존",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/422",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "review-extra-07": {
+      "title": "[Review follow-up] 통합 BLOCK 거부 사유의 짧은 부분 문자열 단언·discarded follow-up 메시지",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/423",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "review-extra-08": {
+      "title": "[Review follow-up] orch open JSON flush가 execvp보다 먼저임을 직접 확인",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/424",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-09": {
+      "title": "[Review follow-up] orch open attach 실패 메시지의 splitlines/join 가독성",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/425",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-10": {
+      "title": "[Review follow-up] launcher 테스트의 shell=False 단언이 인자 미지정에도 통과",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/426",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-11": {
+      "title": "[Review follow-up] pre-bash의 'config/state 안 읽음' 테스트가 일부 함수만 막음",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/427",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "review-extra-12": {
+      "title": "[Review follow-up] sudo orch kill ask 전파 테스트",
+      "kind": "review",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/428",
+      "project_key": "G02",
+      "completion_owner": "manual"
+    },
+    "future-01": {
+      "title": "[작업공간 v2] OR-5 orch next/wait 및 kill/resume/discard 확인 흐름",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/429",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-02": {
+      "title": "[작업공간 v2] BL-6 runs/게이트 실행 기록 필터, PG-3 시간축",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/430",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-03": {
+      "title": "[작업공간 v2] EX-1~3 ACP 세션·에이전트 등록부·권한 요청·산출물 파이프라인 재제출·외부 에이전트 프로필",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/431",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-04": {
+      "title": "[작업공간 v2] MC-1/MC-2 OTLP 도구 호출 메타데이터, 선택적 본문 수집/redact",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/432",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-05": {
+      "title": "[측정 W-M4] Claude/Codex OpenTelemetry 활성화·도구 필드·MCP 이름 구분",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/433",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-06": {
+      "title": "[측정 W-M5] Claude/Codex/무료 에이전트 ACP 어댑터 세션·승인·종료",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/434",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-07": {
+      "title": "[작업공간 v3] MC-3 선택적 MCP gateway/중계",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/435",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-ops-0": {
+      "title": "[Conditional] Consider mosh only if SSH reconnections become a problem",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/436",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "future-ops-1": {
+      "title": "[Conditional] Consider external host health monitoring",
+      "kind": "task",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/437",
+      "project_key": "G08",
+      "completion_owner": "manual"
+    },
+    "phase0-0": {
+      "title": "[Phase 0 completed] 맥에 git, uv, Python 3.14(uv로 설치), tmux, `gh`, Tailscale 설치",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/438",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-1": {
+      "title": "[Phase 0 completed] Claude Code 설치와 버전 고정, Pro 로그인, `/model`에서 Opus 5.5 선택 확인",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/439",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-2": {
+      "title": "[Phase 0 completed] Codex CLI 0.159.1 이상 설치와 버전 고정, ChatGPT Plus 로그인, `codex exec -m gpt-6.1-sol \"Say hi in one word\"` 성공",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/440",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-3": {
+      "title": "[Phase 0 completed] 맥에서 개인 GitHub 자격 증명 제거, `2muni-labs` 조직에 GitHub App 생성·설치, 토큰 스크립트와 git 자격 증명 도우미, 봇 커밋 신원 설정 (실행 설계 6장 \"GitHub 인증 구성\")",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/441",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-4": {
+      "title": "[Phase 0 completed] Windows에서 Tailscale 경유 SSH 접속 → tmux 세션 생성 → 접속을 끊었다 다시 붙어도 세션 유지 확인",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/442",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-5": {
+      "title": "[Phase 0 completed] 맥 잠자기 비활성화 (개발 중 세션 유지용)",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/443",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-6": {
+      "title": "[Phase 0 completed] GitHub에 공개 허브 저장소 `orchestrator` 생성, 봇 토큰으로 클론 성공",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/444",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-7": {
+      "title": "[Phase 0 completed] main 규칙 세트 적용과 실제 차단 확인 (PR 필수, 승인 1건, force push·삭제 금지). 저장소를 공개로 전환해 무료 조직에서 적용",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/445",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "phase0-8": {
+      "title": "[Phase 0 completed] 맥에 저장소 복제 (예: `~/work/orchestrator`), 런타임 디렉터리 `~/.orch/orchestrator/{tasks,results,reviews,logs,worktrees}` 생성",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/446",
+      "project_key": "G01",
+      "completion_owner": "manual"
+    },
+    "p4-0": {
+      "title": "[P4-0 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/447",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-1": {
+      "title": "[P4-1 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/448",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-2": {
+      "title": "[P4-2 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/449",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-3": {
+      "title": "[P4-3 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/450",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-4": {
+      "title": "[P4-4 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/451",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-5": {
+      "title": "[P4-5 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/452",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-6": {
+      "title": "[P4-6 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/453",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "p4-7": {
+      "title": "[P4-7 completed] Real-environment acceptance record",
+      "kind": "operation",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/454",
+      "project_key": "G04",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/134"
+    },
+    "measured-T-M1": {
+      "title": "[Measurement completed] T-M1",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/455",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-P5-M3": {
+      "title": "[Measurement completed] P5-M3",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/456",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-P5-M4": {
+      "title": "[Measurement completed] P5-M4",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/457",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-P5-M5": {
+      "title": "[Measurement completed] P5-M5",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/458",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-S-M1": {
+      "title": "[Measurement completed] S-M1",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/459",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-S-M2": {
+      "title": "[Measurement completed] S-M2",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/460",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-S-M3": {
+      "title": "[Measurement completed] S-M3",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/461",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/138"
+    },
+    "measured-S-M2b": {
+      "title": "[Measurement completed] S-M2b",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/462",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/139"
+    },
+    "measured-FL-M1": {
+      "title": "[Measurement completed] FL-M1",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/463",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "measured-FL-M2": {
+      "title": "[Measurement completed] FL-M2",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/464",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "measured-FL-M3": {
+      "title": "[Measurement completed] FL-M3",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/465",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "measured-FL-M4": {
+      "title": "[Measurement completed] FL-M4",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/466",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "measured-FL-M5": {
+      "title": "[Measurement completed] FL-M5",
+      "kind": "measurement",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/467",
+      "project_key": "G05",
+      "completion_owner": "manual",
+      "pr_url": "https://github.com/2muni-labs/orchestrator/pull/140"
+    },
+    "inventory-doc-sync": {
+      "title": "[Docs] Reconcile stale completion checkboxes and Claude backlog references",
+      "kind": "docs",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/468",
+      "project_key": "G05",
+      "completion_owner": "manual"
+    },
+    "discarded-m-gate-sandbox": {
+      "title": "[Discarded m-gate-sandbox] Run gate commands under a sandbox-exec profile",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/469",
+      "project_key": "G03",
+      "completion_owner": "task"
+    },
+    "discarded-m-gate-snapshot": {
+      "title": "[Discarded m-gate-snapshot] Fail the gates when the worktree changes while they run",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/470",
+      "project_key": "G03",
+      "completion_owner": "task"
+    },
+    "discarded-m-gate-timeout": {
+      "title": "[Discarded m-gate-timeout] Read the gate command time limit from [gate] timeout_min",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/471",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m-gh-review": {
+      "title": "[Discarded m-gh-review] Read review labels and required checks and guard user-approved",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/472",
+      "project_key": "G05",
+      "completion_owner": "task"
+    },
+    "discarded-m-kill-cli": {
+      "title": "[Discarded m-kill-cli] Add orch kill to the command line",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/473",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m-kill-core": {
+      "title": "[Discarded m-kill-core] Add task kill with an abort request and close merged PRs in conflict",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/474",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m-notify-cli": {
+      "title": "[Discarded m-notify-cli] Send notifications from orch run and orch pr and add orch notify test",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/475",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m-pr-fix": {
+      "title": "[Discarded m-pr-fix] Push review fixes and clean merges to an open pull request",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/476",
+      "project_key": "G05",
+      "completion_owner": "task"
+    },
+    "discarded-m-pr-fix-2": {
+      "title": "[Discarded m-pr-fix-2] Push review fixes and clean merges to an open pull request",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/477",
+      "project_key": "G05",
+      "completion_owner": "task"
+    },
+    "discarded-m11-cli": {
+      "title": "[Discarded m11-cli] Connect render and orch watch to the command line",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/478",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m14-cli": {
+      "title": "[Discarded m14-cli] Wire the Claude Code hooks to orch hook",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/479",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m14-guard-2": {
+      "title": "[Discarded m14-guard-2] Make the pre-bash guard rules independent of option positions",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/480",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m15-doctor": {
+      "title": "[Discarded m15-doctor] Add doctor checks, dispatch pauses and stuck task kills",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/481",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m15-pause": {
+      "title": "[Discarded m15-pause] Add schema v5 with dispatch pauses and doctor check levels",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/482",
+      "project_key": "G02",
+      "completion_owner": "task"
+    },
+    "discarded-m16-launch": {
+      "title": "[Discarded m16-launch] Inject the hub main rules and agent definitions in orch open",
+      "kind": "discarded",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/483",
+      "project_key": "G03",
+      "completion_owner": "task"
+    },
+    "h-github-tracking-policy": {
+      "title": "Connect GitHub issue and project tracking to the main-agent policy",
+      "kind": "harness",
+      "issue_url": "https://github.com/2muni-labs/orchestrator/issues/485",
+      "project_key": "G05",
+      "completion_owner": "harness"
+    }
+  },
+  "tasks": {
+    "m-wait": {
+      "record_id": "pr-57"
+    },
+    "m11-render": {
+      "record_id": "pr-61"
+    },
+    "m11-watch": {
+      "record_id": "pr-60"
+    },
+    "m11-cli": {
+      "record_id": "discarded-m11-cli"
+    },
+    "m11-cli-2": {
+      "record_id": "pr-62"
+    },
+    "m-notify-core": {
+      "record_id": "pr-66"
+    },
+    "m-notify-cli": {
+      "record_id": "discarded-m-notify-cli"
+    },
+    "m-notify-topic": {
+      "record_id": "pr-67"
+    },
+    "m-notify-cli-2": {
+      "record_id": "pr-68"
+    },
+    "m13-tmux": {
+      "record_id": "pr-73"
+    },
+    "m13-launcher": {
+      "record_id": "pr-72"
+    },
+    "m14-guard": {
+      "record_id": "pr-75"
+    },
+    "m14-hooks": {
+      "record_id": "pr-74"
+    },
+    "m14-guard-2": {
+      "record_id": "discarded-m14-guard-2"
+    },
+    "m13-panels": {
+      "record_id": "pr-76"
+    },
+    "m13-cli": {
+      "record_id": "pr-77"
+    },
+    "m14-guard-3": {
+      "record_id": "pr-78"
+    },
+    "m14-guard-4": {
+      "record_id": "pr-79"
+    },
+    "m14-cli": {
+      "record_id": "discarded-m14-cli"
+    },
+    "m14-cli-2": {
+      "record_id": "pr-81"
+    },
+    "m14-hook-move": {
+      "record_id": "pr-82"
+    },
+    "h-prepr-skip": {
+      "record_id": "pr-86"
+    },
+    "m-kill-core": {
+      "record_id": "discarded-m-kill-core"
+    },
+    "m12-review-core": {
+      "record_id": "pr-89"
+    },
+    "m-kill-core-2": {
+      "record_id": "pr-91"
+    },
+    "m-kill-cli": {
+      "record_id": "discarded-m-kill-cli"
+    },
+    "m-kill-cli-2": {
+      "record_id": "pr-93"
+    },
+    "m14-guard-kill": {
+      "record_id": "pr-94"
+    },
+    "m12-review-cli": {
+      "record_id": "pr-95"
+    },
+    "m15-recover": {
+      "record_id": "pr-100"
+    },
+    "m15-pause": {
+      "record_id": "discarded-m15-pause"
+    },
+    "m15-pause-2": {
+      "record_id": "pr-101"
+    },
+    "m15-liveness": {
+      "record_id": "pr-102"
+    },
+    "m15-gc": {
+      "record_id": "pr-103"
+    },
+    "m15-service": {
+      "record_id": "pr-104"
+    },
+    "m15-doctor": {
+      "record_id": "discarded-m15-doctor"
+    },
+    "m15-doctor-2": {
+      "record_id": "pr-105"
+    },
+    "m15-cli": {
+      "record_id": "pr-106"
+    },
+    "m-notify-key": {
+      "record_id": "pr-107"
+    },
+    "m-prflow-p2": {
+      "record_id": "pr-110"
+    },
+    "m-gate-timeout": {
+      "record_id": "discarded-m-gate-timeout"
+    },
+    "m-gate-timeout-2": {
+      "record_id": "pr-113"
+    },
+    "m-gate-sandbox": {
+      "record_id": "discarded-m-gate-sandbox"
+    },
+    "m-gate-sandbox-2": {
+      "record_id": "pr-115"
+    },
+    "m-gate-snapshot": {
+      "record_id": "discarded-m-gate-snapshot"
+    },
+    "m-gate-snapshot-2": {
+      "record_id": "pr-119"
+    },
+    "m-sandbox-run": {
+      "record_id": "pr-121"
+    },
+    "m16-launch": {
+      "record_id": "discarded-m16-launch"
+    },
+    "m16-sub-rules": {
+      "record_id": "pr-125"
+    },
+    "m16-launch-2": {
+      "record_id": "pr-126"
+    },
+    "m-p4-recover-summary": {
+      "record_id": "pr-132"
+    },
+    "m-gh-review": {
+      "record_id": "discarded-m-gh-review"
+    },
+    "m-pr-packet": {
+      "record_id": "pr-144"
+    },
+    "m-gh-review-2": {
+      "record_id": "pr-143"
+    },
+    "m-pr-fix": {
+      "record_id": "discarded-m-pr-fix"
+    },
+    "m-pr-fix-2": {
+      "record_id": "discarded-m-pr-fix-2"
+    },
+    "m-pr-fix-3": {
+      "record_id": "m-pr-fix-3"
+    },
+    "m-wait-review": {
+      "record_id": "m-wait-review"
+    }
+  },
+  "aliases": {
+    "B01": "pr-7",
+    "B02": "pr-128",
+    "B03": "B03",
+    "B04": "B04",
+    "B05": "B05",
+    "B06": "B06",
+    "B07": "B07",
+    "B08": "B08",
+    "B09": "pr-26",
+    "B10": "pr-23",
+    "B11": "pr-41",
+    "B12": "B12",
+    "B13": "B13",
+    "B14": "pr-115",
+    "B15": "B15",
+    "B16": "pr-91",
+    "B17": "B17",
+    "B18": "pr-110",
+    "B19": "pr-110",
+    "B20": "B20",
+    "B21": "B21",
+    "B22": "pr-91",
+    "B23": "B23",
+    "B24": "B24",
+    "B25": "pr-110",
+    "B26": "B26",
+    "B27": "B27",
+    "B28": "B28",
+    "B29": "B29",
+    "B30": "B30",
+    "B31": "B31",
+    "B32": "B32",
+    "B33": "B33",
+    "B34": "B34",
+    "B35": "pr-91",
+    "B36": "B36",
+    "B37": "B37",
+    "B38": "B38",
+    "B39": "B39",
+    "B40": "pr-100",
+    "B41": "B41",
+    "B42": "pr-102",
+    "B43": "B43",
+    "B44": "B44",
+    "B45": "B45",
+    "B46": "B46",
+    "B47": "B47",
+    "B48": "B48",
+    "B49": "B49",
+    "B50": "pr-113",
+    "B51": "B51",
+    "B52": "pr-123",
+    "B53": "B53",
+    "B54": "B54",
+    "B55": "B55",
+    "B56": "B56",
+    "B57": "B57",
+    "B58": "B58",
+    "B59": "B59",
+    "B60": "B60",
+    "B61": "B61",
+    "B62": "B62",
+    "B63": "B63",
+    "B64": "B64"
+  }
+}

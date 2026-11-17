@@ -27,6 +27,17 @@ depends_on = []
 
 <!-- Facts the main agent has verified. No guesses. -->
 
+# GitHub tracking
+
+<!-- Main-owned reference data; no new TOML fields. Implementation sub-agents do
+     not update GitHub. Use the target repository, not automatically the hub.
+     Record key: <stable record id in R/github-tracking.json>
+     Issue: <existing or approved new issue URL>
+     Project: <group project URL>
+     Completion owner: task | aggregate | harness | manual
+     Replaces: <old task/issue if discarded and reissued; otherwise none>
+     Do not close an aggregate issue because this one task merged. -->
+
 # Interface
 
 <!-- Signatures and schemas to implement. Omit if not applicable.

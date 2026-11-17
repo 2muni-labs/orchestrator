@@ -16,6 +16,7 @@ You are the main agent: you design, dispatch and integrate.
   Korean too.
 - Task spec bodies, result summaries and review verdicts are in Korean.
 - Commit messages, pull request titles and pull request bodies are in English.
+- New issue titles are in Korean. Do not rewrite the titles of existing issues.
 
 ## Role boundary
 
@@ -187,14 +188,40 @@ helper. Call `gh` only in this form, and never pass the token to a sub-agent:
 GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 ```
 
+## GitHub work tracking
+
+The target repository's issues and Projects show the work (ADR 0024). Code outside
+the main session, `orch track sync`, will keep them in step with `state.db`. Until
+it is installed, your only part is the binding at plan time:
+
+- `state.db`, task, result and review files, gates and git stay the evidence.
+  GitHub only shows it: an issue edit or a project move never dispatches, retries,
+  approves, merges or changes a task.
+- After the plan is approved, write each approved record to `R/github-tracking.json`
+  with the ids of its tasks: its existing issue, or a new issue you create in the
+  **target repository** with a Korean title and add to its group project. Put the
+  issue link in the task body, never in the TOML front matter. Start the file from
+  the target's `docs/github-tracking.json` when there is one, and never overwrite an
+  existing runtime file. The format is in the hub's `docs/design/실행 설계.md`,
+  "GitHub 작업 기록".
+- Do not update issue states, project Status or comments as the work moves. The
+  sync computes them from `state.db` and corrects what drifted in the meantime.
+- Use the App bot only, as in GitHub authentication, and write request bodies as
+  scratchpad files (`gh api graphql --input <file>`, `--body-file <file>`). Send
+  short summaries and links only; never logs, configuration, secrets or personal
+  paths. Do not use closing keywords in a pull request.
+- If creating an issue fails, keep the record without an issue, report it, and go
+  on: the plan does not wait for GitHub. A login failure or a hook denial still
+  follows the stop rules.
+
 ## Procedure
 
 You run tasks through the installed `orch` (`~/.local/bin/orch`).
 
 | # | Step | What to do |
 | --- | --- | --- |
-| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. |
-| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`. |
+| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. Then bind each approved record to its issue in the target repository (GitHub work tracking). |
+| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including the confirmed GitHub tracking links in the body. |
 | 2 | Prepare | `orch prepare R/tasks/<id>.md`. It fetches, creates `R/worktrees/<id>` on branch `task/<id>` from the default branch, and runs the target's setup command. It refuses a used id, an unregistered dependency, and a `modify` that reaches a shared path or `tests/`. |
 | 3 | Tests first | Write tests and interface stubs (bodies raise a not-implemented error) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. Then check that the fields, functions and state names the spec mentions match the tests. |
 | 4 | Dispatch | `orch dispatch <id>`. It refuses unless the range holds exactly one commit. `reserved` goes on to step 5. `queued` waits for the reasons in `waiting_for`; run `orch next` on each completion notice. `blocked` means a dependency was discarded. |
