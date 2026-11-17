@@ -9,7 +9,7 @@ from orch import gate, github, gitops, results, store
 from orch.config import Target
 from orch.gate import GateReport
 from orch.models import Gate, TaskState, Verdict
-from orch.render import build_body
+from orch.render import build_body, review_packet
 from orch.review import (
     OVERRIDE_LABEL,
     ReviewFlowError,
@@ -160,6 +160,8 @@ def open_pull_request(
     store.update_task(conn, spec.id, pushed_sha=head)
 
     changed = gitops.changed_paths(worktree, main_ref)
+    if not task.pr_url or new_attempt:
+        gate_results = store.gate_results(conn, spec.id, task.attempt)
     if task.pr_url:
         if new_attempt:
             if triage is not None:
@@ -175,9 +177,16 @@ def open_pull_request(
                 + build_body(
                     task,
                     changed=changed,
-                    gates=store.gate_results(conn, spec.id, task.attempt),
+                    gates=gate_results,
                     review=review,
                     triage=triage,
+                    packet=review_packet(
+                        task,
+                        body=spec.body,
+                        modify=spec.modify,
+                        gates=gate_results,
+                        review=review,
+                    ),
                 )
             )
         else:
@@ -198,9 +207,16 @@ def open_pull_request(
         body = build_body(
             task,
             changed=changed,
-            gates=store.gate_results(conn, spec.id, task.attempt),
+            gates=gate_results,
             review=review,
             triage=triage,
+            packet=review_packet(
+                task,
+                body=spec.body,
+                modify=spec.modify,
+                gates=gate_results,
+                review=review,
+            ),
         )
         url = github.create_pull_request(
             github=target.github,

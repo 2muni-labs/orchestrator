@@ -450,6 +450,68 @@ def test_open_pushes_and_creates_the_pull_request(
     assert "- G2_PRE_PR: passed" in str(call["body"])
 
 
+PACKET_SPEC_BODY = (
+    "# Purpose\n\n"
+    "<!-- One or two sentences. -->\n"
+    "Add the widget\nto `app.py`. It is small. A third sentence.\n\n"
+    "# Confirmed facts\n\n- None.\n"
+)
+
+
+def test_open_puts_the_review_packet_at_the_top_of_the_body(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    spec = make_spec(body=PACKET_SPEC_BODY, modify=("src/**", "docs/x.md"))
+    assert open_pr(conn, repo, tmp_path, spec=spec).state is TaskState.PR_OPEN
+    assert str(hub.created[0]["body"]).startswith(
+        "## Review packet\n\n"
+        "- task_id: `feat-x`\n"
+        "- grade: L2\n"
+        "- lane: B\n"
+        "- purpose: Add the widget to `app.py`. It is small.\n"
+        "- modify: `src/**`, `docs/x.md`\n"
+        "- gates: G1 passed, G2 passed, G3 passed\n"
+        "- review: not required\n\n"
+        "## Summary\n\n"
+    )
+    assert list(hub.created[0].get("labels", ())) == []
+    assert hub.added == []
+    assert hub.label_calls == []
+
+
+def test_open_reads_the_gate_results_once(
+    conn: sqlite3.Connection,
+    repo: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_ready_task(conn, worktree, test_sha)
+    calls: list[int] = []
+    real = store.gate_results
+
+    def counting(*args: object, **options: object) -> tuple[GateResult, ...]:
+        calls.append(1)
+        return real(*args, **options)
+
+    monkeypatch.setattr(store, "gate_results", counting)
+    open_pr(conn, repo, tmp_path)
+    assert calls == [1]
+    body = str(hub.created[0]["body"])
+    assert "- gates: G1 passed, G2 passed, G3 passed\n" in body
+    assert "- G2_PRE_PR: passed" in body
+
+
 def test_open_records_the_pre_pr_gate(
     conn: sqlite3.Connection,
     repo: Path,
@@ -864,6 +926,12 @@ def test_an_overridden_block_is_marked_at_the_top_and_labeled(
     body = str(created["body"])
     assert body.startswith("## Review BLOCK overridden\n")
     assert body.index("## Review BLOCK overridden") < body.index("## Summary")
+    assert body.count("\n\n## Review packet\n\n- task_id: `feat-x`\n") == 1
+    assert (
+        body.index("## Review BLOCK overridden")
+        < body.index("## Review packet")
+        < body.index("- review: BLOCK, P1: 1, P2: 1, P3: 1\n\n## Summary\n")
+    )
     assert "Follow-up task: `feat-x-tests`" in body
     assert "(insufficient_tests): The code is right" in body
     assert "Verdict: BLOCK" in body
@@ -982,7 +1050,10 @@ def test_a_pass_needs_no_label_and_gets_none(
     assert open_pr(conn, repo, tmp_path).state is TaskState.PR_OPEN
     assert hub.label_calls == []
     assert list(hub.created[0].get("labels", ())) == []
-    assert str(hub.created[0]["body"]).startswith("## Summary")
+    body = str(hub.created[0]["body"])
+    assert body.startswith("## Review packet\n")
+    assert "\n- review: PASS, P2: 1, P3: 1\n\n## Summary\n" in body
+    assert hub.added == []
 
 
 def test_a_stale_triage_is_ignored_when_the_review_passes(
@@ -1180,6 +1251,7 @@ def test_a_resolved_conflict_on_an_open_pull_request_updates_with_a_lease(
     assert comment["url"] == URL
     assert comment["token"] == TOKEN
     assert "Kept both changes." in str(comment["body"])
+    assert "Review packet" not in str(comment["body"])
     assert events_of(conn)[-2:] == [("pr_open", "conflict"), ("conflict", "pr_open")]
 
 
@@ -2657,7 +2729,10 @@ def test_a_resolution_replaces_the_first_line_of_a_new_attempt_comment(
 ) -> None:
     open_pr(conn, repo, tmp_path, resolution="Retried after a flaky test.")
     body = str(hub.comments[0]["body"])
-    assert body.startswith("Retried after a flaky test.\n\n## Summary")
+    assert body.startswith(
+        "Retried after a flaky test.\n\n## Review packet\n\n- task_id: `feat-x`\n"
+    )
+    assert body.index("\n- review: ") < body.index("\n\n## Summary\n")
     assert "Updated after attempt" not in body
 
 
