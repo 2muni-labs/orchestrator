@@ -53,7 +53,6 @@ docs/design/       design documents
 docs/decisions/    decision records (ADR), one per file
 src/orch/          orch package
 tests/             tests, owned by the main agent
-docs/github-tracking.md  main-agent GitHub tracking procedure
 docs/github-tracking.json  reviewed project/issue recovery bindings
 templates/task.md  task spec template
 schemas/           result and review JSON schemas
@@ -65,7 +64,7 @@ config/agents/     read-only sub-agent definitions that orch open injects
 config/subagent.md implementation sub-agent rules that orch run adds to the prompt
 
 ~/.orch/orchestrator/   runtime data, never committed
-  github-tracking.json  main-owned bindings and pending GitHub updates
+  github-tracking.json  main-owned bindings and unconfirmed GitHub updates
   tasks/<id>.md         task specs
   results/<id>.json     result reports
   reviews/<id>.json     review reports

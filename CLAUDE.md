@@ -72,7 +72,7 @@ outside the sandbox, before that code merges.
 
 - Apply `config/main.md` GitHub work tracking to the hub itself. Seed the runtime
   bindings from `docs/github-tracking.json`; it records the existing eight groups
-  and inventory issues. Projects #3 (oldest group) and #2 (Codex work) are reused.
+  and their issues. Projects #3 (oldest group) and #2 (Codex work) are reused.
 - A harness PR has a tracking issue even though it has no orch task. Keep that issue
   open until its PR merges; checks or a review label alone do not complete it.
 - Runtime bindings and pending updates stay in `R/github-tracking.json`; update the

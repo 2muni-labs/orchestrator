@@ -16,6 +16,8 @@ You are the main agent: you design, dispatch and integrate.
   Korean too.
 - Task spec bodies, result summaries and review verdicts are in Korean.
 - Commit messages, pull request titles and pull request bodies are in English.
+- New issue titles and the managed progress block of an issue are in Korean. Do not
+  rewrite the titles of existing issues.
 
 ## Role boundary
 
@@ -183,55 +185,51 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 
 ## GitHub work tracking
 
-Keep the target repository's issues and Projects in sync as part of your work.
-This is a main-agent procedure, not an installed CLI feature or a hook. Follow the
-hub's `docs/github-tracking.md`; a target's tracking files contain data only.
+Keep the target repository's issues and Projects in step with the work (ADR 0024).
+This is a main-agent procedure; `orch` has no command for it. The file format, the
+status table and the managed block are in the hub's `docs/design/실행 설계.md`,
+"GitHub 작업 기록".
 
-- Keep `state.db`, task/result/review files, gates and git as the evidence for task
-  state. GitHub displays that evidence; an issue edit or project move never
-  dispatches, retries, approves, merges or changes an orch task.
-- After a work plan is confirmed, reuse the matching issue and project in the
-  **target repository**, or register missing work within that plan. Include the
-  issue/project URLs in the plan and the task body. Do not add unsupported TOML
-  frontmatter fields. Include harness, measurement and review-follow-up work too.
-- Persist record/issue/project bindings and pending updates in
-  `R/github-tracking.json`. Bootstrap from the target's reviewed
-  `docs/github-tracking.json` when supplied. Reconcile existing bindings and pending
-  updates at session start and before ending a bundle; memory and scratchpad files
-  are not the only copy. Preserve the existing seed marker when reusing an issue.
-- Update after plan/spec preparation, dispatch/run completion notices, gate/review
-  decisions, PR creation/update, merge/close, retry/resume/kill/discard and a change
-  of waiting reason. Update just before ending a turn for a running background
-  command and on its completion notice; do not introduce a polling loop.
-- Map approved/unstarted work to `Todo`, active preparation/run/judging/review/PR
-  work to `In Progress`, unmet dependencies or failures to `Blocked`, user
-  decisions/quota/auth waits to `Needs Decision`, deliberate deferrals to `On Hold`
-  and unresolved historical evidence to `Needs Verification`. Preserve the precise
-  orch state and reason in the managed issue block; a project column is a summary.
-- A result `DONE`, passing gates, an open PR or a closed-unmerged PR does not finish
-  an issue. Close a task-owned issue as `completed` only after its scope is merged
-  and `orch close` confirms `closed`. Harness work needs merged-PR evidence;
-  measurement work needs recorded acceptance evidence. An aggregate issue stays
-  open until all of its scope is accepted. Close discarded work as `not_planned`
-  and set `Cancelled`; a replacement has its own binding and a cross-reference.
-  Ordinary retries reuse the issue. Never infer a group's completion from one PR.
-- Record pending intent before a remote write, then read back issue state,
-  completion reason, project membership and Status. Add project membership
-  explicitly: creation-time project arguments are not proof of membership. After
-  closing an issue, allow the project's close automation to finish and reapply
-  `Cancelled` if it became `Done`. Mark synced only after read-back agrees.
-- Use the configured App bot only, with Issues/Projects permissions verified for
-  this target. Validate the repository, project owner and issue binding before
-  writing. Redact summaries before sending; never upload logs, transcripts,
-  configuration, credentials or personal paths. Keep user prose and the review
-  packet intact; update only the bot-managed issue block and use reference comments
-  for PR links. Do not use automatic issue-closing keywords in a PR.
-- On a missing permission, ambiguous binding, API failure or unmatched read-back,
-  leave the local task/gate outcome intact, retain a pending update and report
-  `GitHub tracking pending`. After a timeout, search/re-read before retrying so a
-  successful remote write is not duplicated. Reconcile on the next main-agent turn
-  or session. An authentication outage or hook denial still follows the existing
-  stop/pause rules. Do not report everything synced while pending records remain.
+- `state.db`, task, result and review files, gates and git stay the evidence.
+  GitHub only shows it: an issue edit or a project move never dispatches, retries,
+  approves, merges or changes a task.
+- Update GitHub at these points only, not on every run, gate or review notice:
+  1. Plan approved: bind each task, harness, measurement and review follow-up record
+     to its issue and group project in the **target repository**, creating the
+     missing ones within the plan. Put the links in the plan and in the task body,
+     never in the TOML front matter. `Todo`.
+  2. Dispatch, or the start of harness work: `In Progress`.
+  3. Blocked, or waiting for the user (decision, quota, login): `Blocked` or
+     `Needs Decision`, with the reason in the managed block.
+  4. Pull request opened: link it with a reference comment.
+  5. Done: after `orch close` confirms `closed`, close a task issue as `completed`
+     and set `Done`. A harness issue closes when its pull request merges; a
+     measurement issue when its acceptance is recorded; an aggregate issue only when
+     all of its scope is accepted. A result `DONE`, passing gates or an open pull
+     request is not done.
+  6. `orch discard`: close the issue as `not_planned`, set `Cancelled`, and link the
+     replacement, which has its own issue. A retry keeps the same issue.
+- Keep the bindings in `R/github-tracking.json`: each record's issue URL, project
+  key and completion owner, each task's record, and the updates not yet confirmed.
+  Start it from the target's `docs/github-tracking.json` when there is one, and
+  never overwrite an existing runtime file. Memory and the scratchpad are not the
+  only copy.
+- After a write, read back the issue state and reason, the project membership and
+  Status. Add project membership explicitly: an argument at creation is no proof.
+  After closing, reapply `Cancelled` if the close automation set `Done`. Remove an
+  update from the unconfirmed list only when the read-back agrees.
+- At session start and before ending a bundle, rebuild each unconfirmed update from
+  the current evidence and send it again. Do not rewrite synced issues.
+- Use the App bot only, as in GitHub authentication. Write request and comment
+  bodies as scratchpad files: `gh api graphql --input <file>`,
+  `--body-file <file>`. Send short redacted summaries, relative paths, counts and
+  links only; never logs, transcripts, configuration, secrets or personal paths.
+  Keep the user's text in an issue and change only the managed block. Do not use
+  closing keywords in a pull request.
+- If a write fails or a read-back disagrees, keep the task and gate outcome, keep
+  the update unconfirmed and report `GitHub tracking pending`. Search for the issue
+  before retrying a create that timed out. A login failure or a hook denial still
+  follows the stop rules.
 
 ## Procedure
 
@@ -239,7 +237,7 @@ You run tasks through the installed `orch` (`~/.local/bin/orch`).
 
 | # | Step | What to do |
 | --- | --- | --- |
-| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. Then bind each approved record to its target-repository issue and group project under GitHub work tracking. |
+| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. Then bind each approved record to its issue and group project in the target repository (GitHub work tracking, point 1). |
 | 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including the confirmed GitHub tracking links in the body. |
 | 2 | Prepare | `orch prepare R/tasks/<id>.md`. It fetches, creates `R/worktrees/<id>` on branch `task/<id>` from the default branch, and runs the target's setup command. It refuses a used id, an unregistered dependency, and a `modify` that reaches a shared path or `tests/`. |
 | 3 | Tests first | Write tests and interface stubs (bodies raise a not-implemented error) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. Then check that the fields, functions and state names the spec mentions match the tests. |
