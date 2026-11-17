@@ -5,8 +5,10 @@ import os
 import re
 import signal
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 from orch.redact import redact
@@ -15,6 +17,22 @@ GH_TIMEOUT_SEC = 120
 _GITHUB_PATTERN = r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._][A-Za-z0-9._-]*"
 _LABEL_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _URL_PATTERN = rf"https://github\.com/{_GITHUB_PATTERN}/pull/[0-9]+"
+
+REVIEW_LABELS = ("verify-light", "verify-deep")
+USER_ONLY_LABEL = "user-approved"
+NEVER_REMOVED_LABEL = "review-overridden"
+# Measured on gh 2.102.0 (2026-11-16). One call reads everything orch wait decides on.
+REVIEW_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){"
+    "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+    "state mergedAt headRefOid labels(first:100){nodes{name}} "
+    "timelineItems(last:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{"
+    "__typename ... on LabeledEvent{createdAt label{name}} "
+    "... on UnlabeledEvent{createdAt label{name}}}} "
+    "commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{"
+    "__typename ... on CheckRun{name status conclusion} "
+    "... on StatusContext{context state}}}}}}}}}}"
+)
 
 
 class GitHubError(Exception):
@@ -29,6 +47,36 @@ class PullRequestStatus:
     merged: bool
     merged_at: str | None = None
     mergeable: str | None = None
+
+
+class CheckResult(StrEnum):
+    """What a check on the head commit says."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    PENDING = "pending"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LabelEvent:
+    """One label added to or removed from a pull request."""
+
+    name: str
+    added: bool
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewState:
+    """A pull request's state, labels, label events and head commit checks."""
+
+    state: str
+    merged: bool
+    merged_at: str | None
+    head_sha: str
+    labels: tuple[str, ...]
+    events: tuple[LabelEvent, ...]
+    checks: Mapping[str, CheckResult]
 
 
 def _validate_token(token: str) -> None:
@@ -230,3 +278,18 @@ def pull_request_status(*, url: str, token: str) -> PullRequestStatus:
         merged_at=merged_at,
         mergeable=mergeable,
     )
+
+
+def remove_label(*, url: str, name: str, token: str) -> None:
+    """Remove a label from a pull request. Some labels are never removed."""
+    raise NotImplementedError
+
+
+def review_state(*, url: str, token: str) -> ReviewState:
+    """Return a pull request's state, labels, label events and head checks."""
+    raise NotImplementedError
+
+
+def required_checks(*, github: str, branch: str, token: str) -> tuple[str, ...]:
+    """Return the names of the checks a branch's rules require."""
+    raise NotImplementedError
