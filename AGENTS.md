@@ -26,10 +26,12 @@ This repository is the hub. It is **public**.
 | `실행 설계.md` | Lanes, directory layout, command templates, hooks |
 | `보안 설계.md` | Threat model, sandbox scope, dependency policy, device loss runbook |
 | `화면 설계.md` | Workspace screens, panels, interaction, acceptance scenarios |
+| `시각 설계.md` | Workspace visual tokens: color, spacing, shadow, blur, wallpaper, motion |
 | `구축 절차.md` | What to do in the current phase |
 
 When documents conflict, the order of precedence is requirements, then technical
-design, then execution design, then security design, then screen design. The
+design, then execution design, then security design, then screen design, then
+visual design. The
 build procedure only decides what is done in the current phase. If you are a
 sub-agent and find a conflict that affects your task, stop and report `BLOCKED`.
 
@@ -51,6 +53,7 @@ sub-agent and find a conflict that affects your task, stop and report `BLOCKED`.
 ```
 docs/design/       design documents
 docs/decisions/    decision records (ADR), one per file
+docs/design/mockups/  design mockup images, referenced from the visual design
 src/orch/          orch package
 tests/             tests, owned by the main agent
 templates/task.md  task spec template
