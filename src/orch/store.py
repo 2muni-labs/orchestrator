@@ -99,6 +99,68 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             PRIMARY KEY (target, item)
         )""",
     ),
+    (
+        """CREATE TABLE tracking_targets (
+            target TEXT PRIMARY KEY,
+            repository TEXT NOT NULL,
+            imported_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE tracking_projects (
+            target TEXT NOT NULL REFERENCES tracking_targets(target),
+            key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            PRIMARY KEY (target, key)
+        )""",
+        """CREATE TABLE tracking_records (
+            target TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            completion_owner TEXT NOT NULL,
+            project_key TEXT NOT NULL,
+            issue_url TEXT,
+            branch TEXT,
+            pr_url TEXT,
+            accepted_at TEXT,
+            PRIMARY KEY (target, record_id),
+            FOREIGN KEY (target, project_key) REFERENCES tracking_projects(target, key)
+        )""",
+        """CREATE TABLE tracking_tasks (
+            target TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            PRIMARY KEY (target, task_id),
+            FOREIGN KEY (target, record_id)
+                REFERENCES tracking_records(target, record_id)
+        )""",
+        """CREATE TABLE tracking_aliases (
+            target TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            PRIMARY KEY (target, alias),
+            FOREIGN KEY (target, record_id)
+                REFERENCES tracking_records(target, record_id)
+        )""",
+        """CREATE TABLE tracking_state (
+            target TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            verified TEXT,
+            verified_at TEXT,
+            failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            PRIMARY KEY (target, record_id),
+            FOREIGN KEY (target, record_id)
+                REFERENCES tracking_records(target, record_id)
+        )""",
+        """CREATE TABLE tracking_runs (
+            target TEXT PRIMARY KEY,
+            last_at TEXT NOT NULL,
+            last_success_at TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT
+        )""",
+    ),
 )
 
 
