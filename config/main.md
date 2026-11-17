@@ -30,8 +30,9 @@ You are the main agent: you design, dispatch and integrate.
   or a task is partial. Do not re-analyze or re-implement work that passed.
 - Never merge a pull request. Never push to the default branch. Push task branches
   only.
-- Never force push, with `--force` or `--force-with-lease`. Only `orch pr` updates a
-  pushed `task/<id>` branch, with a lease on its recorded `pushed_sha`.
+- Never force push, with `--force` or `--force-with-lease`. Only `orch pr` and
+  `orch update` update a pushed `task/<id>` branch, with a lease on its recorded
+  `pushed_sha`.
 - Pass a pull request body or comment body as a file you wrote first:
   `--body-file <path>` with a path in your scratchpad directory. Never pass it on
   standard input or through a heredoc; the pre-bash guard cannot parse that form and
@@ -155,15 +156,21 @@ merge and leaves the labels as they are.
   It still reports `user_check` and sends the `needs_review` notification for a
   `review-overridden` label or a changed safety path.
 - `orch wait <id> --merged` adds the review label when the required checks pass and
-  handles the rest from GitHub alone. Until the installed `orch` does this, and for a
-  pull request without a task, confirm that the required checks passed and add the
-  label yourself with `gh pr edit <url> --add-label <label>`.
-- Required check failed: fix it, push, and wait again.
-- First `changes-requested` on a pull request: read the review comments, fix once,
-  push, remove `changes-requested` and the review label, and wait again.
-- Second `changes-requested` on the same pull request: do not fix. The user is
-  notified; report and wait for the user.
-- `needs-user`: the user is notified once. Keep waiting.
+  reports in `outcome` what you must do (step 8b). With an installed `orch` older
+  than v0.15.0, and for a pull request without a task, confirm that the required
+  checks passed and add the label yourself with
+  `gh pr edit <url> --add-label <label>`.
+- Required check failed (`checks_failed`): read the failed check's log, fix it in
+  the worktree, commit, run `orch pr <id> --resolution "<English description>"`, and
+  wait again.
+- First `changes-requested` on a pull request (`changes_requested`): read the review
+  comments, fix once in the worktree, commit, run
+  `orch pr <id> --resolution "<English description>"`, and wait again. It removes
+  `changes-requested` and the review labels before it pushes.
+- Second `changes-requested` on the same pull request: do not fix. `orch wait`
+  notifies the user and keeps waiting; report and wait for the user.
+- Head behind the default branch (`behind`): run `orch update <id>`, then wait again.
+- `needs-user`: `orch wait` notifies the user once and keeps waiting.
 - After opening pull requests, report every pull request waiting for merge in this
   table:
 
@@ -246,8 +253,8 @@ You run tasks through the installed `orch` (`~/.local/bin/orch`).
 | 6 | Judge | On the completion notice, read the command's JSON output and `R/results/<id>.json`. Ignore the notice's exit code. If `DONE`, run `orch gate <id>`, which runs G1 to G3 and commits the sub-agent's changes when they pass. A failed gate returns the task to `judging`. If `report_missing`, read the log before retrying: limit detection can miss a usage limit error, and a retry would be wasted. |
 | 7 | Review | When the gate leaves the task in `reviewing` (L3, L3R, or `review = true`): run `git diff <merge-base>..HEAD > R/reviews/<id>.diff` in the worktree so that the diff holds the tests and the implementation, then start `orch-reviewer` in the background with the paths of that diff, the spec, the worktree and the hub's `schemas/review.json`. Pass its JSON to `orch review save <id>` on standard input. `PASS` moves the task to `ready`; `BLOCK` moves it to `judging`. This is for a Codex implementation (lane B). For a Claude implementation (lane C or D), run `orch review <id> --by codex` in a background shell instead; it writes the diff itself. Then end the turn, and on the completion notice judge from the JSON's `outcome` and `state`, not the exit code: `saved` with `state` `ready` is a pass and `saved` with `state` `judging` is a `BLOCK`, both exit 0. `quota` (exit 40) means the usage limit ran out: report it and wait. `invalid`, `failed` or `timeout` (exit 20) leaves the task in `reviewing`: report it and ask the user whether to run the review again. |
 | 8 | Pull request | `orch pr <id>`. It rebases on the default branch, re-runs the tests, pushes, and opens the pull request in English. Report to the user with the merge table above. A rebase conflict moves the task to `conflict`; a test failure moves it to `judging`. |
-| 8a | Default branch moved | While a pull request is open and the default branch moves, run `orch update <id>`. It checks a temporary merge and discards it, pushing nothing. On failing gates it comments on the pull request. On a conflict it moves the task to `conflict`: in the worktree, rebase on the default branch and resolve; if the resolution changed logic and the task is L3 or above, run `orch-reviewer` on the new diff and stop and report on a P0 or P1 finding; then run `orch pr <id> --resolution "<English description>"`, which pushes with the lease and comments. A lease rejection exits 64 and leaves the remote alone: stop and report. |
-| 8b | Wait | After the report in step 8, run `orch wait <id> --merged` in a background shell and end the turn. Do not poll. On the completion notice, read the JSON output and ignore the exit code. `merged` true goes to step 9, also when `state` is `conflict`. `pr_state` `CLOSED` means closed without a merge: report it, then `orch discard <id>`. `ok` true with neither of those means the wait limit (exit 60): run the same command again. So does a notice with no output, or a restart of this session while a task is `pr_open`. `ok` false (exit 64 or 70): stop and report. |
+| 8a | Default branch moved | While a pull request is open and the default branch moves, run `orch update <id>`. It checks a temporary merge. When the gates pass and the merge made a commit, it removes `verify-light`, `verify-deep` and `needs-user`, pushes the merge commit with the lease and comments; when the branch already holds the default branch it pushes nothing. On failing gates it discards the merge, pushes nothing and comments on the pull request. On a conflict it moves the task to `conflict`: in the worktree, rebase on the default branch and resolve; if the resolution changed logic and the task is L3 or above, run `orch-reviewer` on the new diff and stop and report on a P0 or P1 finding; then run `orch pr <id> --resolution "<English description>"`, which pushes with the lease and comments. A lease rejection exits 64 and leaves the remote alone: stop and report. |
+| 8b | Wait | After the report in step 8, run `orch wait <id> --merged` in a background shell and end the turn. Do not poll. On the completion notice, read the JSON output's `outcome` and ignore the exit code. `merged` goes to step 9, also when `state` is `conflict`. `closed` means closed without a merge: report it, then `orch discard <id>`. `limit` means the wait limit: run the same command again. So does a notice with no output, or a restart of this session while a task is `pr_open`. `checks_failed`, `changes_requested` and `behind`: act as the Merge policy says, then wait again. `ok` false (exit 64 or 70): stop and report. |
 | 9 | After merge | The pull request is merged under the merge policy above. Run `orch close <id>`, which confirms the merge and removes the worktree and local branch. Then run `orch next`. |
 | 10 | Failure | `orch retry <id>` starts the second attempt from the test commit and appends the failure to the spec. On a second failure, `orch discard <id>` and re-decompose. A task with an open pull request can be discarded only after that pull request is closed. |
 
