@@ -102,6 +102,37 @@ EXPECTED_COLUMNS = {
     "locks": {"target", "path_glob", "task_id"},
     "gate_results": {"task_id", "attempt", "gate", "passed", "detail", "at"},
     "events": {"id", "task_id", "from_state", "to_state", "actor", "note", "at"},
+    "tracking_targets": {"target", "repository", "imported_at"},
+    "tracking_projects": {"target", "key", "title", "url"},
+    "tracking_records": {
+        "target",
+        "record_id",
+        "title",
+        "kind",
+        "completion_owner",
+        "project_key",
+        "issue_url",
+        "branch",
+        "pr_url",
+        "accepted_at",
+    },
+    "tracking_tasks": {"target", "task_id", "record_id"},
+    "tracking_aliases": {"target", "alias", "record_id"},
+    "tracking_state": {
+        "target",
+        "record_id",
+        "verified",
+        "verified_at",
+        "failures",
+        "last_error",
+    },
+    "tracking_runs": {
+        "target",
+        "last_at",
+        "last_success_at",
+        "consecutive_failures",
+        "last_error",
+    },
 }
 
 
@@ -1353,3 +1384,132 @@ def test_concurrent_doctor_checks_each_see_a_distinct_previous_row(
         thread.join()
     assert results.count(None) == 1
     assert results.count(CheckLevel.WARN) == 7
+
+
+# Schema v6: GitHub work tracking
+
+
+def test_the_v6_tables_match_the_design(conn: sqlite3.Connection) -> None:
+    assert table_columns(conn, "tracking_targets") == [
+        ("target", 1),
+        ("repository", 0),
+        ("imported_at", 0),
+    ]
+    assert table_columns(conn, "tracking_projects") == [
+        ("target", 1),
+        ("key", 2),
+        ("title", 0),
+        ("url", 0),
+    ]
+    assert table_columns(conn, "tracking_records") == [
+        ("target", 1),
+        ("record_id", 2),
+        ("title", 0),
+        ("kind", 0),
+        ("completion_owner", 0),
+        ("project_key", 0),
+        ("issue_url", 0),
+        ("branch", 0),
+        ("pr_url", 0),
+        ("accepted_at", 0),
+    ]
+    assert table_columns(conn, "tracking_tasks") == [
+        ("target", 1),
+        ("task_id", 2),
+        ("record_id", 0),
+    ]
+    assert table_columns(conn, "tracking_aliases") == [
+        ("target", 1),
+        ("alias", 2),
+        ("record_id", 0),
+    ]
+    assert table_columns(conn, "tracking_state") == [
+        ("target", 1),
+        ("record_id", 2),
+        ("verified", 0),
+        ("verified_at", 0),
+        ("failures", 0),
+        ("last_error", 0),
+    ]
+    assert table_columns(conn, "tracking_runs") == [
+        ("target", 1),
+        ("last_at", 0),
+        ("last_success_at", 0),
+        ("consecutive_failures", 0),
+        ("last_error", 0),
+    ]
+
+
+def test_the_v6_foreign_keys_hold(conn: sqlite3.Connection) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO tracking_projects VALUES ('t', 'G01', 'x', 'u')")
+    conn.execute("INSERT INTO tracking_targets VALUES ('t', 'o/r', 'at')")
+    conn.execute("INSERT INTO tracking_projects VALUES ('t', 'G01', 'x', 'u')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """INSERT INTO tracking_records (target, record_id, title, kind,
+            completion_owner, project_key)
+            VALUES ('t', 'r', 'x', 'task', 'task', 'G99')"""
+        )
+    for table in ("tracking_tasks", "tracking_aliases"):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(f"INSERT INTO {table} VALUES ('t', 'a', 'missing')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO tracking_state (target, record_id) VALUES ('t', 'missing')"
+        )
+
+
+def test_tracking_tasks_do_not_reference_orch_tasks(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO tracking_targets VALUES ('t', 'o/r', 'at')")
+    conn.execute("INSERT INTO tracking_projects VALUES ('t', 'G01', 'x', 'u')")
+    conn.execute(
+        """INSERT INTO tracking_records (target, record_id, title, kind,
+        completion_owner, project_key) VALUES ('t', 'r', 'x', 'task', 'task', 'G01')"""
+    )
+    conn.execute("INSERT INTO tracking_tasks VALUES ('t', 'not-an-orch-task', 'r')")
+
+
+def test_a_v5_database_gains_the_v6_tables_and_keeps_its_data(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statements in store.MIGRATIONS[:5]:
+        for statement in statements:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 5")
+    old.execute(
+        """INSERT INTO tasks (id, target, title, grade, lane, model, state,
+        timeout_sec, created_at, updated_at)
+        VALUES ('kept', 't', 'T', 'L2', 'B', 'm', 'closed', 60, 'c', 'u')"""
+    )
+    old.execute("INSERT INTO pauses VALUES ('disk', 's', NULL)")
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == 6
+    assert user_version(conn) == len(store.MIGRATIONS)
+    assert get_task(conn, "kept") is not None
+    assert store.list_pauses(conn)[0].reason == "disk"
+    for table in (
+        "tracking_targets",
+        "tracking_projects",
+        "tracking_records",
+        "tracking_tasks",
+        "tracking_aliases",
+        "tracking_state",
+        "tracking_runs",
+    ):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_the_v6_migration_creates_only_the_tracking_tables() -> None:
+    assert len(store.MIGRATIONS) == 6
+    assert [s.split("(")[0].split()[-1] for s in store.MIGRATIONS[5]] == [
+        "tracking_targets",
+        "tracking_projects",
+        "tracking_records",
+        "tracking_tasks",
+        "tracking_aliases",
+        "tracking_state",
+        "tracking_runs",
+    ]
+    assert all(s.lstrip().startswith("CREATE TABLE") for s in store.MIGRATIONS[5])
+    assert all("tracking_" not in s for m in store.MIGRATIONS[:5] for s in m)
