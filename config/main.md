@@ -71,17 +71,17 @@ You are the main agent: you design, dispatch and integrate.
 
 ## Merge policy
 
-This section is the whole merge policy (requirements ch. 9, ADR 0020). The scheduled
-tasks that review and merge read it from the hub's `origin/main`, never from a pull
-request's branch.
+This section is the whole merge policy (requirements ch. 9, ADR 0020, ADR 0022). The
+scheduled tasks that review and merge read it from the hub's `origin/main`, never
+from a pull request's branch.
 
 **Who merges**
 
 - You and the sub-agents never merge and never approve a pull request, whatever the
   ruleset would allow.
 - Three cloud scheduled tasks on the user's account do the verification and the
-  merge: the light review, the deep review and the merge after approval. A label
-  event on the pull request starts each one.
+  merge: the light review, the deep review and the user-approved merge. A label
+  event on the pull request starts each one (ADR 0020, ADR 0022).
 - The default branch ruleset requires one approval and the required checks. The
   required check is the target's CI workflow, which runs the full tests and lint on
   the pull request's combined state. `orch` never runs CI; it only reads the result.
@@ -90,11 +90,11 @@ request's branch.
 
 | Label | Added by | Meaning |
 | --- | --- | --- |
-| `verify-light` | the bot (`orch wait`) | Grade L1 or L2 and no changed file under a safety path. The light review task approves and merges alone. |
-| `verify-deep` | the bot (`orch wait`) | Everything else, including every pull request without a task. The deep review task reviews; the merge task merges after the user adds `user-approved`. |
-| `changes-requested` | a review task | The review asks for a fix. It comes with a review comment. |
-| `needs-user` | a review task | Waiting for the user: the task cannot decide alone, or the deep review is done and waits for `user-approved`. |
-| `user-approved` | the user only | Permits the merge of a `verify-deep` pull request. The bot never adds or removes it; `orch` refuses in code. |
+| `verify-light` | the bot (`orch wait`) | Grade L1 or L2 and no changed file under a safety path. The light review task reviews; on `머지` it approves and merges alone. |
+| `verify-deep` | the bot (`orch wait`) | Everything else, including every pull request without a task and every change under a safety path. The deep review task reviews; on `머지` it approves and merges alone. |
+| `changes-requested` | a review task | The verdict is `수정 요구`. It comes with a review comment. |
+| `needs-user` | a review task | The verdict is `머지 거부` or `보류`. Waiting for the user. |
+| `user-approved` | the user only | Permits the merge of a pull request whose latest verdict is `머지 거부` or `보류`; the user-approved merge task merges it. It is not a condition of any other merge. The bot and the review tasks never add or remove it; `orch` refuses in code. |
 | `review-overridden` | the bot (`orch pr`) | A `BLOCK` was overridden by triage. The user merges it personally; it gets no review label. Never removed. |
 
 - A safety path is a path matched by the target's `safety_paths` in the hub's
@@ -102,18 +102,48 @@ request's branch.
 - A review label goes on only after every required check has passed on the head
   commit.
 
-**What a scheduled task checks before it merges.** All of these must hold. If one
-does not, it does not merge: it adds `needs-user`, or `changes-requested` with a
-review comment when the code must change.
+**Verdicts.** A review task ends each review with exactly one verdict and leaves it
+as a pull request comment whose first two lines are:
+
+```
+[orch-verify] 판정: <verdict>
+head: <head commit, at least 7 hex digits>
+```
+
+| Verdict | Light review | Deep review | What the task does |
+| --- | --- | --- | --- |
+| `머지` | yes | yes | Merges if every check below holds. If one does not, it gives another verdict instead. |
+| `머지 거부` | yes | yes | Does not merge. Replaces the review label with `needs-user`. |
+| `수정 요구` | yes | yes | Adds `changes-requested` with a review comment. |
+| `상향` | yes | no | Replaces `verify-light` with `verify-deep`. |
+| `보류` | no | yes | The effect on the safety mechanisms cannot be judged from the diff alone. Replaces `verify-deep` with `needs-user`. |
+
+- Only a verdict comment whose author is the user's account counts. A comment from
+  the bot or anyone else is ignored, whatever it says.
+- The latest verdict of a head is the newest counted verdict comment whose `head`
+  names that commit.
+
+**What a review task checks before it merges on `머지`.** All of these must hold.
 
 - The pull request is open, has no `review-overridden` label, and nothing was pushed
   after the review label was added.
 - Every required check has passed on the head commit.
 - `verify-light`: the task itself confirms that no changed file is under a safety
   path, reading `safety_paths` from `origin/main`, and that the review packet's grade
-  is L1 or L2. Otherwise it replaces the label with `verify-deep`.
-- `verify-deep`: `user-approved` is present, the actor of that label event is the
-  user, and nothing was pushed after it.
+  is L1 or L2. Otherwise its verdict is `상향`.
+- `verify-deep`: the deep review found nothing that stops the merge. A change under a
+  safety path merges without the user's check; the deep review judges it.
+- It leaves an approving review first, then merges with a merge commit.
+
+**What the user-approved merge task checks before it merges.** It starts when
+`user-approved` is added, and all of these must hold. If one does not, it does not
+merge and leaves the labels as they are.
+
+- The actor of the `user-approved` label event is the user, and nothing was pushed
+  after that event.
+- The latest verdict of the current head is `머지 거부` or `보류`.
+- Every required check has passed on the head commit.
+- The pull request is open and has no `review-overridden` label.
 - It leaves an approving review first, then merges with a merge commit.
 
 **What you do**
