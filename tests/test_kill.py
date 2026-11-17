@@ -329,6 +329,7 @@ def test_kill_stops_a_live_run_and_the_runner_records_the_abort(
     tmp_path: Path,
 ) -> None:
     real_ps()
+    ready = tmp_path / "agent-ready"
     outcome: dict[str, object] = {}
 
     def run_it() -> None:
@@ -340,7 +341,7 @@ def test_kill_stops_a_live_run_and_the_runner_records_the_abort(
                 target=make_target(repo),
                 config=make_config(),
                 paths=paths,
-                environ=make_env(home, "ignore_term"),
+                environ=make_env(home, "ignore_term", ORCH_FAKE_READY=str(ready)),
             )
         except BaseException as exc:  # noqa: BLE001 - reported to the test
             outcome["error"] = exc
@@ -352,7 +353,8 @@ def test_kill_stops_a_live_run_and_the_runner_records_the_abort(
     deadline = time.monotonic() + 20
     while True:
         row = store.latest_run(conn, TASK)
-        if row is not None and row.pid and row.pid_started_at:
+        # The agent ignores SIGTERM only after it writes the ready file.
+        if row is not None and row.pid and row.pid_started_at and ready.exists():
             break
         assert time.monotonic() < deadline
         time.sleep(0.05)

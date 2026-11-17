@@ -129,6 +129,12 @@ def main():
         sleep_forever()
     elif scenario == "ignore_term":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        # A test that sends SIGTERM waits for this file, so the signal cannot
+        # arrive before the handler is in place.
+        ready = os.environ.get("ORCH_FAKE_READY")
+        if ready:
+            with open(ready, "w", encoding="utf-8") as handle:
+                handle.write("ready\n")
         sleep_forever()
     elif scenario == "usage_limit":
         print(USAGE_LIMIT_MESSAGE, flush=True)
