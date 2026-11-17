@@ -36,7 +36,17 @@ class Outcome(StrEnum):
 def validate_event(event: str) -> None:
     """Raise ValueError if event is not a known event kind."""
     if not isinstance(event, str) or (
-        event not in {"quota", "blocked", "needs_review", "input_wait", "test"}
+        event
+        not in {
+            "quota",
+            "blocked",
+            "needs_review",
+            "input_wait",
+            "test",
+            "user_wait",
+            "changes_requested_again",
+            "review_stalled",
+        }
         and not re.fullmatch(r"doctor_[a-z0-9_]+", event)
     ):
         raise ValueError("Invalid notification event")
