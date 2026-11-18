@@ -556,3 +556,30 @@ def get_run(conn: sqlite3.Connection, target: str) -> SyncRun | None:
         (target,),
     ).fetchone()
     return _run(row) if row else None
+
+
+def set_issue_url(
+    conn: sqlite3.Connection, *, target: str, record_id: str, issue_url: str
+) -> None:
+    """Record the issue of a record that had none, checking its repository."""
+    with store.transaction(conn):
+        record = _require_record(conn, target, record_id)
+        repo = repository(conn, target)
+        if repo is None or not _matches(
+            issue_url, rf"https://github\.com/{re.escape(repo)}/issues/[1-9][0-9]*"
+        ):
+            raise TrackingError("Invalid issue URL")
+        duplicate = conn.execute(
+            "SELECT 1 FROM tracking_records "
+            "WHERE target = ? AND record_id != ? AND issue_url = ?",
+            (target, record_id, issue_url),
+        ).fetchone()
+        if duplicate is not None:
+            raise TrackingError("Issue URL already belongs to another record")
+        if record.issue_url == issue_url:
+            return
+        conn.execute(
+            "UPDATE tracking_records SET issue_url = ? "
+            "WHERE target = ? AND record_id = ?",
+            (issue_url, target, record_id),
+        )
