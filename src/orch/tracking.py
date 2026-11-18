@@ -556,3 +556,10 @@ def get_run(conn: sqlite3.Connection, target: str) -> SyncRun | None:
         (target,),
     ).fetchone()
     return _run(row) if row else None
+
+
+def set_issue_url(
+    conn: sqlite3.Connection, *, target: str, record_id: str, issue_url: str
+) -> None:
+    """Record the issue of a record that had none, checking its repository."""
+    raise NotImplementedError
