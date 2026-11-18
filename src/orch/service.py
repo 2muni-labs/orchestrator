@@ -11,7 +11,7 @@ from typing import Final
 
 from orch.terminal import SessionProbe, TmuxTerminal
 
-LABELS: Final = ("orch.session", "orch.doctor", "orch.gc")
+LABELS: Final = ("orch.session", "orch.doctor", "orch.gc", "orch.track")
 LAUNCHCTL: Final = "/bin/launchctl"
 PLUTIL: Final = "/usr/bin/plutil"
 
@@ -74,6 +74,9 @@ def agent_plist(
         case "orch.gc":
             arguments = [str(orch), "gc"]
             schedule = {"StartCalendarInterval": {"Hour": 4, "Minute": 0}}
+        case "orch.track":
+            arguments = [str(orch), "track", "sync", "--all"]
+            schedule = {"StartInterval": 600}
         case _:
             raise ValueError(f"Unknown agent label: {label}")
     environment = {"ORCH_HUB": str(hub), "PATH": agent_path(orch=orch, tmux=tmux)}

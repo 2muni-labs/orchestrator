@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final
 
-from orch import config, gc, lifecycle, notify, service, store
+from orch import config, gc, lifecycle, notify, service, store, tracking, tracksync
 from orch.config import Config, Target
 from orch.gc import GcReport
 from orch.lifecycle import KillReport
@@ -82,6 +82,9 @@ def run_doctor(
                 return CheckLevel.OK, None
             return CheckLevel.WARN, status.value
 
+        if item == "track_sync":
+            return track_sync_check(conn, target, now=now)
+
         if item == "disk":
             result = _disk_check(free_bytes(orch_home), disk_warn_gb, disk_fail_gb)
             if result[0] is not CheckLevel.OK:
@@ -152,11 +155,15 @@ def run_doctor(
                     else:
                         store.remove_pause(conn, item)
         except Exception as exc:
-            label = f"{target}/{item}" if item == "main_session" else item
+            label = (
+                f"{target}/{item}" if item in ("main_session", "track_sync") else item
+            )
             errors.append(f"{label} {type(exc).__name__}")
 
     for name in sorted(targets):
         process_item("main_session", name)
+    for name in sorted(targets):
+        process_item("track_sync", name)
     for item in ("claude_auth", "codex_auth", "github_app", "disk", "network"):
         process_item(item)
 
@@ -202,7 +209,20 @@ def track_sync_check(
     conn: sqlite3.Connection, target: str, *, now: datetime
 ) -> tuple[CheckLevel, str | None] | None:
     """Judge a target's GitHub tracking sync from its last runs."""
-    raise NotImplementedError
+    if tracking.repository(conn, target) is None:
+        return None
+    run = tracking.get_run(conn, target)
+    if run is None:
+        return CheckLevel.WARN, "never_run"
+    if run.consecutive_failures >= tracksync.FAILURE_NOTIFY_AFTER:
+        return CheckLevel.WARN, "failing"
+    if run.last_success_at is None:
+        return CheckLevel.OK, None
+    if now - datetime.fromisoformat(run.last_success_at) > timedelta(
+        seconds=TRACK_STALE_SEC
+    ):
+        return CheckLevel.WARN, "stale"
+    return CheckLevel.OK, None
 
 
 def _disk_check(free: int, warn_gb: int, fail_gb: int) -> tuple[CheckLevel, str]:
