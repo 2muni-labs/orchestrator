@@ -32,6 +32,8 @@ from orch import (
     service,
     store,
     taskfile,
+    tracking,
+    tracksync,
     waiter,
     watch,
 )
@@ -167,6 +169,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     sandbox_run.add_argument("--dir")
     sandbox_run.add_argument("argv", nargs=argparse.REMAINDER)
+    track = commands.add_parser("track").add_subparsers(
+        dest="track_command", required=True
+    )
+    track_sync = track.add_parser("sync")
+    track_sync.add_argument("--dry-run", action="store_true")
+    track_sync.add_argument("--all", action="store_true")
+    track_sync.add_argument("--target")
+    track.add_parser("import").add_argument("--target")
+    track_bind = track.add_parser("bind")
+    track_bind.add_argument("task_id")
+    track_bind.add_argument("record")
+    track_bind.add_argument("--target")
+    track_accept = track.add_parser("accept")
+    track_accept.add_argument("record")
+    track_accept.add_argument("--target")
+    track.add_parser("status").add_argument("--target")
     return parser
 
 
@@ -305,9 +323,156 @@ def _refresh_todos(
             warn(exc)
 
 
+def _track(
+    args: argparse.Namespace, secrets: list[str]
+) -> tuple[int, dict[str, object]]:
+    """Run one orch track command."""
+    orch_home, hub = _environment("track", require_hub=True)
+    assert hub is not None
+    all_targets = args.track_command == "sync" and args.all
+    if all_targets:
+        if args.target is not None or "ORCH_TARGET" in os.environ:
+            raise _UsageError("--all cannot be combined with --target or ORCH_TARGET")
+        registered = config.load_targets(hub / "targets.toml")
+        targets = [registered[name] for name in sorted(registered)]
+    else:
+        name = args.target or os.environ.get("ORCH_TARGET")
+        if not name:
+            raise _UsageError("--target or ORCH_TARGET is required")
+        if args.target is not None:
+            _check_target(name)
+        targets = [_target(hub, name)]
+
+    with closing(store.connect(config.state_db_path(orch_home))) as conn:
+        if args.track_command == "sync":
+            settings = config.load_config(orch_home)
+            if settings.notify_topic:
+                secrets.append(settings.notify_topic)
+            reports: list[dict[str, object]] = []
+            for target in targets:
+                try:
+                    if not args.dry_run:
+                        config.target_paths(orch_home, target.name).root.mkdir(
+                            parents=True, exist_ok=True
+                        )
+                    report = tracksync.sync(
+                        conn=conn,
+                        target=target.name,
+                        github_repo=target.github,
+                        orch_home=orch_home,
+                        home=Path.home(),
+                        now=datetime.now(UTC),
+                        token_provider=lambda: credentials.issue_token(
+                            orch_home, secrets
+                        ),
+                        notify_failure=lambda name=target.name: _send_notification(
+                            "doctor_track_failed",
+                            settings=settings,
+                            orch_home=orch_home,
+                            home=Path.home(),
+                            secrets=secrets,
+                            target=name,
+                        ),
+                        dry_run=args.dry_run,
+                    )
+                    reports.append(asdict(report))
+                except Exception:
+                    if not all_targets:
+                        raise
+                    reports.append({"target": target.name, "outcome": "error"})
+            if any(
+                report["outcome"] in {"failed", "error"} or report.get("failed")
+                for report in reports
+            ):
+                return 20, {
+                    "ok": False,
+                    "error": "track_failed",
+                    "message": "GitHub 작업 기록 동기화에 실패한 기록이 있습니다.",
+                    "reports": reports,
+                }
+            return 0, {"ok": True, "reports": reports}
+
+        target = targets[0]
+        name = target.name
+        if args.track_command == "import":
+            path = config.target_paths(orch_home, name).root / tracksync.FILE_NAME
+            if not path.is_file():
+                raise tracking.TrackingError("Tracking file not found")
+            contents = tracking.load_file(path, target=name)
+            if contents.repository.lower() != target.github.lower():
+                raise tracking.TrackingError("Tracking repository differs from target")
+            imported = tracking.import_file(
+                conn, path, target=name, at=datetime.now(UTC).isoformat()
+            )
+            return 0, {"ok": True, "target": name, **asdict(imported)}
+
+        if args.track_command in {"bind", "accept"}:
+            record = tracking.resolve(conn, name, args.record)
+            if record is None:
+                raise tracking.TrackingError(f"Record not found: {args.record}")
+            if args.track_command == "bind":
+                changed = tracking.bind_task(
+                    conn,
+                    target=name,
+                    task_id=args.task_id,
+                    record_id=record.record_id,
+                )
+                return 0, {
+                    "ok": True,
+                    "target": name,
+                    "task_id": args.task_id,
+                    "record_id": record.record_id,
+                    "changed": changed,
+                }
+            changed = tracking.accept_record(
+                conn,
+                target=name,
+                record_id=record.record_id,
+                at=datetime.now(UTC).isoformat(),
+            )
+            accepted = tracking.resolve(conn, name, record.record_id)
+            assert accepted is not None
+            return 0, {
+                "ok": True,
+                "target": name,
+                "record_id": accepted.record_id,
+                "accepted_at": accepted.accepted_at,
+                "changed": changed,
+            }
+
+        records = tracking.list_records(conn, name)
+        by_owner: dict[str, int] = {}
+        failing: list[dict[str, object]] = []
+        for record in sorted(records, key=lambda record: record.record_id):
+            owner = record.completion_owner
+            by_owner[owner] = by_owner.get(owner, 0) + 1
+            state = tracking.get_state(conn, name, record.record_id)
+            if state is not None and state.failures > 0:
+                failing.append(
+                    {
+                        "record_id": record.record_id,
+                        "failures": state.failures,
+                        "last_error": state.last_error,
+                    }
+                )
+        run = tracking.get_run(conn, name)
+        return 0, {
+            "ok": True,
+            "target": name,
+            "repository": tracking.repository(conn, name),
+            "records": len(records),
+            "by_owner": dict(sorted(by_owner.items())),
+            "accepted": sum(record.accepted_at is not None for record in records),
+            "failing": failing,
+            "run": asdict(run) if run is not None else None,
+        }
+
+
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "track":
+        return _track(args, secrets)
     if args.command == "sandbox":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv:
@@ -904,6 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
             prflow.PullRequestFlowError,
             config.ConfigError,
             taskfile.TaskFileError,
+            tracking.TrackingError,
             store.TaskNotFoundError,
             store.StateMismatchError,
             store.IllegalTransitionError,
