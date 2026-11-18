@@ -214,14 +214,50 @@ it is installed, your only part is the binding at plan time:
   on: the plan does not wait for GitHub. A login failure or a hook denial still
   follows the stop rules.
 
+## Work priority and dependencies
+
+Follow the hub's `docs/operations/work-priority.md` at every planning review.
+Its tracking issue links the priority/automatic-ordering discussion when published;
+read that as a proposal and recheck current implementation before planning it. Before
+approving a bundle, persist it in `R/plans/<bundle-id>.md` using
+`templates/work-plan.md`. This is a main-agent policy, not a scheduler feature.
+
+- Record each item's record/task id, issue and project, work priority P0–P3,
+  reason, readiness, hard predecessors, soft ordering, completion evidence and
+  review date. Use `none` for no dependency and `unknown` for missing evidence.
+- Work priority is separate from risk grade and review severity. It never waives
+  gates, tests, sandboxing or approval boundaries. Select eligible work by priority,
+  then by what unblocks the current milestone, then oldest approved work. Explain
+  temporary promotion of prerequisites. Never preempt running tasks automatically.
+- Use existing TOML `depends_on` for executable task predecessors. Record external
+  issue/project, decision, measurement, installation and acceptance dependencies in
+  the task body's Planning section and check them before dispatch. An issue number
+  is not a task id. Resolve unknown evidence and cycles before dispatch.
+- Copy approved priority, reason and dependency evidence into the task body and a
+  main-owned Planning block in the issue, outside sync-managed progress. Mirror
+  priority to the project's Priority field when it exists. Record missing fields or
+  failed writes as pending sync in the local plan and continue authorized local work.
+- The local plan owns priority and external dependency decisions; `state.db` owns
+  execution state. Reconcile user edits in GitHub into the plan at the next review.
+  Never put unsupported fields in task TOML or `github-tracking.json`.
+- At planning, before dispatch, after predecessor completion/discard and at handoff,
+  refresh dependency evidence and append a dated old/new change, its reason and
+  affected successors. Report blockers, next eligible work and pending GitHub writes.
+  Link the plan from task bodies; do not edit the generated `TODO.md`.
+- A merge does not satisfy an installation or real-world acceptance dependency.
+  Aggregate issues retain their own acceptance criteria.
+- `orch next` considers queued tasks oldest first. Plan/GitHub priorities do not
+  reorder that queue. Dispatch small eligible bundles; never discard, resume or
+  alter database rows merely to change priority.
+
 ## Procedure
 
 You run tasks through the installed `orch` (`~/.local/bin/orch`).
 
 | # | Step | What to do |
 | --- | --- | --- |
-| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. Then bind each approved record to its issue in the target repository (GitHub work tracking). |
-| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including the confirmed GitHub tracking links in the body. |
+| 0 | Plan | Report the task list (id, purpose, priority and reason, readiness, grade, lane, modify, dependencies and evidence) and get user approval. Then bind each approved record to its issue in the target repository (GitHub work tracking). |
+| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including confirmed GitHub links and the Planning section in the body. |
 | 2 | Prepare | `orch prepare R/tasks/<id>.md`. It fetches, creates `R/worktrees/<id>` on branch `task/<id>` from the default branch, and runs the target's setup command. It refuses a used id, an unregistered dependency, and a `modify` that reaches a shared path or `tests/`. |
 | 3 | Tests first | Write tests and interface stubs (bodies raise a not-implemented error) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. Then check that the fields, functions and state names the spec mentions match the tests. |
 | 4 | Dispatch | `orch dispatch <id>`. It refuses unless the range holds exactly one commit. `reserved` goes on to step 5. `queued` waits for the reasons in `waiting_for`; run `orch next` on each completion notice. `blocked` means a dependency was discarded. |

@@ -13,8 +13,8 @@ verify = ".venv/bin/python -m pytest tests/test_<module>.py"  # no network, no w
 depends_on = []
 # tests = "none"              # L1 only: dispatch without a test commit
 # review = true               # risk area: adds a review; L3 and L3R always get one
-# milestone = "M17"           # roadmap milestone id; accepted from orch 0.15.0 (schema v6)
-# replaces = "<old-task-id>"  # the discarded task this one replaces; from orch 0.15.0
+# milestone = "M17"           # planned schema v6; enable only after parser support ships
+# replaces = "<old-task-id>"  # planned schema v6; currently record in body only
 +++
 
 <!-- Write the body in Korean. Keep identifiers and paths in English. -->
@@ -37,6 +37,24 @@ depends_on = []
      Completion owner: task | aggregate | harness | manual
      Replaces: <old task/issue if discarded and reissued; otherwise none>
      Do not close an aggregate issue because this one task merged. -->
+
+# Planning
+
+<!-- Required main-owned body data, NOT new TOML fields. Replace placeholders. -->
+
+- Plan: <R/plans/bundle-id.md and record id>
+- Work priority: <P0 | P1 | P2 | P3>
+- Priority reason: <impact, time constraint or milestone unblocked>
+- Readiness: <ready | blocked | needs-decision | needs-verification | on-hold>
+- Hard task dependencies: <same ids as depends_on, or none>
+- External dependencies: <issue/project/decision/install/measurement, or none>
+- Dependency completion evidence: <verified references, or unknown>
+- Soft ordering: <preferred predecessor and reason, or none>
+- Unblocks: <successor ids/URLs, or none>
+- Reviewed at: <ISO date>
+- Pending GitHub sync: <none, or operation/error/next action>
+
+<!-- Keep dated changes in the plan. Priority does not reorder orch next. -->
 
 # Interface
 
