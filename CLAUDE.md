@@ -70,12 +70,13 @@ outside the sandbox, before that code merges.
 
 ## Hub GitHub tracking
 
-- Apply `config/main.md` GitHub work tracking to the hub itself. Seed the runtime
-  bindings from `docs/github-tracking.json`; it records the existing eight groups
-  and their issues. Projects #3 (oldest group) and #2 (Codex work) are reused.
+- Apply `config/main.md` GitHub work tracking to the hub itself. The runtime
+  bindings were seeded from `docs/github-tracking.json`, which records the existing
+  eight groups and their issues, and imported into `state.db` on the first sync
+  (2026-11-18). Projects #3 (oldest group) and #2 (Codex work) are reused.
 - A harness pull request has a tracking issue even though it has no orch task. Its
-  record names the `task/<id>` branch, so the sync can close the issue when the pull
-  request merges.
+  record names the `task/<id>` branch, and once the pull request is open, its
+  `pr_url`, so the sync can close the issue when the pull request merges.
 - Update the reviewed seed only through a pull request, when recovery data or group
   definitions change. Never commit the runtime file or replace `TODO.md` with
   GitHub data.
