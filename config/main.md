@@ -190,22 +190,37 @@ GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 
 ## GitHub work tracking
 
-The target repository's issues and Projects show the work (ADR 0024). Code outside
-the main session, `orch track sync`, will keep them in step with `state.db`. Until
-it is installed, your only part is the binding at plan time:
+The target repository's issues and Projects show the work (ADR 0024).
+`orch track sync`, which the launchd agent `orch.track` runs every 10 minutes for
+every target, keeps them in step with `state.db`. Your part is the binding at plan
+time and the facts the sync cannot see. In the session, `ORCH_TARGET` selects the
+target of each `orch track` command.
 
 - `state.db`, task, result and review files, gates and git stay the evidence.
   GitHub only shows it: an issue edit or a project move never dispatches, retries,
   approves, merges or changes a task.
-- After the plan is approved, write each approved record to `R/github-tracking.json`
-  with the ids of its tasks: its existing issue, or a new issue you create in the
-  **target repository** with a Korean title and add to its group project. Put the
+- After the plan is approved, give each approved record an issue: its existing
+  issue, or a new issue you create in the **target repository** with a Korean title
+  and add to its group project. Add new records, with their `issue_url` and the ids
+  of their tasks, to `R/github-tracking.json`, then run `orch track import`. Bind a
+  task to an existing record with `orch track bind <task-id> <record>`. Put the
   issue link in the task body, never in the TOML front matter. Start the file from
   the target's `docs/github-tracking.json` when there is one, and never overwrite an
   existing runtime file. The format is in the hub's `docs/design/실행 설계.md`,
   "GitHub 작업 기록".
-- Do not update issue states, project Status or comments as the work moves. The
-  sync computes them from `state.db` and corrects what drifted in the meantime.
+- Keep every record's `issue_url` in the file once it has one: an import replaces
+  the stored record with the file's.
+- After you open a harness pull request, add its `pr_url` to the record and run
+  `orch track import` again. The sync follows a harness record's `pr_url`; it does
+  not look up the branch.
+- When the user accepts a measurement or an aggregate record, run
+  `orch track accept <record>`. Without an acceptance the sync never closes a
+  `manual` or `aggregate` issue.
+- Do not update issue states, project Status or comments yourself. The sync
+  computes them from `state.db` and corrects what drifted. To show a change before
+  the next run, run `orch track sync`. `orch track status` lists failing records;
+  `orch doctor` warns (`track_sync`) when a target's sync has not succeeded for an
+  hour or failed three times in a row.
 - Use the App bot only, as in GitHub authentication, and write request bodies as
   scratchpad files (`gh api graphql --input <file>`, `--body-file <file>`). Send
   short summaries and links only; never logs, configuration, secrets or personal
