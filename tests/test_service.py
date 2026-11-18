@@ -135,7 +135,7 @@ def plist(label: str, **kwargs: object) -> dict[str, object]:
 
 
 def test_the_labels_match_the_design() -> None:
-    assert LABELS == ("orch.session", "orch.doctor", "orch.gc")
+    assert LABELS == ("orch.session", "orch.doctor", "orch.gc", "orch.track")
 
 
 @pytest.mark.parametrize(
@@ -144,6 +144,7 @@ def test_the_labels_match_the_design() -> None:
         ("orch.session", ["service", "restore"]),
         ("orch.doctor", ["doctor"]),
         ("orch.gc", ["gc"]),
+        ("orch.track", ["track", "sync", "--all"]),
     ],
 )
 def test_each_agent_runs_the_absolute_orch(label: str, arguments: list[str]) -> None:
@@ -203,6 +204,15 @@ def test_the_gc_agent_runs_once_a_day_and_not_at_load() -> None:
     assert schedule_keys(plist("orch.gc")) == {
         "StartCalendarInterval": {"Hour": 4, "Minute": 0}
     }
+
+
+def test_the_track_agent_runs_every_ten_minutes_and_not_at_load() -> None:
+    assert schedule_keys(plist("orch.track")) == {"StartInterval": 600}
+
+
+def test_the_track_agent_has_no_session_target() -> None:
+    environment = plist("orch.track")["EnvironmentVariables"]
+    assert "ORCH_TARGET" not in environment  # type: ignore[operator]
 
 
 def test_an_unknown_label_is_refused() -> None:
@@ -392,7 +402,7 @@ def test_uninstall_keeps_a_plist_it_could_not_unload_and_continues(
     report = uninstall(home=home, uid=UID, run=fake)
     assert report == ServiceReport(
         ok=False,
-        done=("orch.doctor", "orch.gc"),
+        done=("orch.doctor", "orch.gc", "orch.track"),
         failed=("orch.session bootout exit=5",),
     )
     assert (agents(home) / "orch.session.plist").exists()

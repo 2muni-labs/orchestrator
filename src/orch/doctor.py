@@ -23,6 +23,7 @@ TAILSCALE: Final = "/usr/local/bin/tailscale"
 STUCK_MARGIN_SEC: Final = 600
 EXPIRY_WARN_DAYS: Final = 7
 PAUSE_ITEMS: Final = frozenset({"claude_auth", "codex_auth", "disk"})
+TRACK_STALE_SEC: Final = 3600
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -195,6 +196,13 @@ def run_doctor(
         errors=tuple(errors),
         gc=gc_report,
     )
+
+
+def track_sync_check(
+    conn: sqlite3.Connection, target: str, *, now: datetime
+) -> tuple[CheckLevel, str | None] | None:
+    """Judge a target's GitHub tracking sync from its last runs."""
+    raise NotImplementedError
 
 
 def _disk_check(free: int, warn_gb: int, fail_gb: int) -> tuple[CheckLevel, str]:
