@@ -167,6 +167,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     sandbox_run.add_argument("--dir")
     sandbox_run.add_argument("argv", nargs=argparse.REMAINDER)
+    track = commands.add_parser("track").add_subparsers(
+        dest="track_command", required=True
+    )
+    track_sync = track.add_parser("sync")
+    track_sync.add_argument("--dry-run", action="store_true")
+    track_sync.add_argument("--all", action="store_true")
+    track_sync.add_argument("--target")
+    track.add_parser("import").add_argument("--target")
+    track_bind = track.add_parser("bind")
+    track_bind.add_argument("task_id")
+    track_bind.add_argument("record")
+    track_bind.add_argument("--target")
+    track_accept = track.add_parser("accept")
+    track_accept.add_argument("record")
+    track_accept.add_argument("--target")
+    track.add_parser("status").add_argument("--target")
     return parser
 
 
@@ -305,9 +321,18 @@ def _refresh_todos(
             warn(exc)
 
 
+def _track(
+    args: argparse.Namespace, secrets: list[str]
+) -> tuple[int, dict[str, object]]:
+    """Run one orch track command."""
+    raise NotImplementedError
+
+
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "track":
+        return _track(args, secrets)
     if args.command == "sandbox":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv:
