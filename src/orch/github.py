@@ -123,6 +123,7 @@ def _gh(token: str, *args: str, input_text: str | None = None) -> str:
         env.pop(name, None)
     env.update(GH_TOKEN=token, GH_PROMPT_DISABLED="1")
     failed = False
+    not_found = False
     stdout = stderr = ""
     try:
         process = subprocess.Popen(
@@ -139,6 +140,9 @@ def _gh(token: str, *args: str, input_text: str | None = None) -> str:
             stdout, stderr = process.communicate(
                 input=input_text, timeout=GH_TIMEOUT_SEC
             )
+            not_found = process.returncode != 0 and stderr.replace(
+                token, ""
+            ).rstrip().endswith("(HTTP 404)")
         except subprocess.TimeoutExpired:
             failed = True
             try:
@@ -151,7 +155,8 @@ def _gh(token: str, *args: str, input_text: str | None = None) -> str:
         failed = True
     if failed:
         safe_stderr = stderr.replace(token, "[REDACTED]")[:500]
-        raise GitHubError(f"{' '.join(args[:2])}: {safe_stderr}")
+        error = GitHubNotFoundError if not_found else GitHubError
+        raise error(f"{' '.join(args[:2])}: {safe_stderr}")
     return stdout
 
 
@@ -533,3 +538,505 @@ def compare(*, github: str, base: str, head: str, token: str) -> Comparison:
     except KeyError, TypeError, ValueError:
         pass
     raise GitHubError("api: Invalid response")
+
+
+# GitHub work tracking: issues and Projects v2 (measured on gh 2.102.0, 2026-11-18)
+
+ISSUE_MARKER_PATTERN = (
+    r"<!-- orch-task:[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._-]* -->"
+)
+BLOCK_BEGIN = "<!-- orch-progress:begin -->"
+BLOCK_END = "<!-- orch-progress:end -->"
+ISSUE_REASONS = ("completed", "not_planned")
+ISSUE_LIST_LIMIT = 100
+
+PROJECT_QUERY = (
+    "query($owner:String!,$number:Int!){organization(login:$owner){"
+    'projectV2(number:$number){id number field(name:"Status"){'
+    "... on ProjectV2SingleSelectField{id options{id name}}}}}}"
+)
+ADD_ITEM_MUTATION = (
+    "mutation($project:ID!,$content:ID!){addProjectV2ItemById("
+    "input:{projectId:$project,contentId:$content}){item{id}}}"
+)
+ISSUE_ITEMS_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){"
+    "repository(owner:$owner,name:$name){issue(number:$number){"
+    'projectItems(first:50){nodes{id project{id} fieldValueByName(name:"Status"){'
+    "... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}"
+)
+SET_STATUS_MUTATION = (
+    "mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){"
+    "updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,"
+    "fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}"
+)
+
+
+class GitHubNotFoundError(GitHubError):
+    """gh reported HTTP 404 for a REST call."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Issue:
+    """An issue as GitHub reports it."""
+
+    number: int
+    node_id: str
+    url: str
+    title: str
+    state: str
+    state_reason: str | None
+    body: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Project:
+    """An organization project and its Status field."""
+
+    id: str
+    owner: str
+    number: int
+    status_field_id: str
+    status_options: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProjectItem:
+    """An issue's item in one project and its Status, if set."""
+
+    id: str
+    project_id: str
+    status: str | None
+
+
+def _validate_repository(github: str) -> None:
+    if not isinstance(github, str) or re.fullmatch(_GITHUB_PATTERN, github) is None:
+        raise GitHubError("Invalid repository")
+
+
+def _validate_owner(owner: str) -> None:
+    if (
+        not isinstance(owner, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", owner) is None
+    ):
+        raise GitHubError("Invalid owner")
+
+
+def _positive_number(number: object) -> bool:
+    return isinstance(number, int) and not isinstance(number, bool) and number > 0
+
+
+def _validate_number(number: int) -> None:
+    if not _positive_number(number):
+        raise GitHubError("Invalid number")
+
+
+def _node_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_=-]{1,200}", value) is not None
+    )
+
+
+def _validate_node_id(value: str) -> None:
+    if not _node_id(value):
+        raise GitHubError("Invalid node id")
+
+
+def _api_json(stdout: str) -> object:
+    """Parse an API answer without exposing its body in errors."""
+    try:
+        return json.loads(stdout)
+    except ValueError, RecursionError:
+        raise GitHubError("api: Invalid response") from None
+
+
+def _api_object(stdout: str, *path: str) -> dict:
+    """Read an object at a required path in an API answer."""
+    value = _api_json(stdout)
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            raise GitHubError("api: Invalid response")
+        value = value[key]
+    if not isinstance(value, dict):
+        raise GitHubError("api: Invalid response")
+    return value
+
+
+def _issue_response(stdout: str, *, github: str, number: int | None = None) -> Issue:
+    answer = _api_object(stdout)
+    if "pull_request" in answer:
+        raise GitHubError("api: Not an issue")
+    required = {
+        "number",
+        "node_id",
+        "html_url",
+        "title",
+        "state",
+        "state_reason",
+        "body",
+    }
+    if not required <= answer.keys():
+        raise GitHubError("api: Invalid response")
+    found_number = answer["number"]
+    if (
+        not _positive_number(found_number)
+        or (number is not None and found_number != number)
+        or not _node_id(answer["node_id"])
+        or not isinstance(answer["title"], str)
+        or answer["state"] not in ("open", "closed")
+        or (
+            answer["state_reason"] is not None
+            and not isinstance(answer["state_reason"], str)
+        )
+        or (answer["body"] is not None and not isinstance(answer["body"], str))
+    ):
+        raise GitHubError("api: Invalid response")
+    try:
+        url_number = issue_number(github=github, url=answer["html_url"])
+    except GitHubError:
+        raise GitHubError("api: Unexpected repository") from None
+    if url_number != found_number:
+        raise GitHubError("api: Unexpected repository")
+    return Issue(
+        number=found_number,
+        node_id=answer["node_id"],
+        url=answer["html_url"],
+        title=answer["title"],
+        state=answer["state"],
+        state_reason=answer["state_reason"],
+        body=answer["body"] if answer["body"] is not None else "",
+    )
+
+
+def issue_number(*, github: str, url: str) -> int:
+    """Return the number of an issue URL in the repository, or raise."""
+    _validate_repository(github)
+    pattern = rf"https://github\.com/(?i:{re.escape(github)})/issues/([0-9]+)"
+    match = re.fullmatch(pattern, url) if isinstance(url, str) else None
+    try:
+        number = int(match[1]) if match else 0
+    except ValueError:
+        raise GitHubError("Invalid issue URL") from None
+    if number <= 0:
+        raise GitHubError("Invalid issue URL")
+    return number
+
+
+def project_number(*, owner: str, url: str) -> int:
+    """Return the number of an organization project URL of the owner, or raise."""
+    _validate_owner(owner)
+    pattern = rf"https://github\.com/orgs/(?i:{re.escape(owner)})/projects/([0-9]+)"
+    match = re.fullmatch(pattern, url) if isinstance(url, str) else None
+    try:
+        number = int(match[1]) if match else 0
+    except ValueError:
+        raise GitHubError("Invalid project URL") from None
+    if number <= 0:
+        raise GitHubError("Invalid project URL")
+    return number
+
+
+def replace_managed_block(body: str, block: str) -> str:
+    """Replace or append the orch progress block, keeping the rest of the body."""
+    if BLOCK_BEGIN in block or BLOCK_END in block:
+        raise ValueError("Block contains a progress marker")
+    content = block.strip("\n")
+    begins = body.count(BLOCK_BEGIN)
+    ends = body.count(BLOCK_END)
+    if begins == ends == 0:
+        managed = f"{BLOCK_BEGIN}\n{content}\n{BLOCK_END}\n"
+        return body.rstrip("\n") + "\n\n" + managed if body.strip() else managed
+    if begins != 1 or ends != 1 or body.index(BLOCK_BEGIN) >= body.index(BLOCK_END):
+        raise ValueError("Malformed progress block")
+    start = body.index(BLOCK_BEGIN) + len(BLOCK_BEGIN)
+    end = body.index(BLOCK_END)
+    return body[:start] + "\n" + content + "\n" + body[end:]
+
+
+def get_issue(*, github: str, number: int, token: str) -> Issue:
+    """Read one issue of the repository."""
+    _validate_token(token)
+    _validate_repository(github)
+    _validate_number(number)
+    stdout = _gh(token, "api", f"repos/{github}/issues/{number}")
+    return _issue_response(stdout, github=github, number=number)
+
+
+def find_issues_by_marker(*, github: str, marker: str, token: str) -> tuple[int, ...]:
+    """Return the numbers of recent issues whose body has the marker line."""
+    _validate_token(token)
+    _validate_repository(github)
+    if (
+        not isinstance(marker, str)
+        or re.fullmatch(ISSUE_MARKER_PATTERN, marker) is None
+    ):
+        raise GitHubError("Invalid issue marker")
+    stdout = _gh(
+        token,
+        "api",
+        f"repos/{github}/issues?state=all&sort=created&direction=desc&per_page={ISSUE_LIST_LIMIT}",
+    )
+    answer = _api_json(stdout)
+    if not isinstance(answer, list):
+        raise GitHubError("api: Invalid response")
+    numbers = []
+    for item in answer:
+        if not isinstance(item, dict):
+            raise GitHubError("api: Invalid response")
+        if "pull_request" in item:
+            continue
+        if (
+            not _positive_number(item.get("number"))
+            or "body" not in item
+            or (item["body"] is not None and not isinstance(item["body"], str))
+        ):
+            raise GitHubError("api: Invalid response")
+        if any(line.strip() == marker for line in (item["body"] or "").splitlines()):
+            numbers.append(item["number"])
+    return tuple(sorted(numbers))
+
+
+def create_issue(
+    *, github: str, title: str, body: str, token: str, home: Path, orch_home: Path
+) -> Issue:
+    """Create an issue from redacted text."""
+    _validate_token(token)
+    _validate_repository(github)
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or len(title) > 256
+        or title.splitlines() != [title]
+    ):
+        raise GitHubError("Invalid issue title")
+    if (
+        not isinstance(body, str)
+        or not body.splitlines()
+        or re.fullmatch(ISSUE_MARKER_PATTERN, body.splitlines()[0]) is None
+    ):
+        raise GitHubError("Invalid issue marker")
+    title = redact(title, home=home, orch_home=orch_home, secrets=(token,))
+    body = redact(body, home=home, orch_home=orch_home, secrets=(token,))
+    stdout = _gh(
+        token,
+        "api",
+        "--method",
+        "POST",
+        f"repos/{github}/issues",
+        "--input",
+        "-",
+        input_text=json.dumps({"title": title, "body": body}, ensure_ascii=False),
+    )
+    return _issue_response(stdout, github=github)
+
+
+def update_issue_body(
+    *, github: str, number: int, body: str, token: str, home: Path, orch_home: Path
+) -> Issue:
+    """Replace an issue's body with redacted text."""
+    _validate_token(token)
+    _validate_repository(github)
+    _validate_number(number)
+    if not isinstance(body, str) or not body.strip():
+        raise GitHubError("Body must not be empty")
+    body = redact(body, home=home, orch_home=orch_home, secrets=(token,))
+    stdout = _gh(
+        token,
+        "api",
+        "--method",
+        "PATCH",
+        f"repos/{github}/issues/{number}",
+        "--input",
+        "-",
+        input_text=json.dumps({"body": body}, ensure_ascii=False),
+    )
+    return _issue_response(stdout, github=github, number=number)
+
+
+def set_issue_state(
+    *, github: str, number: int, state: str, reason: str | None, token: str
+) -> Issue:
+    """Open an issue, or close it with a reason."""
+    _validate_token(token)
+    _validate_repository(github)
+    _validate_number(number)
+    if state == "closed" and reason in ISSUE_REASONS:
+        payload = {"state": state, "state_reason": reason}
+    elif state == "open" and reason is None:
+        payload = {"state": state}
+    else:
+        raise GitHubError("Invalid issue state or reason")
+    stdout = _gh(
+        token,
+        "api",
+        "--method",
+        "PATCH",
+        f"repos/{github}/issues/{number}",
+        "--input",
+        "-",
+        input_text=json.dumps(payload, ensure_ascii=False),
+    )
+    issue = _issue_response(stdout, github=github, number=number)
+    if issue.state != state or (state == "closed" and issue.state_reason != reason):
+        raise GitHubError("api: Invalid response")
+    return issue
+
+
+def get_project(*, owner: str, number: int, token: str) -> Project:
+    """Read an organization project and its Status options."""
+    _validate_token(token)
+    _validate_owner(owner)
+    _validate_number(number)
+    stdout = _gh(
+        token,
+        "api",
+        "graphql",
+        "-f",
+        f"query={PROJECT_QUERY}",
+        "-f",
+        f"owner={owner}",
+        "-F",
+        f"number={number}",
+    )
+    answer = _api_object(stdout, "data", "organization", "projectV2")
+    field = answer.get("field")
+    if (
+        not _node_id(answer.get("id"))
+        or not _positive_number(answer.get("number"))
+        or answer["number"] != number
+        or not isinstance(field, dict)
+        or not _node_id(field.get("id"))
+        or not isinstance(field.get("options"), list)
+    ):
+        raise GitHubError("api: Invalid response")
+    options = {}
+    for option in field["options"]:
+        if (
+            not isinstance(option, dict)
+            or not _node_id(option.get("id"))
+            or not isinstance(option.get("name"), str)
+            or not option["name"]
+            or option["name"] in options
+        ):
+            raise GitHubError("api: Invalid response")
+        options[option["name"]] = option["id"]
+    return Project(
+        id=answer["id"],
+        owner=owner,
+        number=number,
+        status_field_id=field["id"],
+        status_options=options,
+    )
+
+
+def add_project_item(*, project: Project, issue: Issue, token: str) -> str:
+    """Add an issue to a project and return the item id. Adding twice is harmless."""
+    _validate_token(token)
+    _validate_node_id(project.id)
+    _validate_node_id(issue.node_id)
+    stdout = _gh(
+        token,
+        "api",
+        "graphql",
+        "-f",
+        f"query={ADD_ITEM_MUTATION}",
+        "-f",
+        f"project={project.id}",
+        "-f",
+        f"content={issue.node_id}",
+    )
+    item = _api_object(stdout, "data", "addProjectV2ItemById", "item")
+    if not _node_id(item.get("id")):
+        raise GitHubError("api: Invalid response")
+    return item["id"]
+
+
+def issue_project_item(
+    *, github: str, number: int, project: Project, token: str
+) -> ProjectItem | None:
+    """Return the issue's item in the project with its Status, or None."""
+    _validate_token(token)
+    _validate_repository(github)
+    _validate_number(number)
+    _validate_node_id(project.id)
+    owner, name = github.split("/")
+    stdout = _gh(
+        token,
+        "api",
+        "graphql",
+        "-f",
+        f"query={ISSUE_ITEMS_QUERY}",
+        "-f",
+        f"owner={owner}",
+        "-f",
+        f"name={name}",
+        "-F",
+        f"number={number}",
+    )
+    connection = _api_object(stdout, "data", "repository", "issue", "projectItems")
+    nodes = connection.get("nodes")
+    if not isinstance(nodes, list):
+        raise GitHubError("api: Invalid response")
+    matches = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise GitHubError("api: Invalid response")
+        node_project = node.get("project")
+        field = node.get("fieldValueByName")
+        if (
+            not _node_id(node.get("id"))
+            or not isinstance(node_project, dict)
+            or not isinstance(node_project.get("id"), str)
+            or "fieldValueByName" not in node
+            or (
+                field is not None
+                and field != {}
+                and (
+                    not isinstance(field, dict)
+                    or not isinstance(field.get("name"), str)
+                )
+            )
+        ):
+            raise GitHubError("api: Invalid response")
+        if node_project["id"] == project.id:
+            matches.append(
+                ProjectItem(
+                    id=node["id"],
+                    project_id=node_project["id"],
+                    status=field["name"] if field else None,
+                )
+            )
+    if len(matches) > 1:
+        raise GitHubError("api: Invalid response")
+    return matches[0] if matches else None
+
+
+def set_item_status(*, project: Project, item_id: str, status: str, token: str) -> None:
+    """Set an item's Status by option name."""
+    _validate_token(token)
+    _validate_node_id(project.id)
+    _validate_node_id(item_id)
+    _validate_node_id(project.status_field_id)
+    if not isinstance(status, str) or status not in project.status_options:
+        raise GitHubError("Invalid project status")
+    option = project.status_options[status]
+    _validate_node_id(option)
+    stdout = _gh(
+        token,
+        "api",
+        "graphql",
+        "-f",
+        f"query={SET_STATUS_MUTATION}",
+        "-f",
+        f"project={project.id}",
+        "-f",
+        f"item={item_id}",
+        "-f",
+        f"field={project.status_field_id}",
+        "-f",
+        f"option={option}",
+    )
+    item = _api_object(stdout, "data", "updateProjectV2ItemFieldValue", "projectV2Item")
+    if item.get("id") != item_id:
+        raise GitHubError("api: Invalid response")
