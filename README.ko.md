@@ -16,8 +16,8 @@ worktree에서 실행하여 테스트·검증·리뷰를 거쳐 GitHub PR로 전
 - SQLite 실행 기록, 자동 생성 TODO, tmux 메인 세션·상태 패널.
 - macOS sandbox 검증, 훅·명령 가드, 민감 정보 제거, doctor/launchd 운영.
 
-**구현 기준:** `b757a619`(2026-11-18), `pyproject.toml` 버전 `0.15.0`.
-GitHub tracking 저장소·동기화 엔진은 부분 구현이며 CLI/서비스 연결은 남아 있다.
+**구현 기준:** `1c191614`(2026-11-18), `pyproject.toml` 버전 `0.15.0`.
+GitHub tracking 저장소·동기화 엔진·CLI는 구현됐으며 서비스 연결은 남아 있다.
 웹 작업공간, 우선도 기반 자동 스케줄링은 아직 구현되지 않았다.
 현재 설치된 orch와 이 소스 기준은 별도로 확인해야 한다.
 

@@ -2,7 +2,7 @@
 
 [English](features.md) | 한국어
 
-기준: `b757a619`, 2026-11-18. 코드는 [src/orch](../../src/orch), 명령의 권위 있는
+기준: `1c191614`, 2026-11-18. 코드는 [src/orch](../../src/orch), 명령의 권위 있는
 목록은 [cli.py](../../src/orch/cli.py)의 `_parser()`다. 아래는 소스 구현 상태이며
 현재 머신에 설치·활성화된 기능의 보증이 아니다.
 
@@ -46,6 +46,7 @@
 | `orch doctor`, `orch gc [--dry-run]`, `orch notify test` | 건강 점검·보존 정리·알림 확인 |
 | `orch service install/uninstall/restore` | launchd 서비스 등록·삭제·세션 복구 |
 | `orch sandbox run --dir PATH -- COMMAND ...` | 게이트 프로필로 검증 실행 |
+| `orch track import/bind/accept/status/sync` | 대응표 import, task 연결, 인수 확인, 추적 조회·동기화 |
 | `orch hook NAME` | 설정에 주입되는 내부 hook 진입점 |
 
 대부분 명령은 JSON으로 결과를 보고한다. 상태 변경 명령은 현재 상태에 따라 거부될
@@ -65,9 +66,10 @@ alias 관계와 sync 상태를 관리한다. [tracksync.py](../../src/orch/track
 - aggregate/manual 소유: 개별 task 완료만으로 닫지 않으며 acceptance가 필요하다.
 - GitHub의 상태 편집이 로컬 task를 dispatch/merge시키지 않는다.
 
-기준 시점의 CLI parser에는 `track`이 없고 service에는 `orch.track`이 없다.
-따라서 엔진 구현만으로 상시 자동 동기화가 가동 중이라고 설명해서는 안 된다.
-#495–498의 CLI·서비스·출시·절차 연결 상태를 확인한다.
+기준 시점에 `orch track import/bind/accept/status/sync` CLI가 구현됐다.
+`sync`는 `--dry-run`, `--all`, `--target`을 지원하며 나머지는 `--target`으로 대상을 선택한다.
+service에는 아직 `orch.track`이 없다. CLI 구현만으로 상시 동기화가 가동 중이라고
+설명하지 않는다. #496–498의 서비스·출시·절차 연결과 설치 버전을 확인한다.
 
 ## 미구현 또는 설계 단계
 

@@ -2,7 +2,7 @@
 
 English | [한국어](runtime.ko.md)
 
-Baseline: `b757a619`, 2026-11-18. This describes the environment implemented by the
+Baseline: `1c191614`, 2026-11-18. This describes the environment implemented by the
 repository, not a verification of this host's installation, authentication, or active services.
 
 ## Technology
@@ -114,6 +114,6 @@ PR head. Share only short summaries and verified links externally. Distinguish a
 failures, quota, test failures, and report_missing. Recover blocked/orphaned tasks under
 the policy's approval boundaries; never repair state by manually changing DB rows.
 
-When GitHub lags, first inspect local execution evidence. Do not suggest `orch track`
-as an available command on versions without CLI/service wiring. Check installed
+When GitHub lags, first inspect local execution evidence. The CLI now exists in source, but do not suggest `orch track`
+as available on an installed version that predates its integration. Check installed
 support and record unapplied work as pending sync in the plan.

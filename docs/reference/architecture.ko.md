@@ -2,7 +2,7 @@
 
 [English](architecture.md) | 한국어
 
-기준: `b757a619`, 2026-11-18. 현재 백엔드는 로컬 Python CLI와 subprocess,
+기준: `1c191614`, 2026-11-18. 현재 백엔드는 로컬 Python CLI와 subprocess,
 SQLite, tmux, launchd로 구성된다. 상시 HTTP API 서버나 웹 프런트엔드는 없다.
 
 ## 구성과 소유권
@@ -38,7 +38,7 @@ flowchart TD
 | Git/GitHub | gitops, github, prflow, waiter, credentials | 변경·PR·인증·원격 상태 관찰 |
 | 관측/운용 | render, watch, terminal, doctor, service, gc, notify | 파생 뷰·tmux·건강 점검·정리·알림 |
 | 안전 정책 | guard, hooks, redact | 훅 입력과 명령 검사, 출력의 민감 정보 제거 |
-| 작업 추적 | tracking, tracksync | 대응표와 동기화 엔진; CLI/상시 서비스 연결은 별도 |
+| 작업 추적 | tracking, tracksync | 대응표와 동기화 엔진; 상시 서비스 연결은 별도 |
 
 ## 작업 수명
 

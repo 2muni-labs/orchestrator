@@ -16,9 +16,9 @@ repositories. The Python runtime uses only the standard library. Agents do not m
 - SQLite execution records, generated TODO views, and tmux main sessions and status panels.
 - macOS sandbox verification, hooks and command guards, redaction, doctor, and launchd services.
 
-**Implementation baseline:** `b757a619` (2026-11-18); declared package version `0.15.0`.
-GitHub tracking storage and the synchronization engine are partially implemented;
-CLI and service wiring remain. The web workspace and priority-based automatic
+**Implementation baseline:** `1c191614` (2026-11-18); declared package version `0.15.0`.
+GitHub tracking storage, synchronization engine, and CLI are implemented;
+service wiring remains. The web workspace and priority-based automatic
 scheduling are not implemented. Check the installed binary separately from this source baseline.
 
 ## Documentation

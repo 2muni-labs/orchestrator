@@ -3,7 +3,7 @@
 English | [한국어](README.ko.md)
 
 This index separates implemented behavior, operations, design requirements, and future
-plans. Implementation descriptions use source commit `b757a619` (2026-11-18), whose
+plans. Implementation descriptions use source commit `1c191614` (2026-11-18), whose
 package declares version `0.15.0`. Source and installed binaries can differ even when
 the version string is the same; verify deployment separately.
 

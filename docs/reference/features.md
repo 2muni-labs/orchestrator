@@ -2,7 +2,7 @@
 
 English | [한국어](features.ko.md)
 
-Baseline: `b757a619`, 2026-11-18. Implementation lives in [src/orch](../../src/orch);
+Baseline: `1c191614`, 2026-11-18. Implementation lives in [src/orch](../../src/orch);
 the authoritative command list is `_parser()` in [cli.py](../../src/orch/cli.py).
 This describes source implementation, not the current machine's installed or enabled features.
 
@@ -46,6 +46,7 @@ merging belongs to the user or the designated verification workflow on the user'
 | `orch doctor`, `orch gc [--dry-run]`, `orch notify test` | Health, retention cleanup, notification test |
 | `orch service install/uninstall/restore` | Register/remove launchd services or restore sessions |
 | `orch sandbox run --dir PATH -- COMMAND ...` | Execute verification under the gate profile |
+| `orch track import/bind/accept/status/sync` | Import bindings, bind tasks, accept records, inspect or synchronize tracking |
 | `orch hook NAME` | Internal entry point for injected hooks |
 
 Most commands return JSON. State-changing commands can refuse an action based on the
@@ -66,9 +67,11 @@ dry runs, remote writes, verification, and failure recording.
 - Aggregate/manual ownership: require acceptance; one completed task does not close the aggregate.
 - Editing GitHub state does not dispatch or merge local tasks.
 
-The baseline CLI parser has no `track` command and service has no `orch.track` job.
-An implemented engine does not establish that continuous synchronization is running.
-Check #495–498 for CLI, service, release, and procedure integration.
+The baseline implements `orch track import/bind/accept/status/sync`. Sync supports
+`--dry-run`, `--all`, and `--target`; the other subcommands support `--target`.
+Service still has no `orch.track` job. CLI implementation does not establish that
+continuous synchronization is running. Check #496–498 and the installed version
+for service, release, and procedure integration.
 
 ## Unimplemented or design-stage features
 

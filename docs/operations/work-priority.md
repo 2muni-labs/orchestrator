@@ -3,7 +3,7 @@
 English | [한국어](work-priority.ko.md)
 
 This document separates required main-agent planning records from proposed GitHub
-configuration. Baseline: source `b757a619` and orch Projects #2–9 observed on 2026-11-18.
+configuration. Baseline: source `1c191614` and orch Projects #2–9 observed on 2026-11-18.
 Read [implemented features](../reference/features.md) and
 [main policy](../../config/main.md) alongside this document.
 
@@ -16,7 +16,7 @@ Read [implemented features](../reference/features.md) and
 | orch next | Inspect queued work in creation order | No priority ordering or automatic preemption |
 | TODO / status | Show execution state and some blocker information | No full dependency DAG or priority view |
 | GitHub Projects | All eight orch projects have Status | No Priority fields |
-| Tracking | Bindings and synchronization engine exist | Priority/dependency sync and CLI/service wiring remain |
+| Tracking | Bindings and synchronization engine exist | Priority/dependency sync and service wiring remain |
 
 `models.Severity.P0` is review finding severity, not business priority. L1–L3R defines
 risk/verification classification. Do not copy these values between concepts.

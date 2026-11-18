@@ -2,7 +2,7 @@
 
 English | [한국어](architecture.ko.md)
 
-Baseline: `b757a619`, 2026-11-18. The current backend consists of a local Python CLI,
+Baseline: `1c191614`, 2026-11-18. The current backend consists of a local Python CLI,
 subprocesses, SQLite, tmux, and launchd. There is no persistent HTTP API server or web frontend.
 
 ## Components and ownership
@@ -39,7 +39,7 @@ and Git holds actual changes. GitHub presents work for collaboration.
 | Git/GitHub | gitops, github, prflow, waiter, credentials | Changes, PRs, authentication, remote-state observation |
 | Operations | render, watch, terminal, doctor, service, gc, notify | Derived views, tmux, health, cleanup, notifications |
 | Safety policy | guard, hooks, redact | Hook input/command inspection and output redaction |
-| Work tracking | tracking, tracksync | Bindings and sync engine; CLI/service wiring is separate |
+| Work tracking | tracking, tracksync | Bindings and sync engine; service wiring is separate |
 
 ## Task lifecycle
 

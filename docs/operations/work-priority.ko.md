@@ -3,7 +3,7 @@
 [English](work-priority.md) | 한국어
 
 이 문서는 메인 에이전트의 계획·기록 규칙과 GitHub 운영 제안을 구분한다.
-기준은 2026-11-18의 소스 `b757a619` 및 같은 날 조회한 orch Projects #2–9이다.
+기준은 2026-11-18의 소스 `1c191614` 및 같은 날 조회한 orch Projects #2–9이다.
 소스 상태는 [구현 기능](../reference/features.ko.md), 실행 절차는
 [config/main.md](../../config/main.md)를 함께 읽는다.
 
@@ -16,7 +16,7 @@
 | `orch next` | queued 작업을 생성 순서로 검사 | Priority 정렬·자동 선점 없음 |
 | TODO / status | 실행 상태와 일부 차단 사유 표시 | 전체 의존 DAG·우선도 표시는 없음 |
 | GitHub Projects | orch 8개 프로젝트에 Status 있음 | Priority 필드 없음 |
-| tracking | issue/project 대응표·동기화 엔진 존재 | 우선도/의존관계 동기화, CLI·서비스 연결 미완료 |
+| tracking | issue/project 대응표·동기화 엔진 존재 | 우선도/의존관계 동기화와 서비스 연결 미완료 |
 
 `models.Severity.P0` 등은 리뷰 결함의 심각도이며 작업의 사업 우선도가 아니다.
 L1–L3R은 위험도/검증 분류다. 세 값을 서로 복사하지 않는다.
