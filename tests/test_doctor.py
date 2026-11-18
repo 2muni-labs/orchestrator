@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import config, doctor, lifecycle, notify, service, store
+from orch import config, doctor, lifecycle, notify, service, store, tracking, tracksync
 from orch.config import Config, Target, target_paths
 from orch.doctor import DoctorReport, run_doctor
 from orch.gc import GcReport
@@ -1675,3 +1675,176 @@ def test_a_stuck_task_alert_passes_no_level(
     h.go()
     assert "level" not in h.sent[0]
     assert h.sent[0]["dedup"] is False
+
+
+# track_sync: the GitHub tracking sync of each target
+
+
+def track_import(conn: sqlite3.Connection, orch_home: Path, name: str) -> None:
+    repo = f"owner/{name}"
+    text = json.dumps(
+        {
+            "schema_version": 1,
+            "target": name,
+            "repository": repo,
+            "projects": {
+                "G01": {"title": "p", "url": "https://github.com/orgs/owner/projects/1"}
+            },
+            "records": {
+                "r": {
+                    "title": "기록",
+                    "kind": "task",
+                    "issue_url": f"https://github.com/{repo}/issues/1",
+                    "project_key": "G01",
+                    "completion_owner": "task",
+                }
+            },
+            "tasks": {},
+            "aliases": {},
+        }
+    )
+    tracking.parse_file(text, target=name)
+    path = orch_home / name / "github-tracking.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    tracking.import_file(conn, path, target=name, at=NOW.isoformat())
+
+
+def track_runs(
+    conn: sqlite3.Connection, name: str, *errors: str | None, at: datetime = NOW
+) -> None:
+    for error in errors:
+        tracking.record_run(conn, target=name, at=at.isoformat(), error=error)
+
+
+def test_track_stale_after_an_hour() -> None:
+    assert doctor.TRACK_STALE_SEC == 3600
+    assert tracksync.FAILURE_NOTIFY_AFTER == 3
+
+
+def test_a_target_without_tracking_is_not_judged(conn: sqlite3.Connection) -> None:
+    assert doctor.track_sync_check(conn, "alpha", now=NOW) is None
+
+
+def test_an_imported_target_that_never_ran_is_a_warning(
+    conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    track_import(conn, orch_home, "alpha")
+    assert doctor.track_sync_check(conn, "alpha", now=NOW) == (
+        CheckLevel.WARN,
+        "never_run",
+    )
+
+
+@pytest.mark.parametrize(
+    ("errors", "age", "expected"),
+    [
+        ((None,), 0, (CheckLevel.OK, None)),
+        ((None,), 3600, (CheckLevel.OK, None)),
+        ((None,), 3601, (CheckLevel.WARN, "stale")),
+        ((None, "records_failed", "records_failed"), 600, (CheckLevel.OK, None)),
+        (
+            (None, "records_failed", "auth_failed", "records_failed"),
+            600,
+            (CheckLevel.WARN, "failing"),
+        ),
+        (("auth_failed",), 0, (CheckLevel.OK, None)),
+        (("auth_failed", "auth_failed"), 7200, (CheckLevel.OK, None)),
+        (("auth_failed",) * 3, 0, (CheckLevel.WARN, "failing")),
+        ((None, "records_failed", "records_failed"), 5000, (CheckLevel.WARN, "stale")),
+    ],
+)
+def test_track_sync_levels(
+    conn: sqlite3.Connection,
+    orch_home: Path,
+    errors: tuple[str | None, ...],
+    age: int,
+    expected: tuple[CheckLevel, str | None],
+) -> None:
+    track_import(conn, orch_home, "alpha")
+    track_runs(conn, "alpha", *errors, at=NOW - timedelta(seconds=age))
+    assert doctor.track_sync_check(conn, "alpha", now=NOW) == expected
+
+
+def test_doctor_checks_track_sync_per_target_after_the_main_sessions(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    add_target(h, "two", "one", "three")
+    record_for(orch_home, "one")
+    h.statuses["orch-one"] = MainPaneStatus.ALIVE
+    track_import(conn, orch_home, "two")
+    track_import(conn, orch_home, "one")
+    track_runs(conn, "one", None)
+    report = h.go()
+    assert [(c.target, c.item, c.level, c.detail) for c in report.checks[:3]] == [
+        ("one", "main_session", CheckLevel.OK, None),
+        ("one", "track_sync", CheckLevel.OK, None),
+        ("two", "track_sync", CheckLevel.WARN, "never_run"),
+    ]
+    assert report.checks[3].item == "claude_auth"
+    assert stored(conn, "track_sync", "two") is CheckLevel.WARN
+    assert stored(conn, "track_sync", "three") is None
+    assert report.errors == ()
+
+
+def test_a_track_sync_warning_alerts_once_and_never_pauses(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    add_target(h, "alpha")
+    track_import(conn, orch_home, "alpha")
+    track_runs(conn, "alpha", "auth_failed", "auth_failed", "auth_failed")
+    h.go()
+    h.go()
+    assert h.events() == ["doctor_track_sync"]
+    assert h.sent[0]["target"] == "alpha"
+    assert h.sent[0]["level"] == "warn"
+    assert pauses(conn) == []
+
+
+def test_track_sync_recovery_is_recorded_without_an_alert(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    add_target(h, "alpha")
+    track_import(conn, orch_home, "alpha")
+    h.go()
+    track_runs(conn, "alpha", None)
+    h.go()
+    assert h.events() == ["doctor_track_sync"]
+    assert stored(conn, "track_sync", "alpha") is CheckLevel.OK
+
+
+def test_a_track_sync_error_is_isolated(
+    h: Harness,
+    conn: sqlite3.Connection,
+    orch_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_target(h, "alpha")
+    track_import(conn, orch_home, "alpha")
+
+    def broken(conn: sqlite3.Connection, target: str) -> None:
+        raise RuntimeError("database is odd")
+
+    monkeypatch.setattr(tracking, "get_run", broken)
+    report = h.go()
+    assert report.errors == ("alpha/track_sync RuntimeError",)
+    assert [c.item for c in report.checks] == [
+        "claude_auth",
+        "codex_auth",
+        "github_app",
+        "disk",
+        "network",
+    ]
+
+
+def test_track_sync_never_reaches_github(
+    h: Harness, conn: sqlite3.Connection, orch_home: Path
+) -> None:
+    add_target(h, "alpha")
+    track_import(conn, orch_home, "alpha")
+    h.go()
+    assert [c[0] for c in h.commands].count(
+        str(orch_home / "bin" / "ghapp-token.sh")
+    ) == 1
+    source = Path(doctor.__file__).read_text(encoding="utf-8")
+    assert "tracksync.sync" not in source and "github." not in source
