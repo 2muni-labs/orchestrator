@@ -36,6 +36,16 @@ depends_on = []
      Replaces: <old task/issue if discarded and reissued; otherwise none>
      Do not close an aggregate issue because this one task merged. -->
 
+# Planning
+
+<!-- Main-owned; no new TOML fields. Keep the priority line format exactly:
+     orch reads it for R/plans/<group>.md (ADR 0025). Task dependencies go in
+     depends_on only. -->
+
+- 작업 우선도: P2
+- 우선도 이유: <영향, 기한 또는 풀리는 작업>
+- 그 밖의 선행 조건: <설치, 측정, 결정, 수락과 그 근거, 또는 없음>
+
 # Interface
 
 <!-- Signatures and schemas to implement. Omit if not applicable.
