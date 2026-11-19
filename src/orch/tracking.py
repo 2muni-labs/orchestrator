@@ -328,7 +328,10 @@ def repository(conn: sqlite3.Connection, target: str) -> str | None:
 
 def list_targets(conn: sqlite3.Connection) -> tuple[str, ...]:
     """Return the targets in tracking_targets, sorted."""
-    raise NotImplementedError
+    return tuple(
+        row[0]
+        for row in conn.execute("SELECT target FROM tracking_targets ORDER BY target")
+    )
 
 
 def list_projects(conn: sqlite3.Connection, target: str) -> tuple[Project, ...]:

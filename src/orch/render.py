@@ -235,12 +235,20 @@ class PlanEntry:
 
 def plan_priority(body: str) -> str | None:
     """Return the work priority line's value in a task body, or None."""
-    raise NotImplementedError
+    match = re.search(r"^- 작업 우선도: (P[0-3])[ \t]*$", body, re.MULTILINE)
+    return match[1] if match else None
 
 
 def entry_open(entry: PlanEntry) -> bool:
     """Return whether the record is still open by local evidence."""
-    raise NotImplementedError
+    if entry.record.completion_owner == "task":
+        return not entry.tasks or entry.tasks[-1].state not in (
+            TaskState.CLOSED,
+            TaskState.DISCARDED,
+        )
+    if entry.record.completion_owner == "harness":
+        return not entry.issue_closed
+    return entry.record.accepted_at is None
 
 
 def plan_text(
@@ -250,4 +258,60 @@ def plan_text(
     now: datetime,
 ) -> str:
     """Return a group's plan file contents."""
-    raise NotImplementedError
+    opened = sorted(
+        (entry for entry in entries if entry_open(entry)),
+        key=lambda entry: (entry.priority or "P4", entry.record.record_id),
+    )
+    lines = [
+        f"# 계획: {project.key}",
+        "",
+        "자동 생성 파일입니다. 직접 수정하지 마세요. "
+        "원본은 `state.db`와 지시서의 우선도 줄입니다.",
+        "",
+        f"생성 시각: {now.isoformat()}",
+        f"그룹: {project.title} ({project.url})",
+        "",
+        "## 열린 기록",
+        "",
+        "| 우선도 | 기록 | 제목 | 완료 책임 | 이슈 | 작업 | PR |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    waits: list[str] = []
+    runnable: list[str] = []
+    unregistered: list[str] = []
+    for entry in opened:
+        record = entry.record
+        title = record.title.replace("|", "\\|")
+        issue_number = (record.issue_url or "").rsplit("/", 1)[-1]
+        issue = f"#{issue_number}" if issue_number.isdecimal() else "-"
+        tasks = ", ".join(
+            f"{task.id} {task.state} {task.grade}/{task.lane}" for task in entry.tasks
+        )
+        pr = (entry.tasks[-1].pr_url if entry.tasks else None) or record.pr_url
+        lines.append(
+            f"| {entry.priority or '-'} | {record.record_id} | {title} | "
+            f"{record.completion_owner} | {issue} | {tasks or '-'} | {pr or '-'} |"
+        )
+        for task in entry.tasks:
+            if task.state in (TaskState.CLOSED, TaskState.DISCARDED):
+                continue
+            ready = True
+            for dep in task.depends_on:
+                predecessor = tasks_by_id.get(dep)
+                if predecessor is not None and predecessor.state == TaskState.CLOSED:
+                    continue
+                ready = False
+                if predecessor is not None and predecessor.state == TaskState.DISCARDED:
+                    waits.append(f"- {task.id}: 선행 폐기 {dep}")
+                else:
+                    state = predecessor.state if predecessor is not None else "없음"
+                    waits.append(f"- {task.id}: 선행 대기 {dep} ({state})")
+            if ready and task.state in (TaskState.PREPARED, TaskState.QUEUED):
+                runnable.append(f"- {task.id}")
+        if record.completion_owner == "task" and not entry.tasks:
+            unregistered.append(record.record_id)
+    if unregistered:
+        runnable.append("- 작업 미등록: " + ", ".join(unregistered))
+    lines.extend(["", "## 대기 사유", "", *(waits or ["- 없음"])])
+    lines.extend(["", "## 실행 가능", "", *(runnable or ["- 없음"])])
+    return "\n".join(lines) + "\n"

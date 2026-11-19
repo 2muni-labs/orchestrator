@@ -24,6 +24,7 @@ from orch import (
     launcher,
     lifecycle,
     notify,
+    plans,
     prflow,
     render,
     review,
@@ -295,6 +296,24 @@ def _send_notification(
         return notify.Outcome.FAILED
 
 
+def _refresh_target_plans(
+    conn: sqlite3.Connection,
+    orch_home: Path,
+    target: str,
+    now: datetime,
+    secrets: list[str],
+) -> None:
+    """Refresh one target's plans, reporting failures without failing the command."""
+    try:
+        plans.refresh_plans(conn, orch_home, target, now)
+    except Exception as exc:
+        try:
+            message = credentials.redact_secrets(f"계획 파일 갱신 실패: {exc}", secrets)
+            print(" ".join(message.splitlines()), file=sys.stderr)
+        except Exception:
+            pass
+
+
 def _refresh_todos(
     conn: sqlite3.Connection, orch_home: Path, secrets: list[str]
 ) -> None:
@@ -321,6 +340,17 @@ def _refresh_todos(
             render.write_todo(config.target_paths(orch_home, target).todo, text)
         except Exception as exc:
             warn(exc)
+    try:
+        targets = tracking.list_targets(conn)
+    except Exception as exc:
+        try:
+            message = credentials.redact_secrets(f"계획 파일 갱신 실패: {exc}", secrets)
+            print(" ".join(message.splitlines()), file=sys.stderr)
+        except Exception:
+            pass
+        return
+    for target in targets:
+        _refresh_target_plans(conn, orch_home, target, now, secrets)
 
 
 def _track(
@@ -404,6 +434,7 @@ def _track(
             imported = tracking.import_file(
                 conn, path, target=name, at=datetime.now(UTC).isoformat()
             )
+            _refresh_target_plans(conn, orch_home, name, datetime.now(UTC), secrets)
             return 0, {"ok": True, "target": name, **asdict(imported)}
 
         if args.track_command in {"bind", "accept"}:
@@ -417,6 +448,7 @@ def _track(
                     task_id=args.task_id,
                     record_id=record.record_id,
                 )
+                _refresh_target_plans(conn, orch_home, name, datetime.now(UTC), secrets)
                 return 0, {
                     "ok": True,
                     "target": name,
@@ -432,6 +464,7 @@ def _track(
             )
             accepted = tracking.resolve(conn, name, record.record_id)
             assert accepted is not None
+            _refresh_target_plans(conn, orch_home, name, datetime.now(UTC), secrets)
             return 0, {
                 "ok": True,
                 "target": name,
