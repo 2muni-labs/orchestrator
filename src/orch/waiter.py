@@ -1,5 +1,6 @@
-"""orch wait: wait for a task's pull request to be merged or closed."""
+"""orch wait: wait for a pull request to be merged or closed."""
 
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -92,10 +93,11 @@ def _check_stalled_review(
 
 
 def _check_review(
-    task: Task,
+    task: Task | None,
     review: github.ReviewState,
     label: str | None,
     *,
+    pr_url: str,
     target: Target,
     token: str,
     notify: Callable[[str], None],
@@ -146,30 +148,31 @@ def _check_review(
         review.checks.get(name) != github.CheckResult.PASSED for name in rules.names
     ):
         return None, ()
-    assert task.pr_url is not None
     if label is None:
-        if comparison is None:
-            comparison = github.compare(
-                github=target.github,
-                base=target.default_branch,
-                head=review.head_sha,
-                token=token,
+        light = False
+        if task is not None:
+            if comparison is None:
+                comparison = github.compare(
+                    github=target.github,
+                    base=target.default_branch,
+                    head=review.head_sha,
+                    token=token,
+                )
+            light = (
+                task.grade in (Grade.L1, Grade.L2)
+                and not comparison.truncated
+                and not prflow.user_check(
+                    comparison.files, target.safety_paths, overridden=False
+                )
             )
-        light = (
-            task.grade in (Grade.L1, Grade.L2)
-            and not comparison.truncated
-            and not prflow.user_check(
-                comparison.files, target.safety_paths, overridden=False
-            )
-        )
         github.add_label(
-            url=task.pr_url,
+            url=pr_url,
             name="verify-light" if light else "verify-deep",
             token=token,
         )
     elif "user-approved" not in review.labels:
         _check_stalled_review(
-            review, label, url=task.pr_url, token=token, notify=notify, now=now
+            review, label, url=pr_url, token=token, notify=notify, now=now
         )
     return None, ()
 
@@ -188,6 +191,36 @@ def wait_for_merge(
     now: Callable[[], datetime] = _now,
 ) -> MergeWaitReport:
     """Check a pull request until it is merged, closed, needs the main, or times out."""
+    return _wait(
+        conn,
+        task_id=task_id,
+        pr_url=None,
+        target=target,
+        token=token,
+        notify=notify,
+        interval_sec=interval_sec,
+        max_wait_min=max_wait_min,
+        sleep=sleep,
+        clock=clock,
+        now=now,
+    )
+
+
+def _wait(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str | None,
+    pr_url: str | None,
+    target: Target,
+    token: Callable[[], str],
+    notify: Callable[[str], None],
+    interval_sec: int,
+    max_wait_min: int,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    now: Callable[[], datetime],
+) -> MergeWaitReport:
+    """Run the common checks, refreshing task state only for a task wait."""
     deadline = clock() + max_wait_min * 60
     checks = 0
     failures = 0
@@ -196,6 +229,7 @@ def wait_for_merge(
     notified: list[str] = []
     failed_checks: tuple[str, ...] = ()
     outcome = Outcome.LIMIT
+    task: Task | None = None
 
     def notify_once(event: str) -> None:
         if event not in notified:
@@ -206,18 +240,24 @@ def wait_for_merge(
                 pass
 
     while True:
-        task = store.get_task(conn, task_id)
-        if task is None or task.state not in (TaskState.PR_OPEN, TaskState.CONFLICT):
-            raise MergeWaitError(f"Task must be pr_open or conflict: {task_id}")
-        if not task.pr_url:
-            raise MergeWaitError(f"Task needs a pull request URL: {task_id}")
+        if task_id is not None:
+            task = store.get_task(conn, task_id)
+            if task is None or task.state not in (
+                TaskState.PR_OPEN,
+                TaskState.CONFLICT,
+            ):
+                raise MergeWaitError(f"Task must be pr_open or conflict: {task_id}")
+            if not task.pr_url:
+                raise MergeWaitError(f"Task needs a pull request URL: {task_id}")
+            pr_url = task.pr_url
+        assert pr_url is not None
         checks += 1
         try:
             try:
                 check_token = token()
             except RuntimeError:
                 raise github.GitHubError("Token issuance failed") from None
-            review = github.review_state(url=task.pr_url, token=check_token)
+            review = github.review_state(url=pr_url, token=check_token)
             review_label = next(
                 (label for label in github.REVIEW_LABELS if label in review.labels),
                 None,
@@ -226,6 +266,7 @@ def wait_for_merge(
                 task,
                 review,
                 review_label,
+                pr_url=pr_url,
                 target=target,
                 token=check_token,
                 notify=notify_once,
@@ -247,8 +288,8 @@ def wait_for_merge(
 
     return MergeWaitReport(
         task_id=task_id,
-        state=task.state,
-        pr_url=task.pr_url,
+        state=task.state if task else None,
+        pr_url=pr_url,
         pr_state=review.state if review else None,
         merged=review.merged if review else False,
         merged_at=review.merged_at if review else None,
@@ -268,7 +309,18 @@ def pull_request_url(value: str, *, github: str) -> str:
     github ignoring case. The result is https://github.com/<github>/pull/<number>.
     Anything else raises MergeWaitError.
     """
-    raise NotImplementedError
+    if re.fullmatch(r"[1-9][0-9]*", value):
+        number = value
+    else:
+        match = re.fullmatch(
+            r"https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]*)", value
+        )
+        if match is None or match[1].casefold() != github.casefold():
+            raise MergeWaitError(
+                "Pull request must be a number or a target repository URL"
+            )
+        number = match[2]
+    return f"https://github.com/{github}/pull/{number}"
 
 
 def wait_for_pull_request(
@@ -285,4 +337,22 @@ def wait_for_pull_request(
     now: Callable[[], datetime] = _now,
 ) -> MergeWaitReport:
     """Wait for a pull request without a task, as wait_for_merge does."""
-    raise NotImplementedError
+    pr_url = pull_request_url(pr, github=target.github)
+    if any(
+        task.pr_url is not None and task.pr_url.casefold() == pr_url.casefold()
+        for task in store.list_tasks(conn)
+    ):
+        raise MergeWaitError("Pull request belongs to a task; wait using its task id")
+    return _wait(
+        conn,
+        task_id=None,
+        pr_url=pr_url,
+        target=target,
+        token=token,
+        notify=notify,
+        interval_sec=interval_sec,
+        max_wait_min=max_wait_min,
+        sleep=sleep,
+        clock=clock,
+        now=now,
+    )

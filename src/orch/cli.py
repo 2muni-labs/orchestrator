@@ -718,8 +718,8 @@ def _command(
     command = args.command
     if command == "wait" and not args.merged:
         raise _UsageError("wait requires --merged")
-    if command == "wait" and args.pr is not None:
-        raise NotImplementedError
+    if command == "wait" and (args.id is None) == (args.pr is None):
+        raise _UsageError("wait requires exactly one of a task id and --pr")
     session_target = os.environ.get("ORCH_TARGET")
     if command == "prepare":
         try:
@@ -802,7 +802,12 @@ def _command(
         }
 
     # Check task ownership before loading target configuration or issuing a token.
-    if hasattr(args, "id"):
+    if command == "wait" and args.pr is not None:
+        if not session_target:
+            raise config.ConfigError("wait --pr requires ORCH_TARGET")
+        assert hub is not None
+        target = _target(hub, session_target)
+    elif hasattr(args, "id"):
         task = _get_task(conn, args.id)
         _check_target(task.target)
         paths = config.target_paths(orch_home, task.target)
@@ -880,9 +885,20 @@ def _command(
         }
     task_id = args.id
     if command == "wait":
-        report = waiter.wait_for_merge(
+        if args.pr is not None:
+            wait = waiter.wait_for_pull_request
+            value = args.pr
+            pr_url = waiter.pull_request_url(value, github=target.github)
+            notification_task_id = f"pr-{pr_url.rsplit('/', 1)[1]}"
+            notification_target = session_target
+        else:
+            wait = waiter.wait_for_merge
+            value = task_id
+            notification_task_id = task_id
+            notification_target = task.target
+        report = wait(
             conn,
-            task_id,
+            value,
             target=target,
             token=lambda: credentials.issue_token(orch_home, secrets),
             notify=lambda event: _send_notification(
@@ -891,8 +907,8 @@ def _command(
                 orch_home=orch_home,
                 home=home,
                 secrets=secrets,
-                target=task.target,
-                task_id=task_id,
+                target=notification_target,
+                task_id=notification_task_id,
                 dedup=True,
             ),
             interval_sec=args.interval,
