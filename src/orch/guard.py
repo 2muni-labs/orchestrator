@@ -24,6 +24,25 @@ _HEREDOC = re.compile(
 )
 _MERGE_ENDPOINT = re.compile(r"(^|/)repos/[^/\s]+/[^/\s]+/pulls/[^/\s]+/merge(/|\?|$)")
 _WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo"}
+_WRAPPER_VALUE_OPTIONS = {
+    "env": ("uCPS", {"--unset", "--chdir", "--split-string"}),
+    "exec": ("a", set()),
+    "sudo": (
+        "ugCDhprtTU",
+        {
+            "--user",
+            "--group",
+            "--close-from",
+            "--chdir",
+            "--host",
+            "--prompt",
+            "--role",
+            "--type",
+            "--command-timeout",
+            "--other-user",
+        },
+    ),
+}
 _FAILURE_OUTPUT = (
     '{"hookSpecificOutput": {"hookEventName": "PreToolUse", '
     '"permissionDecision": "deny", '
@@ -172,6 +191,81 @@ def _force_push(args: list[str]) -> bool:
     )
 
 
+def _wrapped_command(executable: str, args: list[str]) -> list[str]:
+    """Consume wrapper options and return only the command it will run."""
+    short_options, long_options = _WRAPPER_VALUE_OPTIONS.get(executable, ("", set()))
+    args = args.copy()
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return args[index + 1 :]
+        if not arg.startswith("-"):
+            return args[index:]
+        index += 1
+        value = ""
+        split_string = False
+        if arg.startswith("--"):
+            option, equals, value = arg.partition("=")
+            if option not in long_options:
+                continue
+            if not equals:
+                if index == len(args):
+                    return []
+                value = args[index]
+                index += 1
+            split_string = executable == "env" and option == "--split-string"
+        else:
+            for offset, option in enumerate(arg[1:], start=2):
+                if executable == "command" and option in "vV":
+                    return []
+                if option not in short_options:
+                    continue
+                value = arg[offset:]
+                if not value:
+                    if index == len(args):
+                        return []
+                    value = args[index]
+                    index += 1
+                split_string = executable == "env" and option == "S"
+                break
+        if split_string:
+            args[index:index] = shlex.split(value)
+    return []
+
+
+def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
+    separator = args.index("--") if "--" in args else len(args)
+    options = args[:separator]
+    if not any(arg in {"exec", "x"} for arg in options):
+        return Verdict("allow")
+
+    result = _judge_simple(args[separator + 1 :], home=home)
+    if result.decision == "deny":
+        return result
+    index = 0
+    while index < len(options):
+        arg = options[index]
+        index += 1
+        if arg in {"-c", "--command"}:
+            if index == len(options):
+                continue
+            command = options[index]
+            index += 1
+        elif arg.startswith("--command="):
+            command = arg[len("--command=") :]
+        elif arg.startswith("-c"):
+            command = arg[2:]
+        else:
+            continue
+        verdict = judge(command, home=home)
+        if verdict.decision == "deny":
+            return verdict
+        if verdict.decision == "ask":
+            result = verdict
+    return result
+
+
 def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
     secrets = ["~/.orch/secrets", "$HOME/.orch/secrets", "${HOME}/.orch/secrets"]
     if home is not None:
@@ -189,16 +283,9 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
     executable = basename(words[index])
     args = words[index + 1 :]
     if executable in _WRAPPERS:
-        result = Verdict("allow")
-        for index, arg in enumerate(args):
-            if arg.startswith("-") or _ASSIGNMENT.match(arg):
-                continue
-            verdict = _judge_simple(args[index:], home=home)
-            if verdict.decision == "deny":
-                return verdict
-            if verdict.decision == "ask":
-                result = verdict
-        return result
+        return _judge_simple(_wrapped_command(executable, args), home=home)
+    if executable == "mise":
+        return _judge_mise(args, home=home)
     if executable == "codex":
         return Verdict("deny", "Codex 직접 실행은 차단합니다. orch를 사용하세요.")
     if executable == "claude" and any(arg in {"-p", "--print"} for arg in args):
@@ -216,6 +303,12 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
             return Verdict("ask", "작업을 재개하려면 사용자 확인이 필요합니다.")
         if subcommand == "kill":
             return Verdict("ask", "작업을 중단하려면 사용자 확인이 필요합니다.")
+        if subcommand == "selfcheck" and any(
+            arg in {"--apply", "--rollback"}
+            or arg.startswith(("--apply=", "--rollback="))
+            for arg in args
+        ):
+            return Verdict("ask", "에이전트 버전을 바꾸려면 사용자 확인이 필요합니다.")
     if executable in {"bash", "sh", "zsh"}:
         for index, arg in enumerate(args[:-1]):
             if arg.startswith("-") and not arg.startswith("--") and "c" in arg:
