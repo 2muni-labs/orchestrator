@@ -860,3 +860,361 @@ def test_several_notifications_are_each_sent_once_in_order(
     report = wait()
     assert notes.events == ["user_wait", "changes_requested_again"]
     assert report.notified == ("user_wait", "changes_requested_again")
+
+
+# A pull request without a task: orch wait --pr
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "7",
+        URL,
+        "https://github.com/Owner/Sample/pull/7",
+        "https://github.com/OWNER/SAMPLE/pull/7",
+    ],
+)
+def test_a_pull_request_number_or_url_becomes_the_target_url(value: str) -> None:
+    assert waiter.pull_request_url(value, github="owner/sample") == URL
+
+
+def test_the_url_uses_the_spelling_of_the_target() -> None:
+    assert (
+        waiter.pull_request_url(URL, github="Owner/Sample")
+        == "https://github.com/Owner/Sample/pull/7"
+    )
+
+
+def test_a_large_number_is_kept() -> None:
+    assert (
+        waiter.pull_request_url("1234", github="owner/sample")
+        == "https://github.com/owner/sample/pull/1234"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "0",
+        "-7",
+        "+7",
+        "07",
+        " 7",
+        "7 ",
+        "7\n",
+        "7.0",
+        "abc",
+        "٧",
+        "https://github.com/other/sample/pull/7",
+        "https://github.com/owner/sample-x/pull/7",
+        "https://github.com/owner/sampl/pull/7",
+        "https://github.com/owner/sample/pull/7/",
+        "https://github.com/owner/sample/pull/07",
+        "https://github.com/owner/sample/pull/0",
+        "https://github.com/owner/sample/pull/",
+        "https://github.com/owner/sample/pull/7?x=1",
+        "https://github.com/owner/sample/pull/7#top",
+        "https://github.com/owner/sample/pull/7/files",
+        "https://github.com/owner/sample/issues/7",
+        "http://github.com/owner/sample/pull/7",
+        "https://www.github.com/owner/sample/pull/7",
+        "https://github.com/owner/sample/pull/7 ",
+        "github.com/owner/sample/pull/7",
+        "owner/sample#7",
+        "#7",
+    ],
+)
+def test_anything_else_is_refused(value: str) -> None:
+    with pytest.raises(MergeWaitError):
+        waiter.pull_request_url(value, github="owner/sample")
+
+
+@pytest.fixture
+def wait_pr(
+    conn: sqlite3.Connection, tokens: Tokens, time_: Time, notes: Notes
+) -> Callable[..., waiter.MergeWaitReport]:
+    def call(pr_value: str = "7", **options: object) -> waiter.MergeWaitReport:
+        values: dict[str, object] = {
+            "target": TARGET,
+            "token": tokens,
+            "notify": notes,
+            "sleep": time_.sleep,
+            "clock": time_.clock,
+            "now": time_.wall,
+        }
+        values.update(options)
+        return waiter.wait_for_pull_request(conn, pr_value, **values)
+
+    return call
+
+
+WaitPr = Callable[..., waiter.MergeWaitReport]
+
+
+def test_the_pr_wait_takes_the_same_options_as_the_task_wait() -> None:
+    task = inspect.signature(wait_for_merge).parameters
+    pull = inspect.signature(waiter.wait_for_pull_request).parameters
+    assert list(pull)[2:] == list(task)[2:]
+    for name in list(task)[2:]:
+        assert pull[name].default == task[name].default
+        assert pull[name].kind == task[name].kind
+
+
+def test_a_merged_pull_request_without_a_task_ends_at_the_first_check(
+    hub: Hub, tokens: Tokens, wait_pr: WaitPr
+) -> None:
+    hub.states = [MERGED]
+    report = wait_pr()
+    assert report == waiter.MergeWaitReport(
+        task_id=None,
+        state=None,
+        pr_url=URL,
+        pr_state="MERGED",
+        merged=True,
+        merged_at=MERGED_AT,
+        checks=1,
+        outcome=Outcome.MERGED,
+        review_label=None,
+        failed_checks=(),
+        notified=(),
+    )
+    assert hub.calls == [("review", URL, "token-1")]
+
+
+def test_the_pr_wait_reads_the_normalized_url(hub: Hub, wait_pr: WaitPr) -> None:
+    hub.states = [MERGED]
+    report = wait_pr("https://github.com/OWNER/sample/pull/7")
+    assert report.pr_url == URL
+    assert hub.calls[0][1] == URL
+
+
+def test_a_closed_pull_request_without_a_task_ends_the_wait(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.states = [CLOSED]
+    report = wait_pr()
+    assert report.outcome is Outcome.CLOSED
+    assert (report.pr_state, report.merged, report.merged_at) == ("CLOSED", False, None)
+
+
+@pytest.mark.parametrize(
+    ("grade_files", "truncated"),
+    [(("src/app.py",), False), (("docs/readme.md",), False), (("src/app.py",), True)],
+)
+def test_the_review_label_without_a_task_is_always_deep(
+    hub: Hub, wait_pr: WaitPr, grade_files: tuple[str, ...], truncated: bool
+) -> None:
+    hub.comparison = Comparison(behind_by=0, files=grade_files, truncated=truncated)
+    hub.states = [pr(), MERGED]
+    report = wait_pr()
+    assert hub.label_calls() == [("add", URL, "verify-deep")]
+    assert report.outcome is Outcome.MERGED
+    assert report.checks == 2
+
+
+def test_the_deep_label_needs_no_compare_on_a_branch_that_is_not_strict(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.rules = RequiredChecks(names=("ci",), strict=False)
+    hub.states = [pr(), MERGED]
+    wait_pr()
+    assert hub.kinds() == ["review", "rules", "add", "review"]
+
+
+def test_a_strict_branch_compares_once_for_behind_only(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.states = [pr(), MERGED]
+    wait_pr()
+    assert hub.kinds() == ["review", "rules", "compare", "add", "review"]
+
+
+def test_the_deep_label_is_added_once_without_a_task(hub: Hub, wait_pr: WaitPr) -> None:
+    labeled = pr(labels=("verify-deep",), events=(event("verify-deep"),))
+    hub.states = [pr(), labeled, labeled]
+    report = wait_pr(interval_sec=60, max_wait_min=2)
+    assert report.outcome is Outcome.LIMIT
+    assert report.review_label == "verify-deep"
+    assert report.pr_state == "OPEN"
+    assert hub.label_calls() == [("add", URL, "verify-deep")]
+
+
+def test_a_light_label_on_a_pull_request_without_a_task_is_left_alone(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    light = pr(labels=("verify-light",), events=(event("verify-light"),))
+    hub.states = [light, MERGED]
+    report = wait_pr()
+    assert hub.label_calls() == []
+    assert report.review_label is None
+
+
+def test_a_failed_check_without_a_task_ends_the_wait_with_its_names(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.rules = RequiredChecks(names=("ci", "lint"), strict=True)
+    hub.states = [pr(checks={"ci": CheckResult.FAILED, "lint": CheckResult.PASSED})]
+    report = wait_pr()
+    assert report.outcome is Outcome.CHECKS_FAILED
+    assert report.failed_checks == ("ci",)
+    assert hub.label_calls() == []
+
+
+def test_the_first_changes_requested_without_a_task_ends_the_wait(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.states = [
+        pr(labels=("changes-requested",), events=(event("changes-requested"),))
+    ]
+    assert wait_pr().outcome is Outcome.CHANGES_REQUESTED
+
+
+def test_a_behind_head_without_a_task_ends_the_wait_before_any_label(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.comparison = Comparison(behind_by=2, files=("src/app.py",), truncated=False)
+    hub.states = [pr()]
+    assert wait_pr().outcome is Outcome.BEHIND
+    assert hub.label_calls() == []
+
+
+def test_needs_user_without_a_task_notifies_once(
+    hub: Hub, notes: Notes, wait_pr: WaitPr
+) -> None:
+    waiting = pr(labels=("needs-user",))
+    hub.states = [waiting, waiting, MERGED]
+    report = wait_pr()
+    assert notes.events == ["user_wait"]
+    assert report.notified == ("user_wait",)
+
+
+def test_a_stalled_deep_label_without_a_task_is_added_again_once(
+    hub: Hub, notes: Notes, wait_pr: WaitPr
+) -> None:
+    hub.states = [stale(), MERGED]
+    wait_pr()
+    assert hub.label_calls() == [
+        ("remove", URL, "verify-deep"),
+        ("add", URL, "verify-deep"),
+    ]
+    assert notes.events == []
+
+
+def test_an_overridden_pull_request_without_a_task_gets_no_label(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.states = [pr(labels=("review-overridden",)), MERGED]
+    wait_pr()
+    assert hub.label_calls() == []
+
+
+def test_a_branch_without_required_checks_is_refused_without_a_task(
+    hub: Hub, wait_pr: WaitPr
+) -> None:
+    hub.rules = RequiredChecks(names=(), strict=True)
+    hub.states = [pr()]
+    with pytest.raises(MergeWaitError):
+        wait_pr()
+
+
+def test_ten_failed_checks_without_a_task_raise(
+    hub: Hub, wait_pr: WaitPr, time_: Time
+) -> None:
+    hub.states = [GitHubError("down")] * 10
+    with pytest.raises(MergeCheckError):
+        wait_pr()
+    assert len(time_.sleeps) == 9
+
+
+def test_failed_checks_without_a_task_are_retried(
+    hub: Hub, tokens: Tokens, wait_pr: WaitPr
+) -> None:
+    tokens.fail_on = {1}
+    hub.states = [GitHubError("down"), MERGED]
+    report = wait_pr()
+    assert report.outcome is Outcome.MERGED
+    assert report.checks == 3
+    assert [call[2] for call in hub.calls] == ["token-2", "token-3"]
+
+
+def test_the_pr_wait_uses_the_default_interval_and_limit(
+    hub: Hub, time_: Time, wait_pr: WaitPr
+) -> None:
+    hub.repeat = OPEN_PENDING
+    report = wait_pr()
+    assert report.outcome is Outcome.LIMIT
+    assert set(time_.sleeps) == {60}
+    assert sum(time_.sleeps) == 720 * 60
+
+
+@pytest.mark.parametrize("state", list(TaskState))
+@pytest.mark.parametrize("stored", [URL, "https://github.com/Owner/Sample/pull/7"])
+def test_a_pull_request_of_a_task_is_refused_before_any_token(
+    conn: sqlite3.Connection,
+    hub: Hub,
+    tokens: Tokens,
+    wait_pr: WaitPr,
+    state: TaskState,
+    stored: str,
+) -> None:
+    insert(conn, state, pr_url=stored)
+    with pytest.raises(MergeWaitError):
+        wait_pr()
+    assert tokens.issued == []
+    assert hub.calls == []
+
+
+def test_a_task_of_another_target_with_the_url_is_also_refused(
+    conn: sqlite3.Connection, hub: Hub, tokens: Tokens, wait_pr: WaitPr
+) -> None:
+    store.insert_task(
+        conn,
+        Task(
+            id="other-task",
+            target="other",
+            title="Other",
+            grade=Grade.L2,
+            lane=Lane.B,
+            model="gpt-6.1-sol",
+            effort=Effort.HIGH,
+            state=TaskState.CLOSED,
+            timeout_sec=300,
+            pr_url=URL,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    with pytest.raises(MergeWaitError):
+        wait_pr()
+    assert tokens.issued == []
+
+
+def test_a_task_with_another_pull_request_does_not_matter(
+    conn: sqlite3.Connection, hub: Hub, wait_pr: WaitPr
+) -> None:
+    insert(conn, pr_url="https://github.com/owner/sample/pull/70")
+    hub.states = [MERGED]
+    assert wait_pr().outcome is Outcome.MERGED
+
+
+@pytest.mark.parametrize("value", ["0", "https://github.com/other/sample/pull/7"])
+def test_a_bad_pull_request_is_refused_before_any_token(
+    hub: Hub, tokens: Tokens, wait_pr: WaitPr, value: str
+) -> None:
+    with pytest.raises(MergeWaitError):
+        wait_pr(value)
+    assert tokens.issued == []
+    assert hub.calls == []
+
+
+def test_the_pr_wait_does_not_change_state_db(
+    conn: sqlite3.Connection, hub: Hub, wait_pr: WaitPr
+) -> None:
+    insert(conn, TaskState.READY, pr_url=None)
+    before = store.list_tasks(conn)
+    changes = conn.total_changes
+    hub.states = [pr(), MERGED]
+    wait_pr()
+    assert store.list_tasks(conn) == before
+    assert conn.total_changes == changes
