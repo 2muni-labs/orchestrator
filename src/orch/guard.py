@@ -27,9 +27,13 @@ _WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo"}
 _WRAPPER_VALUE_OPTIONS = {
     "env": ("uCPS", {"--unset", "--chdir", "--split-string"}),
     "exec": ("a", set()),
+    "time": ("fo", {"--format", "--output"}),
     "sudo": (
-        "ugCDhprtTU",
+        "ugCDhprtTUacR",
         {
+            "--auth-type",
+            "--login-class",
+            "--chroot",
             "--user",
             "--group",
             "--close-from",

@@ -461,6 +461,18 @@ WRAPPER_DENY = [
     "sudo -D /tmp -T 10 codex",
     "exec -la name codex",
     "exec -c codex",
+    # value options found by the deep review of PR #539
+    "time -f %e codex exec",
+    "time -o /dev/null codex exec",
+    "time --format=%e codex exec",
+    "time --output /dev/null codex exec",
+    "sudo -R /tmp codex",
+    "sudo --chroot /tmp codex",
+    "sudo --chroot=/tmp codex",
+    "sudo -c default codex",
+    "sudo --login-class default codex",
+    "sudo -a type codex",
+    "sudo --auth-type type codex",
     # env -S splits its value into the command line
     "env -S 'codex exec'",
     "env -S'codex exec'",
@@ -511,6 +523,8 @@ WRAPPER_ALLOW = [
     "nohup ls codex",
     "time grep codex f",
     "exec -a codex ls",
+    "time -o codex ls",
+    "sudo -R codex ls",
     # command -v and -V only look a name up
     "command -v codex",
     "command -V codex",
