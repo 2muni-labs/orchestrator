@@ -244,6 +244,9 @@ live locally: never write them to GitHub, as an issue block or a project field.
   acceptance, goes in the task body under `# Planning` with its evidence, or
   `unknown`. Check it before dispatch; resolve `unknown` before dispatch.
 - A merge does not satisfy an installation or an acceptance prerequisite.
+- At step 0 and whenever you review the plan, read `R/plans/<group key>.md` first.
+  `orch` (0.17.0 and later) regenerates one file per project group with open
+  records from `state.db` and the priority lines; never edit it.
 - `orch next` takes queued tasks oldest first, and priority does not change that.
   To run higher-priority work first, choose when to dispatch it. Never discard,
   resume or alter a task to change the order.
