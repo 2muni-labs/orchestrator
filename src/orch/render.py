@@ -1,16 +1,18 @@
-"""Derived views of the state store: TODO.md, status rows and the PR body."""
+"""Derived views of the state store: TODO.md, status rows, the PR body and plans."""
 
 import os
 import re
 import tempfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
 from orch.review import Triage, override_section
 from orch.scheduler import BlockedChain
+from orch.tracking import Project, Record
 
 
 def elapsed_sec(task: Task, now: datetime) -> int:
@@ -216,3 +218,100 @@ def build_body(
     if triage is not None:
         body = override_section(triage) + "\n\n" + body
     return body
+
+
+# Plan files (technical design 4.11, ADR 0025)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlanEntry:
+    """One tracking record with its tasks, as shown in a plan file."""
+
+    record: Record
+    tasks: tuple[Task, ...]
+    priority: str | None
+    issue_closed: bool
+
+
+def plan_priority(body: str) -> str | None:
+    """Return the work priority line's value in a task body, or None."""
+    match = re.search(r"^- 작업 우선도: (P[0-3])[ \t]*$", body, re.MULTILINE)
+    return match[1] if match else None
+
+
+def entry_open(entry: PlanEntry) -> bool:
+    """Return whether the record is still open by local evidence."""
+    if entry.record.completion_owner == "task":
+        return not entry.tasks or entry.tasks[-1].state not in (
+            TaskState.CLOSED,
+            TaskState.DISCARDED,
+        )
+    if entry.record.completion_owner == "harness":
+        return not entry.issue_closed
+    return entry.record.accepted_at is None
+
+
+def plan_text(
+    project: Project,
+    entries: Sequence[PlanEntry],
+    tasks_by_id: Mapping[str, Task],
+    now: datetime,
+) -> str:
+    """Return a group's plan file contents."""
+    opened = sorted(
+        (entry for entry in entries if entry_open(entry)),
+        key=lambda entry: (entry.priority or "P4", entry.record.record_id),
+    )
+    lines = [
+        f"# 계획: {project.key}",
+        "",
+        "자동 생성 파일입니다. 직접 수정하지 마세요. "
+        "원본은 `state.db`와 지시서의 우선도 줄입니다.",
+        "",
+        f"생성 시각: {now.isoformat()}",
+        f"그룹: {project.title} ({project.url})",
+        "",
+        "## 열린 기록",
+        "",
+        "| 우선도 | 기록 | 제목 | 완료 책임 | 이슈 | 작업 | PR |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    waits: list[str] = []
+    runnable: list[str] = []
+    unregistered: list[str] = []
+    for entry in opened:
+        record = entry.record
+        title = record.title.replace("|", "\\|")
+        issue_number = (record.issue_url or "").rsplit("/", 1)[-1]
+        issue = f"#{issue_number}" if issue_number.isdecimal() else "-"
+        tasks = ", ".join(
+            f"{task.id} {task.state} {task.grade}/{task.lane}" for task in entry.tasks
+        )
+        pr = (entry.tasks[-1].pr_url if entry.tasks else None) or record.pr_url
+        lines.append(
+            f"| {entry.priority or '-'} | {record.record_id} | {title} | "
+            f"{record.completion_owner} | {issue} | {tasks or '-'} | {pr or '-'} |"
+        )
+        for task in entry.tasks:
+            if task.state in (TaskState.CLOSED, TaskState.DISCARDED):
+                continue
+            ready = True
+            for dep in task.depends_on:
+                predecessor = tasks_by_id.get(dep)
+                if predecessor is not None and predecessor.state == TaskState.CLOSED:
+                    continue
+                ready = False
+                if predecessor is not None and predecessor.state == TaskState.DISCARDED:
+                    waits.append(f"- {task.id}: 선행 폐기 {dep}")
+                else:
+                    state = predecessor.state if predecessor is not None else "없음"
+                    waits.append(f"- {task.id}: 선행 대기 {dep} ({state})")
+            if ready and task.state in (TaskState.PREPARED, TaskState.QUEUED):
+                runnable.append(f"- {task.id}")
+        if record.completion_owner == "task" and not entry.tasks:
+            unregistered.append(record.record_id)
+    if unregistered:
+        runnable.append("- 작업 미등록: " + ", ".join(unregistered))
+    lines.extend(["", "## 대기 사유", "", *(waits or ["- 없음"])])
+    lines.extend(["", "## 실행 가능", "", *(runnable or ["- 없음"])])
+    return "\n".join(lines) + "\n"

@@ -326,6 +326,14 @@ def repository(conn: sqlite3.Connection, target: str) -> str | None:
     return row[0] if row else None
 
 
+def list_targets(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Return the targets in tracking_targets, sorted."""
+    return tuple(
+        row[0]
+        for row in conn.execute("SELECT target FROM tracking_targets ORDER BY target")
+    )
+
+
 def list_projects(conn: sqlite3.Connection, target: str) -> tuple[Project, ...]:
     """Return the target's projects ordered by key."""
     return tuple(

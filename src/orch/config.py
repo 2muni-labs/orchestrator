@@ -37,6 +37,7 @@ class TargetPaths:
     logs: Path
     worktrees: Path
     todo: Path
+    plans: Path
 
     def review_path(self, task_id: str, attempt: int | None = None) -> Path:
         """Return the current review, or the one archived for an attempt."""
@@ -164,6 +165,7 @@ def target_paths(home: Path, name: str) -> TargetPaths:
         logs=root / "logs",
         worktrees=root / "worktrees",
         todo=root / "TODO.md",
+        plans=root / "plans",
     )
 
 

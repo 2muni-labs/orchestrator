@@ -153,6 +153,7 @@ def test_target_paths_layout_without_touching_the_filesystem(tmp_path: Path) -> 
     assert paths.logs == root / "logs"
     assert paths.worktrees == root / "worktrees"
     assert paths.todo == root / "TODO.md"
+    assert paths.plans == root / "plans"
     assert not home.exists()
 
 

@@ -606,6 +606,28 @@ def test_task_ids_are_sorted(imported: sqlite3.Connection) -> None:
     assert tracking.task_ids(imported, TARGET, "B03") == ("m-a", "m-old")
 
 
+def test_list_targets_is_empty_before_an_import(conn: sqlite3.Connection) -> None:
+    assert tracking.list_targets(conn) == ()
+
+
+def test_list_targets_returns_imported_targets_sorted(
+    imported: sqlite3.Connection, tmp_path: Path
+) -> None:
+    other = sample()
+    other["target"] = "alpha"
+    other["repository"] = "owner/alpha"
+    other["records"] = {}
+    other["tasks"] = {}
+    other["aliases"] = {}
+    other["projects"] = {
+        "G01": {"title": "a", "url": "https://github.com/orgs/owner/projects/1"}
+    }
+    tracking.import_file(
+        imported, write(tmp_path / "a.json", other), target="alpha", at="t1"
+    )
+    assert tracking.list_targets(imported) == ("alpha", TARGET)
+
+
 # bind_task and accept_record
 
 
