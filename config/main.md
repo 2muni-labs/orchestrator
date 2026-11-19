@@ -155,9 +155,12 @@ merge and leaves the labels as they are.
   `review-overridden` label or a changed safety path.
 - `orch wait <id> --merged` adds the review label when the required checks pass and
   reports in `outcome` what you must do (step 8b). With an installed `orch` older
-  than v0.15.0, and for a pull request without a task, confirm that the required
-  checks passed and add the label yourself with
-  `gh pr edit <url> --add-label <label>`.
+  than v0.15.0, confirm that the required checks passed and add the label yourself
+  with `gh pr edit <url> --add-label <label>`.
+- For a pull request without a task, run `orch wait --pr <number> --merged` in a
+  background shell (`orch` v0.18.0 and later, ADR 0026). It always adds
+  `verify-deep`. With an older `orch`, confirm that the required checks passed and
+  add `verify-deep` yourself.
 - Required check failed (`checks_failed`): read the failed check's log, fix it in
   the worktree, commit, run `orch pr <id> --resolution "<English description>"`, and
   wait again.
@@ -187,6 +190,14 @@ helper. Call `gh` only in this form, and never pass the token to a sub-agent:
 ```
 GH_TOKEN=$(~/.orch/bin/ghapp-token.sh) gh ...
 ```
+
+- Wait for GitHub state with `orch wait`. Never write a shell loop that polls
+  GitHub for a case `orch wait` covers (ADR 0026).
+- Where `orch wait` does not cover it yet, a background wait loop passes
+  `-R <owner>/<repo>` to every `gh` call, keeps standard error, exits on the first
+  failed call and stops at a time limit. A failure read as "not yet" hid a passed
+  check for 35 minutes on #520.
+- A one-off `gh` call also passes `-R <owner>/<repo>` and keeps standard error.
 
 ## GitHub work tracking
 
