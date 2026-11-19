@@ -54,9 +54,11 @@ docs/decisions/    decision records (ADR), one per file
 src/orch/          orch package
 tests/             tests, owned by the main agent
 docs/github-tracking.json  reviewed project/issue recovery bindings
+docs/measurements/ measurement records, such as the CU0 baseline
 templates/task.md  task spec template
 schemas/           result and review JSON schemas
 scripts/guard_regress.py  guard false-positive check over local transcripts
+scripts/usage_baseline.py  CU0/CU6 baseline measurement (aggregates only)
 targets.toml       registered targets, with home-relative paths only
 config/settings.json  hooks and deny rules that orch open injects
 config/main.md     main agent rules that orch open injects
