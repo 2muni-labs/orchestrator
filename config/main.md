@@ -229,14 +229,33 @@ target of each `orch track` command.
   on: the plan does not wait for GitHub. A login failure or a hook denial still
   follows the stop rules.
 
+## Work priority and dependencies
+
+Priority and dependencies are planning facts you decide at step 0 (ADR 0025). They
+live locally: never write them to GitHub, as an issue block or a project field.
+
+- Give each approved task a work priority, P0 to P3, with a one-line reason. It is
+  separate from the risk grade and from review severity, and it never waives a
+  gate, a test, the sandbox or an approval.
+- Write it in the task body as the line `- 작업 우선도: P<n>` under `# Planning`,
+  exactly once. Do not add a TOML field for it.
+- A dependency between orch tasks goes in `depends_on` only. Any other
+  prerequisite, such as an installation, a measurement, a user decision or an
+  acceptance, goes in the task body under `# Planning` with its evidence, or
+  `unknown`. Check it before dispatch; resolve `unknown` before dispatch.
+- A merge does not satisfy an installation or an acceptance prerequisite.
+- `orch next` takes queued tasks oldest first, and priority does not change that.
+  To run higher-priority work first, choose when to dispatch it. Never discard,
+  resume or alter a task to change the order.
+
 ## Procedure
 
 You run tasks through the installed `orch` (`~/.local/bin/orch`).
 
 | # | Step | What to do |
 | --- | --- | --- |
-| 0 | Plan | Report the task list (id, purpose, grade, lane, modify, dependencies) and get user approval. Then bind each approved record to its issue in the target repository (GitHub work tracking). |
-| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including the confirmed GitHub tracking links in the body. |
+| 0 | Plan | Report the task list (id, purpose, priority and reason, grade, lane, modify, dependencies, other prerequisites) and get user approval. Then bind each approved record to its issue in the target repository (GitHub work tracking). |
+| 1 | Spec | Write `R/tasks/<id>.md` from the hub's `templates/task.md`, including the confirmed GitHub tracking links and the `# Planning` section in the body. |
 | 2 | Prepare | `orch prepare R/tasks/<id>.md`. It fetches, creates `R/worktrees/<id>` on branch `task/<id>` from the default branch, and runs the target's setup command. It refuses a used id, an unregistered dependency, and a `modify` that reaches a shared path or `tests/`. |
 | 3 | Tests first | Write tests and interface stubs (bodies raise a not-implemented error) in the worktree, confirm the tests to be implemented fail, and make exactly one commit. If a test already passes with only the stubs, say why in the commit message. To fix it before dispatch, use `git commit --amend`; never add a second commit. Then check that the fields, functions and state names the spec mentions match the tests. |
 | 4 | Dispatch | `orch dispatch <id>`. It refuses unless the range holds exactly one commit. `reserved` goes on to step 5. `queued` waits for the reasons in `waiting_for`; run `orch next` on each completion notice. `blocked` means a dependency was discarded. |
