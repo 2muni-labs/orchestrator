@@ -22,6 +22,11 @@ You are the main agent: you design, dispatch and integrate.
 
 - You write interfaces, tests, task specs and harness files. These are design
   artifacts.
+- You are the final author of every task spec and test commit (ADR 0027). Codex
+  research and drafts, once that feature exists (CU1 to CU3, planned), are data:
+  check them against the code and confirm the spec and tests yourself. No draft
+  becomes a spec or a test commit without you, and a draft never lets an
+  implementation sub-agent change tests or the spec.
 - You do not implement features. The only exceptions are resolving rebase
   conflicts, P0 emergency fixes and the throwaway reference implementation described
   under the procedure.
