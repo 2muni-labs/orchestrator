@@ -1,16 +1,18 @@
-"""Derived views of the state store: TODO.md, status rows and the PR body."""
+"""Derived views of the state store: TODO.md, status rows, the PR body and plans."""
 
 import os
 import re
 import tempfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
 from orch.review import Triage, override_section
 from orch.scheduler import BlockedChain
+from orch.tracking import Project, Record
 
 
 def elapsed_sec(task: Task, now: datetime) -> int:
@@ -216,3 +218,36 @@ def build_body(
     if triage is not None:
         body = override_section(triage) + "\n\n" + body
     return body
+
+
+# Plan files (technical design 4.11, ADR 0025)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlanEntry:
+    """One tracking record with its tasks, as shown in a plan file."""
+
+    record: Record
+    tasks: tuple[Task, ...]
+    priority: str | None
+    issue_closed: bool
+
+
+def plan_priority(body: str) -> str | None:
+    """Return the work priority line's value in a task body, or None."""
+    raise NotImplementedError
+
+
+def entry_open(entry: PlanEntry) -> bool:
+    """Return whether the record is still open by local evidence."""
+    raise NotImplementedError
+
+
+def plan_text(
+    project: Project,
+    entries: Sequence[PlanEntry],
+    tasks_by_id: Mapping[str, Task],
+    now: datetime,
+) -> str:
+    """Return a group's plan file contents."""
+    raise NotImplementedError

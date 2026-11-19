@@ -22,9 +22,13 @@ from orch.models import (
     Verdict,
 )
 from orch.render import (
+    PlanEntry,
     build_body,
     elapsed_sec,
+    entry_open,
     format_elapsed,
+    plan_priority,
+    plan_text,
     purpose_line,
     review_packet,
     status_lines,
@@ -33,6 +37,7 @@ from orch.render import (
     write_todo,
 )
 from orch.scheduler import BlockedChain
+from orch.tracking import Project, Record
 
 NOW = datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC)
 SHA = "318f3dd" + "0" * 33
@@ -547,5 +552,263 @@ def test_render_sends_nothing_and_imports_only_what_it_may() -> None:
         "orch.models",
         "orch.review",
         "orch.scheduler",
+        "orch.tracking",
     }
     assert not names & {"subprocess", "socket", "urllib", "http"}
+
+
+# Plan files: priority line
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("# Planning\n\n- 작업 우선도: P2\n- 우선도 이유: x\n", "P2"),
+        ("- 작업 우선도: P0", "P0"),
+        ("- 작업 우선도: P3 \t\nrest", "P3"),
+        ("- 작업 우선도: P1\n- 작업 우선도: P0\n", "P1"),
+        ("- 작업 우선도: P9\n- 작업 우선도: P2\n", "P2"),
+        ("- 작업 우선도: P4\n", None),
+        ("- 작업 우선도: p1\n", None),
+        ("  - 작업 우선도: P1\n", None),
+        ("- 작업 우선도: P1 높음\n", None),
+        ("- 작업 우선도:P1\n", None),
+        ("작업 우선도: P1\n", None),
+        ("", None),
+    ],
+)
+def test_plan_priority(body: str, expected: str | None) -> None:
+    assert plan_priority(body) == expected
+
+
+# Plan files: open records
+
+PROJECT_URL = "https://github.com/orgs/2muni-labs/projects/7"
+ISSUE = "https://github.com/2muni-labs/orchestrator/issues/"
+PULL = "https://github.com/2muni-labs/orchestrator/pull/"
+
+
+def make_record(record_id: str, owner: str = "task", **overrides: object) -> Record:
+    values: dict[str, object] = {
+        "record_id": record_id,
+        "title": record_id,
+        "kind": "task" if owner == "task" else "backlog",
+        "completion_owner": owner,
+        "project_key": "G05",
+    }
+    values.update(overrides)
+    return Record(**values)
+
+
+def plan_task(task_id: str, state: TaskState, **overrides: object) -> Task:
+    return make_task(id=task_id, state=state, **overrides)
+
+
+def entry(
+    record: Record,
+    tasks: tuple[Task, ...] = (),
+    priority: str | None = None,
+    issue_closed: bool = False,
+) -> PlanEntry:
+    return PlanEntry(
+        record=record, tasks=tasks, priority=priority, issue_closed=issue_closed
+    )
+
+
+@pytest.mark.parametrize(
+    ("states", "expected"),
+    [
+        ((), True),
+        ((TaskState.QUEUED,), True),
+        ((TaskState.PR_OPEN,), True),
+        ((TaskState.CLOSED,), False),
+        ((TaskState.DISCARDED,), False),
+        ((TaskState.DISCARDED, TaskState.PREPARED), True),
+        ((TaskState.PREPARED, TaskState.CLOSED), False),
+        ((TaskState.CLOSED, TaskState.BLOCKED), True),
+    ],
+)
+def test_a_task_record_follows_its_last_task(
+    states: tuple[TaskState, ...], expected: bool
+) -> None:
+    tasks = tuple(plan_task(f"t-{n}", state) for n, state in enumerate(states))
+    assert entry_open(entry(make_record("r"), tasks)) is expected
+
+
+@pytest.mark.parametrize(("closed", "expected"), [(False, True), (True, False)])
+def test_a_harness_record_follows_its_issue(closed: bool, expected: bool) -> None:
+    done = (plan_task("t", TaskState.CLOSED),)
+    record = make_record("h", "harness")
+    assert entry_open(entry(record, done, issue_closed=closed)) is expected
+
+
+@pytest.mark.parametrize("owner", ["manual", "aggregate"])
+def test_manual_and_aggregate_records_follow_acceptance(owner: str) -> None:
+    done = (plan_task("t", TaskState.CLOSED),)
+    assert entry_open(entry(make_record("m", owner), done, issue_closed=True))
+    accepted = make_record("m", owner, accepted_at="2026-11-18T00:00:00+00:00")
+    assert not entry_open(entry(accepted, (plan_task("t", TaskState.QUEUED),)))
+
+
+# Plan files: text
+
+PLAN_PROJECT = Project(key="G05", title="orch 05 — 파이프라인", url=PROJECT_URL)
+
+
+def plan_fixture() -> tuple[list[PlanEntry], dict[str, Task]]:
+    t = plan_task
+    others = {
+        "t-dep-open": t("t-dep-open", TaskState.RUNNING),
+        "t-done": t("t-done", TaskState.CLOSED),
+        "t-disc": t("t-disc", TaskState.DISCARDED),
+        "t-c": t("t-c", TaskState.CLOSED),
+    }
+    b1 = t("t-b1", TaskState.DISCARDED, depends_on=("t-gone",))
+    b2 = t(
+        "t-b2",
+        TaskState.QUEUED,
+        grade=Grade.L3,
+        depends_on=("t-dep-open", "t-gone", "t-done"),
+    )
+    a = t("t-a", TaskState.PREPARED, depends_on=("t-done",), pr_url=PULL + "600")
+    p = t(
+        "t-p",
+        TaskState.PR_OPEN,
+        grade=Grade.L3R,
+        lane=Lane.C,
+        depends_on=("t-disc",),
+        pr_url=PULL + "700",
+    )
+    q = t("t-q", TaskState.QUEUED, grade=Grade.L1)
+    entries = [
+        entry(
+            make_record("m-b", title="B | 파이프", issue_url=ISSUE + "516"),
+            (b1, b2),
+            "P1",
+        ),
+        entry(make_record("a-harness", "harness", title="하네스", pr_url=PULL + "518")),
+        entry(
+            make_record(
+                "m-a", title="작업 A", issue_url=ISSUE + "20", pr_url=PULL + "1"
+            ),
+            (a,),
+            "P1",
+        ),
+        entry(make_record("z-new", title="새 기록", issue_url=ISSUE + "40")),
+        entry(
+            make_record("c-closed", title="끝남", issue_url=ISSUE + "50"),
+            (others["t-c"],),
+            "P0",
+        ),
+        entry(
+            make_record("m-manual", "manual", title="수락됨", accepted_at="2026-11-18"),
+            (),
+            "P0",
+        ),
+        entry(
+            make_record("p0-agg", "aggregate", title="묶음 G", issue_url=ISSUE + "12"),
+            (p,),
+            "P0",
+        ),
+        entry(
+            make_record("q-task", title="작업 Q", issue_url=ISSUE + "30"), (q,), "P3"
+        ),
+        entry(
+            make_record("h-closed", "harness", title="닫힌 하네스"),
+            (),
+            "P2",
+            issue_closed=True,
+        ),
+    ]
+    tasks_by_id = {task.id: task for task in (b1, b2, a, p, q, *others.values())}
+    return entries, tasks_by_id
+
+
+NOTICE = (
+    "자동 생성 파일입니다. 직접 수정하지 마세요. "
+    "원본은 `state.db`와 지시서의 우선도 줄입니다."
+)
+
+PLAN_HEAD = f"""# 계획: G05
+
+{NOTICE}
+
+생성 시각: 2026-11-05T12:00:00+00:00
+그룹: orch 05 — 파이프라인 ({PROJECT_URL})
+
+## 열린 기록
+
+| 우선도 | 기록 | 제목 | 완료 책임 | 이슈 | 작업 | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+"""
+
+
+def test_plan_text_has_the_exact_format() -> None:
+    entries, tasks_by_id = plan_fixture()
+    expected = PLAN_HEAD + (
+        f"| P0 | p0-agg | 묶음 G | aggregate | #12 | t-p pr_open L3R/C | {PULL}700 |\n"
+        f"| P1 | m-a | 작업 A | task | #20 | t-a prepared L2/B | {PULL}600 |\n"
+        "| P1 | m-b | B \\| 파이프 | task | #516 "
+        "| t-b1 discarded L2/B, t-b2 queued L3/B | - |\n"
+        "| P3 | q-task | 작업 Q | task | #30 | t-q queued L1/B | - |\n"
+        f"| - | a-harness | 하네스 | harness | - | - | {PULL}518 |\n"
+        "| - | z-new | 새 기록 | task | #40 | - | - |\n"
+        "\n"
+        "## 대기 사유\n"
+        "\n"
+        "- t-p: 선행 폐기 t-disc\n"
+        "- t-b2: 선행 대기 t-dep-open (running)\n"
+        "- t-b2: 선행 대기 t-gone (없음)\n"
+        "\n"
+        "## 실행 가능\n"
+        "\n"
+        "- t-a\n"
+        "- t-q\n"
+        "- 작업 미등록: z-new\n"
+    )
+    assert plan_text(PLAN_PROJECT, entries, tasks_by_id, NOW) == expected
+
+
+def test_plan_text_does_not_depend_on_the_entry_order() -> None:
+    entries, tasks_by_id = plan_fixture()
+    forward = plan_text(PLAN_PROJECT, entries, tasks_by_id, NOW)
+    assert plan_text(PLAN_PROJECT, entries[::-1], tasks_by_id, NOW) == forward
+
+
+def test_plan_text_says_none_without_waits_or_runnable_tasks() -> None:
+    running = plan_task("t-r", TaskState.RUNNING, depends_on=("t-d",))
+    done = plan_task("t-d", TaskState.CLOSED)
+    entries = [
+        entry(make_record("h", "harness", title="h", issue_url=ISSUE + "7")),
+        entry(make_record("r", title="r"), (running,), "P2"),
+    ]
+    text = plan_text(PLAN_PROJECT, entries, {"t-r": running, "t-d": done}, NOW)
+    assert text == PLAN_HEAD + (
+        "| P2 | r | r | task | - | t-r running L2/B | - |\n"
+        "| - | h | h | harness | #7 | - | - |\n"
+        "\n## 대기 사유\n\n- 없음\n\n## 실행 가능\n\n- 없음\n"
+    )
+
+
+def test_plan_text_lists_several_records_without_tasks_on_one_line() -> None:
+    entries = [
+        entry(make_record("r-b", title="b")),
+        entry(make_record("r-a", title="a"), (), "P3"),
+    ]
+    text = plan_text(PLAN_PROJECT, entries, {}, NOW)
+    assert text.endswith("## 실행 가능\n\n- 작업 미등록: r-a, r-b\n")
+
+
+def test_plan_text_takes_the_record_pr_when_the_last_task_has_none() -> None:
+    first = plan_task("t-1", TaskState.DISCARDED, pr_url=PULL + "2")
+    last = plan_task("t-2", TaskState.QUEUED)
+    record = make_record("r", title="r", pr_url=PULL + "3")
+    text = plan_text(PLAN_PROJECT, [entry(record, (first, last))], {}, NOW)
+    assert f"| t-1 discarded L2/B, t-2 queued L2/B | {PULL}3 |" in text
+
+
+def test_plan_text_leaves_out_paths_and_bodies() -> None:
+    entries, tasks_by_id = plan_fixture()
+    text = plan_text(PLAN_PROJECT, entries, tasks_by_id, NOW)
+    assert "/Users/" not in text and ".orch" not in text
+    assert "worktree" not in text
