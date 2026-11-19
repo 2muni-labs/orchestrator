@@ -27,11 +27,12 @@ what is specific to the hub.
   `ruff check` and `ruff format --check` on the combined state. The lint column of
   the merge table is ruff. The bot has no `workflows` permission, so only the user
   adds or changes a workflow file.
-- A harness pull request has no task, so it gets no `orch wait`, no `user_check` and
-  no `needs_review` notification. Its label is always `verify-deep`: after the `ci`
-  check passes, add it yourself. Check its changed files against the hub target's
-  `safety_paths` in `targets.toml` and mark them in the table. The list includes
-  `targets.toml` itself.
+- A harness pull request has no task, so it gets no `user_check` and no
+  `needs_review` notification. Its label is always `verify-deep`: after it is open,
+  run `orch wait --pr <number> --merged` in a background shell, which adds the label
+  once the `ci` check passes (ADR 0026, orch v0.18.0 and later). Check its changed
+  files against the hub target's `safety_paths` in `targets.toml` and mark them in
+  the table. The list includes `targets.toml` itself.
 
 ## Harness pull requests
 
@@ -39,9 +40,12 @@ what is specific to the hub.
   is a harness pull request you write yourself, outside `orch`: create the worktree
   with `git worktree add R/worktrees/<id> -b task/<id> origin/main`, run
   `uv sync --frozen`, push with `git push -u origin task/<id>`, and open it with `gh`.
-  It has no task, so `orch wait` does not apply: learn of the merge from the user.
-  After the merge, remove the worktree and local branch. If it conflicts with `main`,
-  merge `origin/main` into the branch and push normally.
+  Wait for it with `orch wait --pr <number> --merged` and act on its `outcome`:
+  `merged` ends the wait; `closed` is reported; for `checks_failed` and
+  `changes_requested`, fix in the worktree, push and wait again; for `behind`, merge
+  `origin/main` into the branch, push normally and wait again. After the merge,
+  remove the worktree and local branch. If it conflicts with `main`, merge
+  `origin/main` into the branch and push normally.
 - A harness pull request must also pass before you push: in its worktree, run the
   sandboxed checks below on the final commit. This covers every push to that branch.
   Put the results in the pull request body.
