@@ -437,3 +437,190 @@ def test_guard_imports_no_orch_settings_or_state() -> None:
             names.add(node.module or "")
     forbidden = {"sqlite3", "tomllib", "orch"}
     assert not {name for name in names if name.split(".")[0] in forbidden}
+
+
+# m-guard-wrapper: only the first real command after a wrapper is judged, and
+# commands that mise exec runs are judged again.
+
+WRAPPER_DENY = [
+    # options that take a value are skipped with their value
+    "env -C /tmp codex",
+    "env --chdir=/tmp codex",
+    "env --chdir /tmp codex",
+    "env --unset X codex",
+    "env -P /bin codex exec",
+    "env -iu X codex",
+    "env -uX codex",
+    "env -- codex",
+    "env - codex",
+    "sudo -u bob -g staff codex",
+    "sudo -ubob codex",
+    "sudo --user=bob codex",
+    "sudo --user bob codex",
+    "sudo -E codex",
+    "sudo -D /tmp -T 10 codex",
+    "exec -la name codex",
+    "exec -c codex",
+    # env -S splits its value into the command line
+    "env -S 'codex exec'",
+    "env -S'codex exec'",
+    "env -iS 'codex exec'",
+    "env --split-string='codex exec'",
+    "env --split-string 'claude -p hi'",
+    "env -S 'FOO=1 codex'",
+    "env -S '-i codex'",
+    # wrappers inside wrappers
+    "nohup env codex",
+    "sudo env -u X codex",
+    "time nohup codex exec",
+    "env sudo -u bob codex",
+    "env bash -c 'codex exec'",
+    "env FOO=1 git push -f origin x",
+    "sudo gh pr merge 3",
+    # mise exec and mise x run what follows --
+    "mise exec codex -- codex exec",
+    "mise x codex@0.160.0 -- codex",
+    "mise exec -- codex",
+    "/opt/homebrew/bin/mise exec codex -- /x/codex exec",
+    "~/.local/bin/mise x -- codex",
+    "mise exec node -- env FOO=1 codex",
+    "mise exec gh -- gh pr merge 3",
+    "mise exec -- git push --force origin x",
+    "mise exec -- claude -p hi",
+    "mise exec -- bash -c 'codex exec'",
+    "mise -C /tmp exec codex -- codex",
+    "env mise exec -- codex",
+    "env -i HOME=/h mise x codex -- codex exec",
+    "mise exec -c 'codex exec'",
+    "mise exec -c'codex exec'",
+    "mise exec --command 'codex exec'",
+    "mise exec --command='claude -p hi'",
+    "mise x node -c 'ls; codex exec'",
+]
+
+WRAPPER_ALLOW = [
+    # the false positive from 2026-11-16: the last argument is only an argument
+    "env -i HOME=/tmp/h mise lock -g codex",
+    "env -i HOME=/tmp/h PATH=/usr/bin mise lock --global codex",
+    "env -u X ls codex",
+    "env FOO=1 grep -rn codex src",
+    "env -C codex ls",
+    "env --chdir=codex ls",
+    "sudo -u bob ls codex",
+    "sudo -u codex ls",
+    "nohup ls codex",
+    "time grep codex f",
+    "exec -a codex ls",
+    # command -v and -V only look a name up
+    "command -v codex",
+    "command -V codex",
+    "command -pv codex",
+    # a wrapper with nothing to run
+    "env",
+    "env -i",
+    "sudo -u bob",
+    "nohup",
+    "env -S ''",
+    # mise without exec runs nothing
+    "mise lock -g codex",
+    "mise use -g codex@0.169.0",
+    "mise install codex@0.169.0",
+    "mise ls codex",
+    "mise run test -- codex",
+    "mise exec node -- node -v",
+    "mise exec -- ls codex",
+    "mise x node -c 'node -v'",
+    "mise exec codex",
+]
+
+SELFCHECK_REASON = "에이전트 버전을 바꾸려면 사용자 확인이 필요합니다."
+
+
+@pytest.mark.parametrize("command", WRAPPER_DENY)
+def test_wrapper_and_mise_exec_deny(command: str) -> None:
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+    assert verdict.reason
+
+
+@pytest.mark.parametrize("command", WRAPPER_ALLOW)
+def test_wrapper_and_mise_allow(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow"), command
+
+
+@pytest.mark.parametrize("command", WRAPPER_DENY)
+def test_handle_denies_every_wrapper_deny_case(command: str) -> None:
+    assert output(handle(payload(command), {"HOME": HOME}))["permissionDecision"] == (
+        "deny"
+    )
+
+
+def test_env_split_string_that_cannot_be_split_is_denied() -> None:
+    verdict = judge("env -S 'codex \"exec'", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_mise_command_that_cannot_be_split_is_denied() -> None:
+    verdict = judge("mise exec -c 'echo \"x'", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck --apply",
+        "orch selfcheck --apply claude",
+        "orch selfcheck --apply=claude",
+        "orch selfcheck --rollback claude",
+        "orch selfcheck --rollback=codex",
+        "~/.local/bin/orch selfcheck --apply",
+        "cd /x && orch selfcheck --rollback claude",
+        "env orch selfcheck --apply",
+        "sudo -u me orch selfcheck --rollback codex",
+        "mise exec -- orch selfcheck --apply",
+        "bash -c 'orch selfcheck --apply'",
+    ],
+)
+def test_ask_for_selfcheck_switch(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("ask", SELFCHECK_REASON), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck",
+        "orch versions",
+        "echo orch selfcheck --apply",
+        "grep -n 'selfcheck --apply' docs/x.md",
+    ],
+)
+def test_selfcheck_without_a_switch_is_allowed(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow"), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck --apply; codex exec",
+        "mise exec -- orch selfcheck --apply && mise x -- codex",
+    ],
+)
+def test_deny_wins_over_the_selfcheck_ask(command: str) -> None:
+    assert judge(command, home=HOME).decision == "deny"
+
+
+def test_selfcheck_kill_and_resume_give_different_reasons() -> None:
+    reasons = {
+        judge("orch selfcheck --apply", home=HOME).reason,
+        judge("orch kill a", home=HOME).reason,
+        judge("orch resume a", home=HOME).reason,
+    }
+    assert reasons == {SELFCHECK_REASON, KILL_REASON, RESUME_REASON}
+
+
+def test_handle_asks_for_selfcheck() -> None:
+    inner = output(handle(payload("orch selfcheck --apply claude"), {"HOME": HOME}))
+    assert inner["permissionDecision"] == "ask"
+    assert inner["permissionDecisionReason"] == SELFCHECK_REASON
