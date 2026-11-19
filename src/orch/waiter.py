@@ -37,13 +37,14 @@ class Outcome(StrEnum):
 class MergeWaitReport:
     """How a wait ended. pr_state is None when no check has succeeded.
 
-    review_label is the review label on the pull request at the last successful
-    check, failed_checks the required checks that failed, and notified the events
-    this run tried to notify, in order.
+    task_id and state are None for a pull request without a task. review_label is
+    the review label on the pull request at the last successful check,
+    failed_checks the required checks that failed, and notified the events this
+    run tried to notify, in order.
     """
 
-    task_id: str
-    state: TaskState
+    task_id: str | None
+    state: TaskState | None
     pr_url: str
     pr_state: str | None
     merged: bool
@@ -257,3 +258,31 @@ def wait_for_merge(
         failed_checks=failed_checks if outcome == Outcome.CHECKS_FAILED else (),
         notified=tuple(notified),
     )
+
+
+def pull_request_url(value: str, *, github: str) -> str:
+    """Return the canonical URL of a pull request in the target repository.
+
+    value is a positive number without leading zeros, or
+    https://github.com/<owner>/<repo>/pull/<number> whose <owner>/<repo> equals
+    github ignoring case. The result is https://github.com/<github>/pull/<number>.
+    Anything else raises MergeWaitError.
+    """
+    raise NotImplementedError
+
+
+def wait_for_pull_request(
+    conn: sqlite3.Connection,
+    pr: str,
+    *,
+    target: Target,
+    token: Callable[[], str],
+    notify: Callable[[str], None],
+    interval_sec: int = 60,
+    max_wait_min: int = 720,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = _now,
+) -> MergeWaitReport:
+    """Wait for a pull request without a task, as wait_for_merge does."""
+    raise NotImplementedError

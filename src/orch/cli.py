@@ -139,7 +139,8 @@ def _parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--by", choices=("codex",))
     review_parser.add_argument("--triage", type=Path, metavar="FILE")
     wait = commands.add_parser("wait")
-    wait.add_argument("id")
+    wait.add_argument("id", nargs="?")
+    wait.add_argument("--pr")
     wait.add_argument("--merged", action="store_true")
     wait.add_argument("--interval", type=_positive_int, default=60)
     wait.add_argument("--max-wait", type=_positive_int, default=720)
@@ -717,6 +718,8 @@ def _command(
     command = args.command
     if command == "wait" and not args.merged:
         raise _UsageError("wait requires --merged")
+    if command == "wait" and args.pr is not None:
+        raise NotImplementedError
     session_target = os.environ.get("ORCH_TARGET")
     if command == "prepare":
         try:
