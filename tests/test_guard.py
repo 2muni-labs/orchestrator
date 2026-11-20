@@ -483,6 +483,11 @@ WRAPPER_DENY = [
     "sudo -Z x codex",
     "time -Q x codex exec",
     "env -iZx codex",
+    # abbreviations of env --split-string split their value too
+    "env --sp='codex exec'",
+    "env --sp 'codex exec'",
+    "env --split-s=codex",
+    "env -i --split 'FOO=1 codex exec'",
     "sudo -c default codex",
     "sudo --login-class default codex",
     "sudo -a type codex",
@@ -545,6 +550,7 @@ WRAPPER_ALLOW = [
     "env -a x ls",
     "env -i ls",
     "sudo -Z x ls",
+    "env --sp 'ls -l'",
     # command -v and -V only look a name up
     "command -v codex",
     "command -V codex",
@@ -658,3 +664,135 @@ def test_handle_asks_for_selfcheck() -> None:
     inner = output(handle(payload("orch selfcheck --apply claude"), {"HOME": HOME}))
     assert inner["permissionDecision"] == "ask"
     assert inner["permissionDecisionReason"] == SELFCHECK_REASON
+
+
+# The PreToolUse hook does not block when it times out (m14-cli, FL-M6), so the
+# wrapper readings must stay linear and a command too complex to judge is denied.
+
+SLOW_LIMIT_SEC = 1.0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env" + " -v" * 40 + " codex exec",
+        "env" + " -v" * 2000 + " codex exec",
+        "env" + " -Z x" * 200 + " codex exec",
+        "env" + " --zz" * 300 + " codex exec",
+        "sudo" + " -iZ" * 300 + " codex",
+        "env -v " * 300 + "codex exec",
+        "env -S '" + "-v " * 300 + "' codex exec",
+    ],
+)
+def test_many_unknown_wrapper_options_are_denied_quickly(command: str) -> None:
+    import time
+
+    start = time.monotonic()
+    verdict = judge(command, home=HOME)
+    assert time.monotonic() - start < SLOW_LIMIT_SEC
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_some_unknown_wrapper_options_before_a_harmless_command_are_allowed() -> None:
+    assert judge("env" + " -v" * 40 + " ls", home=HOME) == Verdict("allow")
+
+
+# Whatever the wrapper options, a denied command after them stays denied. The
+# options are generated with a fixed seed from the kinds a reading can miss: known
+# value options with separate and attached values, long options with `=`,
+# abbreviated long options, unknown short and long options with and without a
+# value, and bundles that mix them.
+
+_WRAPPER_OPTION_WORDS = {
+    "env": [
+        ["-i"],
+        ["-0"],
+        ["-u", "X"],
+        ["-uX"],
+        ["--unset", "X"],
+        ["--unset=X"],
+        ["-C", "/tmp"],
+        ["--ch", "/tmp"],
+        ["-a", "x"],
+        ["--argv0=x"],
+        ["-Z", "x"],
+        ["-iZ", "x"],
+        ["--zz", "x"],
+        ["--zz"],
+        ["-v"],
+        ["-S", "-v"],
+        ["--sp", "-v"],
+        ["--split-s=-i"],
+        ["-S", "-S -v"],
+        ["--sp=-S -i"],
+    ],
+    "time": [
+        ["-p"],
+        ["-v"],
+        ["-a"],
+        ["-f", "%e"],
+        ["-o", "/dev/null"],
+        ["--out", "/dev/null"],
+        ["--format=%e"],
+        ["-Q", "x"],
+        ["--zz", "x"],
+    ],
+    "sudo": [
+        ["-E"],
+        ["-n"],
+        ["-u", "root"],
+        ["-uroot"],
+        ["--us", "root"],
+        ["--user=root"],
+        ["-C", "3"],
+        ["-Z", "x"],
+        ["--zz", "x"],
+        ["-nu", "root"],
+    ],
+    "nohup": [[]],
+    "exec": [["-c"], ["-l"], ["-a", "x"], ["-cl"]],
+    "command": [["-p"]],
+}
+_DENIED_TAILS = ["codex exec", "/usr/local/bin/codex exec", "claude -p hi"]
+
+
+def _generated_wrapper_commands(count: int) -> list[str]:
+    import random
+
+    rng = random.Random(539)
+    wrappers = sorted(_WRAPPER_OPTION_WORDS)
+    commands = []
+    for _ in range(count):
+        words: list[str] = []
+        for _ in range(rng.randint(1, 4)):
+            wrapper = rng.choice(wrappers)
+            words.append(wrapper)
+            for _ in range(rng.randint(0, 5)):
+                words.extend(rng.choice(_WRAPPER_OPTION_WORDS[wrapper]))
+            # env reads assignments after its options; an option after one is
+            # the command env runs.
+            if wrapper == "env" and rng.random() < 0.3:
+                words.append("FOO=1")
+        commands.append(" ".join([*words, rng.choice(_DENIED_TAILS)]))
+    return commands
+
+
+@pytest.mark.parametrize("command", _generated_wrapper_commands(400))
+def test_generated_wrapper_options_never_allow_a_denied_command(command: str) -> None:
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+
+
+def test_a_command_over_the_work_limit_is_denied() -> None:
+    verdict = judge("env" + " -v" * 30000 + " ls", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_the_work_limit_is_shared_with_nested_shell_commands() -> None:
+    part = "ls" + " a" * 12000
+    assert judge(part, home=HOME) == Verdict("allow")
+    assert judge(f"bash -c '{part}'", home=HOME) == Verdict("allow")
+    verdict = judge(f"{part}; bash -c '{part}'", home=HOME)
+    assert verdict.decision == "deny"

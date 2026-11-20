@@ -26,6 +26,9 @@ _MERGE_ENDPOINT = re.compile(r"(^|/)repos/[^/\s]+/[^/\s]+/pulls/[^/\s]+/merge(/|
 _WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo"}
 # Shell builtins (command, exec) and nohup have fixed options; only external tools
 # can gain value options in a newer version.
+# Work units for one judge call: words read, copied or judged. A command over
+# the limit, such as one with 20 000 words, is denied.
+_STEP_LIMIT = 20_000
 _VERSIONED_WRAPPERS = {"env", "time", "sudo"}
 _WRAPPER_VALUE_OPTIONS = {
     "env": ("uCPSa", {"--unset", "--chdir", "--split-string", "--argv0"}),
@@ -198,87 +201,144 @@ def _force_push(args: list[str]) -> bool:
     )
 
 
-def _wrapped_commands(executable: str, args: list[str]) -> list[list[str]]:
+class _Budget:
+    """Work limit and memo shared by one judge call.
+
+    The PreToolUse hook does not block when it times out, so a command whose
+    judgment would run too long is denied instead.
+    """
+
+    def __init__(self) -> None:
+        self.steps = 0
+        self.wrapped: dict[tuple[str, ...], Verdict] = {}
+
+    def spend(self, steps: int = 1) -> None:
+        self.steps += steps
+        if self.steps > _STEP_LIMIT:
+            raise ValueError("Command is too complex to judge")
+
+
+def _wrapped_commands(
+    executable: str, args: list[str], budget: _Budget
+) -> list[list[str]]:
     """Consume wrapper options and return every command the wrapper may run.
 
     An option that is not a known value option may still take a value: a newer
     tool version can add one, and getopt_long accepts unique prefixes of long
-    options. Both readings are returned for it, as a flag and as an option that
-    takes a value, so a missing table entry never turns a deny into an allow.
+    options. Both readings are kept for it, as a flag and as an option that takes
+    a value, so a missing table entry never turns a deny into an allow. Each
+    reading only moves the start of the next word, so readings are kept as a set
+    of start positions and each position is read once.
     """
-    alternatives: list[list[str]] = []
-    main = _wrapped_command_reading(executable, args, alternatives)
-    return [main, *alternatives]
+    commands: list[list[str]] = []
+    pending = [0]
+    seen: set[int] = set()
+    while pending:
+        commands.extend(
+            _read_wrapper(executable, args, pending.pop(), seen, pending, budget)
+        )
+    return commands
 
 
-def _wrapped_command_reading(
-    executable: str, args: list[str], alternatives: list[list[str]]
-) -> list[str]:
-    """Read unknown options as flags; add their value readings to alternatives."""
+def _read_wrapper(
+    executable: str,
+    args: list[str],
+    index: int,
+    seen: set[int],
+    pending: list[int],
+    budget: _Budget,
+) -> list[list[str]]:
+    """Read from one start position, reading unknown options as flags.
+
+    The value readings of unknown options go to ``pending``. A position already
+    in ``seen`` was read before, so reading stops there. An abbreviation of env
+    --split-string also yields the commands of its split value.
+    """
     short_options, long_options = _WRAPPER_VALUE_OPTIONS.get(executable, ("", set()))
-    args = args.copy()
-    index = 0
+    versioned = executable in _VERSIONED_WRAPPERS
+    found: list[list[str]] = []
     while index < len(args):
+        if index in seen:
+            return found
+        seen.add(index)
+        budget.spend()
         arg = args[index]
         if arg == "--":
-            return args[index + 1 :]
+            budget.spend(len(args) - index)
+            return [*found, args[index + 1 :]]
         if not arg.startswith("-"):
-            return args[index:]
+            budget.spend(len(args) - index)
+            return [*found, args[index:]]
         index += 1
         value = ""
         split_string = False
         if arg.startswith("--"):
             option, equals, value = arg.partition("=")
             if option not in long_options:
+                if not versioned:
+                    continue
+                if not equals and index < len(args):
+                    pending.append(index + 1)
                 if (
-                    executable in _VERSIONED_WRAPPERS
-                    and not equals
-                    and index < len(args)
+                    executable == "env"
+                    and len(option) > 2
+                    and "--split-string".startswith(option)
+                    and (equals or index < len(args))
                 ):
-                    alternatives.extend(
-                        _wrapped_commands(executable, args[index + 1 :])
+                    split_value = value if equals else args[index]
+                    rest = args[index:] if equals else args[index + 1 :]
+                    budget.spend(len(rest))
+                    found.extend(
+                        _wrapped_commands(
+                            executable, shlex.split(split_value) + rest, budget
+                        )
                     )
                 continue
             if not equals:
                 if index == len(args):
-                    return []
+                    return found
                 value = args[index]
                 index += 1
             split_string = executable == "env" and option == "--split-string"
         else:
             if executable == "command" and ("v" in arg or "V" in arg):
-                return []
+                return found
             for offset, option in enumerate(arg[1:], start=2):
+                budget.spend()
                 if option not in short_options:
-                    if executable not in _VERSIONED_WRAPPERS:
+                    if not versioned:
                         continue
                     if offset < len(arg):
-                        alternatives.extend(_wrapped_commands(executable, args[index:]))
+                        pending.append(index)
                     elif index < len(args):
-                        alternatives.extend(
-                            _wrapped_commands(executable, args[index + 1 :])
-                        )
+                        pending.append(index + 1)
                     continue
                 value = arg[offset:]
                 if not value:
                     if index == len(args):
-                        return []
+                        return found
                     value = args[index]
                     index += 1
                 split_string = executable == "env" and option == "S"
                 break
         if split_string:
-            args[index:index] = shlex.split(value)
-    return []
+            budget.spend(len(args) - index)
+            return [
+                *found,
+                *_wrapped_commands(
+                    executable, shlex.split(value) + args[index:], budget
+                ),
+            ]
+    return found
 
 
-def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
+def _judge_mise(args: list[str], *, home: str | None, budget: _Budget) -> Verdict:
     separator = args.index("--") if "--" in args else len(args)
     options = args[:separator]
     if not any(arg in {"exec", "x"} for arg in options):
         return Verdict("allow")
 
-    result = _judge_simple(args[separator + 1 :], home=home)
+    result = _judge_simple(args[separator + 1 :], home=home, budget=budget)
     if result.decision == "deny":
         return result
     index = 0
@@ -296,7 +356,7 @@ def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
             command = arg[2:]
         else:
             continue
-        verdict = judge(command, home=home)
+        verdict = _judge(command, home=home, budget=budget)
         if verdict.decision == "deny":
             return verdict
         if verdict.decision == "ask":
@@ -304,7 +364,8 @@ def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
     return result
 
 
-def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
+def _judge_simple(words: list[str], *, home: str | None, budget: _Budget) -> Verdict:
+    budget.spend(len(words) + 1)
     secrets = ["~/.orch/secrets", "$HOME/.orch/secrets", "${HOME}/.orch/secrets"]
     if home is not None:
         secrets.append(home.rstrip("/") + "/.orch/secrets")
@@ -322,15 +383,19 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
     args = words[index + 1 :]
     if executable in _WRAPPERS:
         result = Verdict("allow")
-        for wrapped in _wrapped_commands(executable, args):
-            verdict = _judge_simple(wrapped, home=home)
+        for wrapped in _wrapped_commands(executable, args, budget):
+            key = tuple(wrapped)
+            verdict = budget.wrapped.get(key)
+            if verdict is None:
+                verdict = _judge_simple(wrapped, home=home, budget=budget)
+                budget.wrapped[key] = verdict
             if verdict.decision == "deny":
                 return verdict
             if verdict.decision == "ask" and result.decision == "allow":
                 result = verdict
         return result
     if executable == "mise":
-        return _judge_mise(args, home=home)
+        return _judge_mise(args, home=home, budget=budget)
     if executable == "codex":
         return Verdict("deny", "Codex 직접 실행은 차단합니다. orch를 사용하세요.")
     if executable == "claude" and any(arg in {"-p", "--print"} for arg in args):
@@ -357,16 +422,21 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
     if executable in {"bash", "sh", "zsh"}:
         for index, arg in enumerate(args[:-1]):
             if arg.startswith("-") and not arg.startswith("--") and "c" in arg:
-                return judge(args[index + 1], home=home)
+                return _judge(args[index + 1], home=home, budget=budget)
     return Verdict("allow")
 
 
 def judge(command: str, *, home: str | None) -> Verdict:
+    return _judge(command, home=home, budget=_Budget())
+
+
+def _judge(command: str, *, home: str | None, budget: _Budget) -> Verdict:
     try:
+        budget.spend(len(command) // 64 + 1)
         commands, _ = _commands(command)
         result = Verdict("allow")
         for words in commands:
-            verdict = _judge_simple(words, home=home)
+            verdict = _judge_simple(words, home=home, budget=budget)
             if verdict.decision == "deny":
                 return verdict
             if verdict.decision == "ask":
