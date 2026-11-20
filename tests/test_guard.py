@@ -437,3 +437,398 @@ def test_guard_imports_no_orch_settings_or_state() -> None:
             names.add(node.module or "")
     forbidden = {"sqlite3", "tomllib", "orch"}
     assert not {name for name in names if name.split(".")[0] in forbidden}
+
+
+# m-guard-wrapper: only the first real command after a wrapper is judged, and
+# commands that mise exec runs are judged again.
+
+WRAPPER_DENY = [
+    # options that take a value are skipped with their value
+    "env -C /tmp codex",
+    "env --chdir=/tmp codex",
+    "env --chdir /tmp codex",
+    "env --unset X codex",
+    "env -P /bin codex exec",
+    "env -iu X codex",
+    "env -uX codex",
+    "env -- codex",
+    "env - codex",
+    "sudo -u bob -g staff codex",
+    "sudo -ubob codex",
+    "sudo --user=bob codex",
+    "sudo --user bob codex",
+    "sudo -E codex",
+    "sudo -D /tmp -T 10 codex",
+    "exec -la name codex",
+    "exec -c codex",
+    # value options found by the deep review of PR #539
+    "time -f %e codex exec",
+    "time -o /dev/null codex exec",
+    "time --format=%e codex exec",
+    "time --output /dev/null codex exec",
+    "sudo -R /tmp codex",
+    "sudo --chroot /tmp codex",
+    "sudo --chroot=/tmp codex",
+    # getopt_long accepts unique prefixes of long options
+    "env --ch /tmp codex exec",
+    "sudo --us root codex",
+    "time --out /dev/null codex exec",
+    "env --ignore-environment codex exec",
+    "sudo --preserve-env codex",
+    # env -a/--argv0 (coreutils 9.5) and value options missing from the table
+    "env -a x codex exec",
+    "env -ia x codex",
+    "env --argv0 x codex",
+    "env --argv0=x codex",
+    "sudo -Z x codex",
+    "time -Q x codex exec",
+    "env -iZx codex",
+    # abbreviations of env --split-string split their value too
+    "env --sp='codex exec'",
+    "env --sp 'codex exec'",
+    "env --split-s=codex",
+    "env -i --split 'FOO=1 codex exec'",
+    "sudo -c default codex",
+    "sudo --login-class default codex",
+    "sudo -a type codex",
+    "sudo --auth-type type codex",
+    # env -S splits its value into the command line
+    "env -S 'codex exec'",
+    "env -S'codex exec'",
+    "env -iS 'codex exec'",
+    "env --split-string='codex exec'",
+    "env --split-string 'claude -p hi'",
+    "env -S 'FOO=1 codex'",
+    "env -S '-i codex'",
+    # wrappers inside wrappers
+    "nohup env codex",
+    "sudo env -u X codex",
+    "time nohup codex exec",
+    "env sudo -u bob codex",
+    "env bash -c 'codex exec'",
+    "env FOO=1 git push -f origin x",
+    "sudo gh pr merge 3",
+    # mise exec and mise x run what follows --
+    "mise exec codex -- codex exec",
+    "mise x codex@0.160.0 -- codex",
+    "mise exec -- codex",
+    "/opt/homebrew/bin/mise exec codex -- /x/codex exec",
+    "~/.local/bin/mise x -- codex",
+    "mise exec node -- env FOO=1 codex",
+    "mise exec gh -- gh pr merge 3",
+    "mise exec -- git push --force origin x",
+    "mise exec -- claude -p hi",
+    "mise exec -- bash -c 'codex exec'",
+    "mise -C /tmp exec codex -- codex",
+    "env mise exec -- codex",
+    "env -i HOME=/h mise x codex -- codex exec",
+    "mise exec -c 'codex exec'",
+    "mise exec -c'codex exec'",
+    "mise exec --command 'codex exec'",
+    "mise exec --command='claude -p hi'",
+    "mise x node -c 'ls; codex exec'",
+]
+
+WRAPPER_ALLOW = [
+    # the false positive from 2026-11-16: the last argument is only an argument
+    "env -i HOME=/tmp/h mise lock -g codex",
+    "env -i HOME=/tmp/h PATH=/usr/bin mise lock --global codex",
+    "env -u X ls codex",
+    "env FOO=1 grep -rn codex src",
+    "env -C codex ls",
+    "env --chdir=codex ls",
+    "sudo -u bob ls codex",
+    "sudo -u codex ls",
+    "nohup ls codex",
+    "time grep codex f",
+    "exec -a codex ls",
+    "time -o codex ls",
+    "sudo -R codex ls",
+    "env --ch /tmp ls",
+    "sudo --us root ls",
+    "time --out /dev/null ls",
+    "env -a x ls",
+    "env -i ls",
+    "sudo -Z x ls",
+    "env --sp 'ls -l'",
+    # command -v and -V only look a name up
+    "command -v codex",
+    "command -V codex",
+    "command -pv codex",
+    # a wrapper with nothing to run
+    "env",
+    "env -i",
+    "sudo -u bob",
+    "nohup",
+    "env -S ''",
+    # mise without exec runs nothing
+    "mise lock -g codex",
+    "mise use -g codex@0.169.0",
+    "mise install codex@0.169.0",
+    "mise ls codex",
+    "mise run test -- codex",
+    "mise exec node -- node -v",
+    "mise exec -- ls codex",
+    "mise x node -c 'node -v'",
+    "mise exec codex",
+]
+
+SELFCHECK_REASON = "에이전트 버전을 바꾸려면 사용자 확인이 필요합니다."
+
+
+@pytest.mark.parametrize("command", WRAPPER_DENY)
+def test_wrapper_and_mise_exec_deny(command: str) -> None:
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+    assert verdict.reason
+
+
+@pytest.mark.parametrize("command", WRAPPER_ALLOW)
+def test_wrapper_and_mise_allow(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow"), command
+
+
+@pytest.mark.parametrize("command", WRAPPER_DENY)
+def test_handle_denies_every_wrapper_deny_case(command: str) -> None:
+    assert output(handle(payload(command), {"HOME": HOME}))["permissionDecision"] == (
+        "deny"
+    )
+
+
+def test_env_split_string_that_cannot_be_split_is_denied() -> None:
+    verdict = judge("env -S 'codex \"exec'", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_mise_command_that_cannot_be_split_is_denied() -> None:
+    verdict = judge("mise exec -c 'echo \"x'", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck --apply",
+        "orch selfcheck --apply claude",
+        "orch selfcheck --apply=claude",
+        "orch selfcheck --rollback claude",
+        "orch selfcheck --rollback=codex",
+        "~/.local/bin/orch selfcheck --apply",
+        "cd /x && orch selfcheck --rollback claude",
+        "env orch selfcheck --apply",
+        "sudo -u me orch selfcheck --rollback codex",
+        "mise exec -- orch selfcheck --apply",
+        "bash -c 'orch selfcheck --apply'",
+    ],
+)
+def test_ask_for_selfcheck_switch(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("ask", SELFCHECK_REASON), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck",
+        "orch versions",
+        "echo orch selfcheck --apply",
+        "grep -n 'selfcheck --apply' docs/x.md",
+    ],
+)
+def test_selfcheck_without_a_switch_is_allowed(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow"), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "orch selfcheck --apply; codex exec",
+        "mise exec -- orch selfcheck --apply && mise x -- codex",
+    ],
+)
+def test_deny_wins_over_the_selfcheck_ask(command: str) -> None:
+    assert judge(command, home=HOME).decision == "deny"
+
+
+def test_selfcheck_kill_and_resume_give_different_reasons() -> None:
+    reasons = {
+        judge("orch selfcheck --apply", home=HOME).reason,
+        judge("orch kill a", home=HOME).reason,
+        judge("orch resume a", home=HOME).reason,
+    }
+    assert reasons == {SELFCHECK_REASON, KILL_REASON, RESUME_REASON}
+
+
+def test_handle_asks_for_selfcheck() -> None:
+    inner = output(handle(payload("orch selfcheck --apply claude"), {"HOME": HOME}))
+    assert inner["permissionDecision"] == "ask"
+    assert inner["permissionDecisionReason"] == SELFCHECK_REASON
+
+
+# The PreToolUse hook does not block when it times out (m14-cli, FL-M6), so the
+# wrapper readings must stay linear and a command too complex to judge is denied.
+
+SLOW_LIMIT_SEC = 1.0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env" + " -v" * 40 + " codex exec",
+        "env" + " -v" * 2000 + " codex exec",
+        "env" + " -Z x" * 200 + " codex exec",
+        "env" + " --zz" * 300 + " codex exec",
+        "sudo" + " -iZ" * 300 + " codex",
+        "env -v " * 300 + "codex exec",
+        "env -S '" + "-v " * 300 + "' codex exec",
+    ],
+)
+def test_many_unknown_wrapper_options_are_denied_quickly(command: str) -> None:
+    import time
+
+    start = time.monotonic()
+    verdict = judge(command, home=HOME)
+    assert time.monotonic() - start < SLOW_LIMIT_SEC
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_some_unknown_wrapper_options_before_a_harmless_command_are_allowed() -> None:
+    assert judge("env" + " -v" * 40 + " ls", home=HOME) == Verdict("allow")
+
+
+# Whatever the wrapper options, a denied command after them stays denied. The
+# options are generated with a fixed seed from the kinds a reading can miss: known
+# value options with separate and attached values, long options with `=`,
+# abbreviated long options, unknown short and long options with and without a
+# value, and bundles that mix them.
+
+_WRAPPER_OPTION_WORDS = {
+    "env": [
+        ["-i"],
+        ["-0"],
+        ["-u", "X"],
+        ["-uX"],
+        ["--unset", "X"],
+        ["--unset=X"],
+        ["-C", "/tmp"],
+        ["--ch", "/tmp"],
+        ["-a", "x"],
+        ["--argv0=x"],
+        ["-Z", "x"],
+        ["-iZ", "x"],
+        ["--zz", "x"],
+        ["--zz"],
+        ["-v"],
+        ["-S", "-v"],
+        ["--sp", "-v"],
+        ["--split-s=-i"],
+        ["-S", "-S -v"],
+        ["--sp=-S -i"],
+    ],
+    "time": [
+        ["-p"],
+        ["-v"],
+        ["-a"],
+        ["-f", "%e"],
+        ["-o", "/dev/null"],
+        ["--out", "/dev/null"],
+        ["--format=%e"],
+        ["-Q", "x"],
+        ["--zz", "x"],
+    ],
+    "sudo": [
+        ["-E"],
+        ["-n"],
+        ["-u", "root"],
+        ["-uroot"],
+        ["--us", "root"],
+        ["--user=root"],
+        ["-C", "3"],
+        ["-Z", "x"],
+        ["--zz", "x"],
+        ["-nu", "root"],
+    ],
+    "nohup": [[]],
+    "exec": [["-c"], ["-l"], ["-a", "x"], ["-cl"]],
+    "command": [["-p"]],
+}
+_DENIED_TAILS = ["codex exec", "/usr/local/bin/codex exec", "claude -p hi"]
+
+
+def _generated_wrapper_commands(count: int) -> list[str]:
+    import random
+
+    rng = random.Random(539)
+    wrappers = sorted(_WRAPPER_OPTION_WORDS)
+    commands = []
+    for _ in range(count):
+        words: list[str] = []
+        for _ in range(rng.randint(1, 4)):
+            wrapper = rng.choice(wrappers)
+            words.append(wrapper)
+            for _ in range(rng.randint(0, 5)):
+                words.extend(rng.choice(_WRAPPER_OPTION_WORDS[wrapper]))
+            # env reads assignments after its options; an option after one is
+            # the command env runs.
+            if wrapper == "env" and rng.random() < 0.3:
+                words.append("FOO=1")
+        commands.append(" ".join([*words, rng.choice(_DENIED_TAILS)]))
+    return commands
+
+
+@pytest.mark.parametrize("command", _generated_wrapper_commands(400))
+def test_generated_wrapper_options_never_allow_a_denied_command(command: str) -> None:
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+
+
+def test_a_command_over_the_work_limit_is_denied() -> None:
+    verdict = judge("env" + " -v" * 30000 + " ls", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_the_work_limit_is_shared_with_nested_shell_commands() -> None:
+    part = "ls" + " a" * 12000
+    assert judge(part, home=HOME) == Verdict("allow")
+    assert judge(f"bash -c '{part}'", home=HOME) == Verdict("allow")
+    verdict = judge(f"{part}; bash -c '{part}'", home=HOME)
+    assert verdict.decision == "deny"
+
+
+def test_a_judgment_past_the_time_limit_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter(range(0, 1000, 2))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks))
+    verdict = judge("env -v -v -v ls", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_long_split_string_abbreviations_are_denied_within_the_time_limit() -> None:
+    import time
+
+    command = "env" + (" --s '-x " + "a" * 30_000 + "'") * 8 + " codex exec"
+    start = time.monotonic()
+    verdict = judge(command, home=HOME)
+    # Well under the 10 s hook timeout, with room for a loaded machine.
+    assert time.monotonic() - start < 8.0
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_a_command_over_the_length_limit_is_denied_before_it_is_split() -> None:
+    import time
+
+    start = time.monotonic()
+    verdict = judge("ls " + "a" * (guard._MAX_COMMAND_CHARS + 1), home=HOME)
+    assert time.monotonic() - start < 1.0
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_a_long_command_under_the_length_limit_is_judged() -> None:
+    assert judge("ls " + "a" * 60_000, home=HOME) == Verdict("allow")
