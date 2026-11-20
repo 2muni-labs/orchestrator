@@ -24,8 +24,11 @@ _HEREDOC = re.compile(
 )
 _MERGE_ENDPOINT = re.compile(r"(^|/)repos/[^/\s]+/[^/\s]+/pulls/[^/\s]+/merge(/|\?|$)")
 _WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo"}
+# Shell builtins (command, exec) and nohup have fixed options; only external tools
+# can gain value options in a newer version.
+_VERSIONED_WRAPPERS = {"env", "time", "sudo"}
 _WRAPPER_VALUE_OPTIONS = {
-    "env": ("uCPS", {"--unset", "--chdir", "--split-string"}),
+    "env": ("uCPSa", {"--unset", "--chdir", "--split-string", "--argv0"}),
     "exec": ("a", set()),
     "time": ("fo", {"--format", "--output"}),
     "sudo": (
@@ -198,54 +201,75 @@ def _force_push(args: list[str]) -> bool:
 def _wrapped_commands(executable: str, args: list[str]) -> list[list[str]]:
     """Consume wrapper options and return every command the wrapper may run.
 
-    A long option without ``=`` that is not an exact known value option may be an
-    abbreviation (getopt_long accepts unique prefixes) or a flag, so both readings
-    are returned: the next word as the command, and the next word as its value.
+    An option that is not a known value option may still take a value: a newer
+    tool version can add one, and getopt_long accepts unique prefixes of long
+    options. Both readings are returned for it, as a flag and as an option that
+    takes a value, so a missing table entry never turns a deny into an allow.
     """
+    alternatives: list[list[str]] = []
+    main = _wrapped_command_reading(executable, args, alternatives)
+    return [main, *alternatives]
+
+
+def _wrapped_command_reading(
+    executable: str, args: list[str], alternatives: list[list[str]]
+) -> list[str]:
+    """Read unknown options as flags; add their value readings to alternatives."""
     short_options, long_options = _WRAPPER_VALUE_OPTIONS.get(executable, ("", set()))
     args = args.copy()
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
-            return [args[index + 1 :]]
+            return args[index + 1 :]
         if not arg.startswith("-"):
-            return [args[index:]]
+            return args[index:]
         index += 1
         value = ""
         split_string = False
         if arg.startswith("--"):
             option, equals, value = arg.partition("=")
             if option not in long_options:
-                if equals or index == len(args):
-                    continue
-                return [
-                    *_wrapped_commands(executable, args[index:]),
-                    *_wrapped_commands(executable, args[index + 1 :]),
-                ]
+                if (
+                    executable in _VERSIONED_WRAPPERS
+                    and not equals
+                    and index < len(args)
+                ):
+                    alternatives.extend(
+                        _wrapped_commands(executable, args[index + 1 :])
+                    )
+                continue
             if not equals:
                 if index == len(args):
-                    return [[]]
+                    return []
                 value = args[index]
                 index += 1
             split_string = executable == "env" and option == "--split-string"
         else:
+            if executable == "command" and ("v" in arg or "V" in arg):
+                return []
             for offset, option in enumerate(arg[1:], start=2):
-                if executable == "command" and option in "vV":
-                    return [[]]
                 if option not in short_options:
+                    if executable not in _VERSIONED_WRAPPERS:
+                        continue
+                    if offset < len(arg):
+                        alternatives.extend(_wrapped_commands(executable, args[index:]))
+                    elif index < len(args):
+                        alternatives.extend(
+                            _wrapped_commands(executable, args[index + 1 :])
+                        )
                     continue
                 value = arg[offset:]
                 if not value:
                     if index == len(args):
-                        return [[]]
+                        return []
                     value = args[index]
                     index += 1
                 split_string = executable == "env" and option == "S"
                 break
         if split_string:
             args[index:index] = shlex.split(value)
-    return [[]]
+    return []
 
 
 def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
