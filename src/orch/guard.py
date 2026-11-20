@@ -3,6 +3,7 @@
 import json
 import re
 import shlex
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from os.path import basename
@@ -29,6 +30,13 @@ _WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo"}
 # Work units for one judge call: words read, copied or judged. A command over
 # the limit, such as one with 20 000 words, is denied.
 _STEP_LIMIT = 20_000
+# Wall-clock limit for one judge call, well under the 10 s hook timeout. It bounds
+# every cost the step count misses, such as splitting long env -S values.
+_TIME_LIMIT_SEC = 3.0
+# shlex reads one long word in time quadratic in its length, and the time limit
+# cannot stop it midway, so a longer command is denied before it is split. The
+# longest command in the local transcripts was 42 KB (2026-11-20).
+_MAX_COMMAND_CHARS = 256 * 1024
 _VERSIONED_WRAPPERS = {"env", "time", "sudo"}
 _WRAPPER_VALUE_OPTIONS = {
     "env": ("uCPSa", {"--unset", "--chdir", "--split-string", "--argv0"}),
@@ -210,12 +218,15 @@ class _Budget:
 
     def __init__(self) -> None:
         self.steps = 0
+        self.deadline = time.monotonic() + _TIME_LIMIT_SEC
         self.wrapped: dict[tuple[str, ...], Verdict] = {}
 
     def spend(self, steps: int = 1) -> None:
         self.steps += steps
         if self.steps > _STEP_LIMIT:
             raise ValueError("Command is too complex to judge")
+        if time.monotonic() > self.deadline:
+            raise ValueError("Command took too long to judge")
 
 
 def _wrapped_commands(
@@ -432,6 +443,8 @@ def judge(command: str, *, home: str | None) -> Verdict:
 
 def _judge(command: str, *, home: str | None, budget: _Budget) -> Verdict:
     try:
+        if len(command) > _MAX_COMMAND_CHARS:
+            raise ValueError("Command is too long to judge")
         budget.spend(len(command) // 64 + 1)
         commands, _ = _commands(command)
         result = Verdict("allow")

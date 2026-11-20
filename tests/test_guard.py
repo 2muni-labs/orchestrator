@@ -796,3 +796,39 @@ def test_the_work_limit_is_shared_with_nested_shell_commands() -> None:
     assert judge(f"bash -c '{part}'", home=HOME) == Verdict("allow")
     verdict = judge(f"{part}; bash -c '{part}'", home=HOME)
     assert verdict.decision == "deny"
+
+
+def test_a_judgment_past_the_time_limit_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter(range(0, 1000, 2))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks))
+    verdict = judge("env -v -v -v ls", home=HOME)
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_long_split_string_abbreviations_are_denied_within_the_time_limit() -> None:
+    import time
+
+    command = "env" + (" --s '-x " + "a" * 30_000 + "'") * 8 + " codex exec"
+    start = time.monotonic()
+    verdict = judge(command, home=HOME)
+    # Well under the 10 s hook timeout, with room for a loaded machine.
+    assert time.monotonic() - start < 8.0
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_a_command_over_the_length_limit_is_denied_before_it_is_split() -> None:
+    import time
+
+    start = time.monotonic()
+    verdict = judge("ls " + "a" * (guard._MAX_COMMAND_CHARS + 1), home=HOME)
+    assert time.monotonic() - start < 1.0
+    assert verdict.decision == "deny"
+    assert verdict.reason
+
+
+def test_a_long_command_under_the_length_limit_is_judged() -> None:
+    assert judge("ls " + "a" * 60_000, home=HOME) == Verdict("allow")
