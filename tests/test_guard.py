@@ -469,6 +469,12 @@ WRAPPER_DENY = [
     "sudo -R /tmp codex",
     "sudo --chroot /tmp codex",
     "sudo --chroot=/tmp codex",
+    # getopt_long accepts unique prefixes of long options
+    "env --ch /tmp codex exec",
+    "sudo --us root codex",
+    "time --out /dev/null codex exec",
+    "env --ignore-environment codex exec",
+    "sudo --preserve-env codex",
     "sudo -c default codex",
     "sudo --login-class default codex",
     "sudo -a type codex",
@@ -525,6 +531,9 @@ WRAPPER_ALLOW = [
     "exec -a codex ls",
     "time -o codex ls",
     "sudo -R codex ls",
+    "env --ch /tmp ls",
+    "sudo --us root ls",
+    "time --out /dev/null ls",
     # command -v and -V only look a name up
     "command -v codex",
     "command -V codex",

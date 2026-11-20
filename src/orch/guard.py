@@ -195,47 +195,57 @@ def _force_push(args: list[str]) -> bool:
     )
 
 
-def _wrapped_command(executable: str, args: list[str]) -> list[str]:
-    """Consume wrapper options and return only the command it will run."""
+def _wrapped_commands(executable: str, args: list[str]) -> list[list[str]]:
+    """Consume wrapper options and return every command the wrapper may run.
+
+    A long option without ``=`` that is not an exact known value option may be an
+    abbreviation (getopt_long accepts unique prefixes) or a flag, so both readings
+    are returned: the next word as the command, and the next word as its value.
+    """
     short_options, long_options = _WRAPPER_VALUE_OPTIONS.get(executable, ("", set()))
     args = args.copy()
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
-            return args[index + 1 :]
+            return [args[index + 1 :]]
         if not arg.startswith("-"):
-            return args[index:]
+            return [args[index:]]
         index += 1
         value = ""
         split_string = False
         if arg.startswith("--"):
             option, equals, value = arg.partition("=")
             if option not in long_options:
-                continue
+                if equals or index == len(args):
+                    continue
+                return [
+                    *_wrapped_commands(executable, args[index:]),
+                    *_wrapped_commands(executable, args[index + 1 :]),
+                ]
             if not equals:
                 if index == len(args):
-                    return []
+                    return [[]]
                 value = args[index]
                 index += 1
             split_string = executable == "env" and option == "--split-string"
         else:
             for offset, option in enumerate(arg[1:], start=2):
                 if executable == "command" and option in "vV":
-                    return []
+                    return [[]]
                 if option not in short_options:
                     continue
                 value = arg[offset:]
                 if not value:
                     if index == len(args):
-                        return []
+                        return [[]]
                     value = args[index]
                     index += 1
                 split_string = executable == "env" and option == "S"
                 break
         if split_string:
             args[index:index] = shlex.split(value)
-    return []
+    return [[]]
 
 
 def _judge_mise(args: list[str], *, home: str | None) -> Verdict:
@@ -287,7 +297,14 @@ def _judge_simple(words: list[str], *, home: str | None) -> Verdict:
     executable = basename(words[index])
     args = words[index + 1 :]
     if executable in _WRAPPERS:
-        return _judge_simple(_wrapped_command(executable, args), home=home)
+        result = Verdict("allow")
+        for wrapped in _wrapped_commands(executable, args):
+            verdict = _judge_simple(wrapped, home=home)
+            if verdict.decision == "deny":
+                return verdict
+            if verdict.decision == "ask" and result.decision == "allow":
+                result = verdict
+        return result
     if executable == "mise":
         return _judge_mise(args, home=home)
     if executable == "codex":
