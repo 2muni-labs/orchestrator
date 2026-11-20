@@ -30,6 +30,7 @@ from orch import (
     review,
     runner,
     scheduler,
+    selfcheck,
     service,
     store,
     taskfile,
@@ -64,6 +65,7 @@ _REFRESH_COMMANDS = {
 }
 
 
+AGENT_PAUSE = "agent_unverified"
 _HOOK_NAMES = ("session-start", "pre-bash", "subagent-stop", "notification")
 
 
@@ -237,6 +239,26 @@ def _environment(
             raise _UsageError("ORCH_HUB must be an explicit absolute path")
         hub = Path(value)
     return orch_home, hub
+
+
+def _check_agent(
+    conn: sqlite3.Connection,
+    *,
+    settings: config.Config,
+    orch_home: Path,
+    home: Path,
+    now: datetime,
+    secrets: list[str],
+) -> selfcheck.CurrentCheck:
+    raise NotImplementedError
+
+
+def _ready_candidate(orch_home: Path) -> str | None:
+    raise NotImplementedError
+
+
+def _start_selfcheck(orch_home: Path, hub: Path) -> None:
+    raise NotImplementedError
 
 
 def _get_task(conn: sqlite3.Connection, task_id: str) -> Task:

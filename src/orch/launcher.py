@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from orch import selfcheck
 from orch.config import Target, target_paths
 
 PINNED_CLAUDE_VERSION: Final = "2.1.319"
@@ -62,6 +63,10 @@ def version_warning(version: str | None) -> str | None:
         f"Claude Code 실제 버전 {version}이 "
         f"고정 버전 {PINNED_CLAUDE_VERSION}과 다릅니다."
     )
+
+
+def selfcheck_warnings(current: selfcheck.CurrentCheck, ready: str | None) -> list[str]:
+    raise NotImplementedError
 
 
 def parse_agent(text: str, *, stem: str) -> dict[str, object]:
