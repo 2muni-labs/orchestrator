@@ -1,8 +1,4 @@
-"""orch selfcheck for Claude Code: find, install beside and verify a candidate.
-
-Switching (--apply, --rollback) and the current version check live elsewhere
-(ADR 0019, technical design 4.13).
-"""
+"""Find, verify, switch and roll back Claude Code installations (ADR 0019)."""
 
 import fcntl
 import hashlib
@@ -392,7 +388,7 @@ def load_agents_state(path: Path) -> dict[str, object]:
                     not isinstance(entry.get(key), str)
                     for key in ("version", "sha256", "path", "at")
                 )
-                or entry.get("source") not in ("bootstrap", "apply")
+                or entry.get("source") not in ("bootstrap", "apply", "rollback")
             ):
                 raise ValueError("Invalid installed version")
         candidate = claude.get("candidate")
@@ -1255,6 +1251,7 @@ def _remove_binary(path: Path, layout: ClaudeLayout, protected: set[Path]) -> No
             and _matches(r"[0-9]+\.[0-9]+\.[0-9]+", resolved.name)
             and resolved not in protected
             and stat.S_ISREG(path.lstat().st_mode)
+            and resolved != layout.link.resolve()
         ):
             path.unlink()
     except OSError:
@@ -1326,14 +1323,209 @@ class CurrentCheck:
 def apply_claude(
     *, hub: Path, orch_home: Path, home: Path, now: datetime
 ) -> SwitchReport:
-    raise NotImplementedError
+    return _switch_claude(hub=hub, orch_home=orch_home, home=home, now=now)
 
 
 def rollback_claude(*, orch_home: Path, home: Path, now: datetime) -> SwitchReport:
-    raise NotImplementedError
+    return _switch_claude(hub=None, orch_home=orch_home, home=home, now=now)
+
+
+def _switch_claude(
+    *, hub: Path | None, orch_home: Path, home: Path, now: datetime
+) -> SwitchReport:
+    switch = _ClaudeSwitch(hub, orch_home, home, now)
+    try:
+        orch_home.mkdir(parents=True, exist_ok=True)
+        with (orch_home / "agents.json.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return switch.report("busy")
+            try:
+                return switch.execute()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        return switch.report("error", "io")
+    except Exception:
+        return switch.report("error", "internal")
+
+
+@dataclass
+class _ClaudeSwitch:
+    hub: Path | None
+    orch_home: Path
+    home: Path
+    now: datetime
+    current: str | None = None
+    previous: str | None = None
+
+    def report(
+        self,
+        status: str,
+        reason: str | None = None,
+        *,
+        hold: str | None = None,
+        removed: tuple[str, ...] = (),
+    ) -> SwitchReport:
+        return SwitchReport(status, reason, self.current, self.previous, hold, removed)
+
+    def execute(self) -> SwitchReport:
+        state_path = agents_state_path(self.orch_home)
+        try:
+            state = load_agents_state(state_path)
+        except SelfcheckError:
+            return self.report("error", "state")
+        claude = state["agents"].get("claude", {})
+        current = claude.get("current")
+        previous = claude.get("previous")
+        self.current = current["version"] if current is not None else None
+        self.previous = previous["version"] if previous is not None else None
+        pins = None
+        if self.hub is not None:
+            try:
+                pins = load_pins(self.hub)
+            except SelfcheckError:
+                return self.report("error", "pins")
+        if current is None:
+            return self.report("refused", "no_current")
+        if pins is not None:
+            target = claude.get("candidate")
+            if target is None or target["status"] != "ready":
+                return self.report("refused", "no_ready_candidate")
+            if target["pins_sha256"] != pins.sha256:
+                return self.report("refused", "pins_changed")
+            if parse_version(target["version"]) <= parse_version(current["version"]):
+                return self.report("refused", "not_newer")
+        else:
+            target = previous
+            if target is None:
+                return self.report("refused", "no_previous")
+        layout = claude_layout(self.home)
+        if (
+            not layout.link.is_symlink()
+            or layout.link.resolve() != Path(current["path"]).resolve()
+        ):
+            return self.report("refused", "link")
+        if not isinstance(target["path"], str):
+            return self.report("refused", "path")
+        resolved = Path(target["path"]).resolve()
+        if (
+            resolved.parent != layout.versions.resolve()
+            or resolved.name != target["version"]
+        ):
+            return self.report("refused", "path")
+        if not resolved.is_file() or sha256_file(resolved) != target["sha256"]:
+            return self.report("refused", "binary_changed")
+        updated = dict(claude)
+        updated["previous"] = current
+        updated["current"] = {
+            "version": target["version"],
+            "sha256": target["sha256"],
+            "path": str(resolved) if pins is not None else target["path"],
+            "at": self.now.isoformat(),
+            "source": "apply" if pins is not None else "rollback",
+        }
+        if pins is not None:
+            updated["candidate"] = None
+        before = os.readlink(layout.link)
+        try:
+            _switch_link(layout.link, str(resolved))
+        except OSError:
+            return self.report("error", "link_write")
+        state["agents"]["claude"] = updated
+        try:
+            save_agents_state(state_path, state)
+        except OSError:
+            try:
+                _switch_link(layout.link, before)
+            except OSError:
+                pass
+            return self.report("error", "state_write")
+        self.current = target["version"]
+        self.previous = current["version"]
+        removed = _prune_claude(layout, updated, keep_candidate=pins is None)
+        return self.report(
+            "applied" if pins is not None else "rolled_back",
+            hold=f"claude@{current['version']}" if pins is None else None,
+            removed=removed,
+        )
+
+
+def _switch_link(link: Path, target: str) -> None:
+    temporary = link.with_name(f".{link.name}.switch-{secrets.token_hex(4)}")
+    try:
+        temporary.symlink_to(target)
+        os.replace(temporary, link)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _prune_claude(
+    layout: ClaudeLayout, claude: Mapping[str, object], *, keep_candidate: bool
+) -> tuple[str, ...]:
+    protected = {
+        Path(claude[name]["path"]).resolve() for name in ("current", "previous")
+    }
+    candidate = claude.get("candidate")
+    if (
+        keep_candidate
+        and isinstance(candidate, dict)
+        and candidate.get("status") == "ready"
+        and isinstance(candidate.get("path"), str)
+    ):
+        protected.add(Path(candidate["path"]).resolve())
+    try:
+        entries = list(layout.versions.iterdir())
+    except OSError:
+        return ()
+    removed = []
+    for path in entries:
+        try:
+            if not _matches(r"[0-9]+\.[0-9]+\.[0-9]+", path.name) or not stat.S_ISREG(
+                path.lstat().st_mode
+            ):
+                continue
+            resolved = path.resolve()
+            if resolved not in protected and resolved != layout.link.resolve():
+                path.unlink()
+                removed.append(path.name)
+        except OSError:
+            pass
+    return tuple(sorted(removed))
 
 
 def check_current_claude(
     *, orch_home: Path, claude_path: Path, command: Command = run_command
 ) -> CurrentCheck:
-    raise NotImplementedError
+    try:
+        try:
+            state = load_agents_state(agents_state_path(orch_home))
+        except SelfcheckError:
+            return CurrentCheck("error", "state", None)
+        current = state["agents"].get("claude", {}).get("current")
+        if current is None:
+            return CurrentCheck("no_record", None, None)
+        version = current["version"]
+        resolved = claude_path.resolve()
+        if resolved != Path(current["path"]).resolve():
+            return CurrentCheck("mismatch", "path", version)
+        if not resolved.is_file():
+            return CurrentCheck("mismatch", "missing", version)
+        if sha256_file(resolved) != current["sha256"]:
+            return CurrentCheck("mismatch", "sha256", version)
+        try:
+            result = command([str(resolved), "--version"], 30)
+        except OSError, subprocess.TimeoutExpired:
+            return CurrentCheck("mismatch", "version", version)
+        words = result.stdout.split()
+        if result.returncode != 0 or not words or words[0] != version:
+            return CurrentCheck("mismatch", "version", version)
+        return CurrentCheck("ok", None, version)
+    except OSError:
+        return CurrentCheck("error", "io", None)
+    except Exception:
+        return CurrentCheck("error", "internal", None)
