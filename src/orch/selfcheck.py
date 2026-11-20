@@ -1288,3 +1288,52 @@ def _restore_link(path: Path, before: tuple[object, ...]) -> None:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+# Switch, rollback and the version in use
+
+
+@dataclass(frozen=True)
+class SwitchReport:
+    status: str
+    reason: str | None
+    current: str | None
+    previous: str | None
+    hold: str | None
+    removed: tuple[str, ...]
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "current": self.current,
+            "previous": self.previous,
+            "hold": self.hold,
+            "removed": list(self.removed),
+        }
+
+
+@dataclass(frozen=True)
+class CurrentCheck:
+    status: str
+    reason: str | None
+    version: str | None
+
+    def to_json(self) -> dict[str, object]:
+        return {"status": self.status, "reason": self.reason, "version": self.version}
+
+
+def apply_claude(
+    *, hub: Path, orch_home: Path, home: Path, now: datetime
+) -> SwitchReport:
+    raise NotImplementedError
+
+
+def rollback_claude(*, orch_home: Path, home: Path, now: datetime) -> SwitchReport:
+    raise NotImplementedError
+
+
+def check_current_claude(
+    *, orch_home: Path, claude_path: Path, command: Command = run_command
+) -> CurrentCheck:
+    raise NotImplementedError
