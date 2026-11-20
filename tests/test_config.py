@@ -1164,3 +1164,72 @@ def test_the_upper_bound_is_inclusive_and_one_more_is_refused(tmp_path: Path) ->
     write_config(tmp_path, f"[gate]\ntimeout_min = {GATE_TIMEOUT_MAX_MIN + 1}\n")
     with pytest.raises(ConfigError):
         load_config(tmp_path)
+
+
+# [selfcheck]
+
+
+def test_selfcheck_settings_default_to_three_days_and_no_hold(tmp_path: Path) -> None:
+    from orch.config import SELFCHECK_MIN_AGE_DEFAULT_DAYS, SELFCHECK_MIN_AGE_MAX_DAYS
+
+    assert SELFCHECK_MIN_AGE_DEFAULT_DAYS == 3
+    assert SELFCHECK_MIN_AGE_MAX_DAYS == 90
+    settings = load_config(tmp_path)
+    assert settings.selfcheck_min_age_days == 3
+    assert settings.selfcheck_hold == ()
+    assert Config().selfcheck_min_age_days == 3
+    assert Config().selfcheck_hold == ()
+
+
+def test_selfcheck_settings_are_read(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        "retention_days = 7\n"
+        "[selfcheck]\nmin_age_days = 90\n"
+        'hold = ["claude@2.1.326", "codex@0.170.0"]\n'
+        "[gate]\ntimeout_min = 40\n",
+    )
+    settings = load_config(tmp_path)
+    assert settings.selfcheck_min_age_days == 90
+    assert settings.selfcheck_hold == ("claude@2.1.326", "codex@0.170.0")
+    assert settings.retention_days == 7
+    assert settings.gate_timeout_min == 40
+
+
+@pytest.mark.parametrize("days", [1, 3, 14])
+def test_selfcheck_min_age_is_read(tmp_path: Path, days: int) -> None:
+    write_config(tmp_path, f"[selfcheck]\nmin_age_days = {days}\n")
+    assert load_config(tmp_path).selfcheck_min_age_days == days
+
+
+def test_an_empty_hold_list_is_accepted(tmp_path: Path) -> None:
+    write_config(tmp_path, "[selfcheck]\nhold = []\n")
+    assert load_config(tmp_path).selfcheck_hold == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "selfcheck = 1\n",
+        "[selfcheck]\nmin_age_days = 0\n",
+        "[selfcheck]\nmin_age_days = -1\n",
+        "[selfcheck]\nmin_age_days = 91\n",
+        "[selfcheck]\nmin_age_days = true\n",
+        '[selfcheck]\nmin_age_days = "3"\n',
+        "[selfcheck]\nmin_age_days = 3.0\n",
+        '[selfcheck]\nhold = "claude@2.1.326"\n',
+        "[selfcheck]\nhold = [1]\n",
+        '[selfcheck]\nhold = ["claude"]\n',
+        '[selfcheck]\nhold = ["claude@2.1"]\n',
+        '[selfcheck]\nhold = ["claude@2.1.326 "]\n',
+        '[selfcheck]\nhold = ["gemini@1.0.0"]\n',
+        '[selfcheck]\nhold = ["Claude@2.1.326"]\n',
+        '[selfcheck]\nhold = ["claude@v2.1.326"]\n',
+        '[selfcheck]\nhold = ["claude@2.1.326\\n"]\n',
+        "[selfcheck]\nother = 1\n",
+    ],
+)
+def test_an_invalid_selfcheck_setting_is_an_error(tmp_path: Path, text: str) -> None:
+    write_config(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)

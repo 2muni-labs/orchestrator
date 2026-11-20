@@ -132,6 +132,8 @@ def test_notify_state_path_sits_in_orch_home(tmp_path: Path) -> None:
         "user_wait",
         "changes_requested_again",
         "review_stalled",
+        "selfcheck_ready",
+        "selfcheck_failed",
         "doctor_disk",
         "doctor_a_1",
     ],
@@ -141,7 +143,19 @@ def test_known_events_are_valid(event: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "event", ["", "QUOTA", "other", "doctor_", "doctor_Disk", "doctor_x-y", "quota "]
+    "event",
+    [
+        "",
+        "QUOTA",
+        "other",
+        "doctor_",
+        "doctor_Disk",
+        "doctor_x-y",
+        "quota ",
+        "selfcheck",
+        "selfcheck_",
+        "selfcheck_other",
+    ],
 )
 def test_unknown_events_raise(event: str) -> None:
     with pytest.raises(ValueError):
@@ -165,6 +179,13 @@ def test_unknown_events_raise(event: str) -> None:
             "orchestrator|changes_requested_again|m-x",
         ),
         ("review_stalled", "orchestrator", "m-x", "orchestrator|review_stalled|m-x"),
+        ("selfcheck_ready", "claude@2.1.326", "", "claude@2.1.326|selfcheck_ready|"),
+        (
+            "selfcheck_failed",
+            "claude@2.1.326",
+            "",
+            "claude@2.1.326|selfcheck_failed|",
+        ),
     ],
 )
 def test_dedup_key_per_event(event: str, target: str, task_id: str, key: str) -> None:
@@ -190,6 +211,17 @@ def test_message_holds_only_event_target_and_task(
     target: str, task_id: str, body: str
 ) -> None:
     assert message("blocked", target=target, task_id=task_id) == body
+
+
+def test_selfcheck_messages_name_the_agent_and_version() -> None:
+    assert (
+        message("selfcheck_ready", target="claude@2.1.326")
+        == "orch selfcheck_ready target=claude@2.1.326"
+    )
+    assert (
+        message("selfcheck_failed", target="claude@2.1.326")
+        == "orch selfcheck_failed target=claude@2.1.326"
+    )
 
 
 def test_message_refuses_unknown_events() -> None:

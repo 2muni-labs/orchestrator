@@ -16,6 +16,8 @@ MARKER_FILE = ".orch-target.toml"
 NOTIFICATION_TOPIC_PATTERN = r"[A-Za-z0-9_-]{20,64}"
 GATE_TIMEOUT_DEFAULT_MIN = 30
 GATE_TIMEOUT_MAX_MIN = 120
+SELFCHECK_MIN_AGE_DEFAULT_DAYS = 3
+SELFCHECK_MIN_AGE_MAX_DAYS = 90
 
 
 class ConfigError(Exception):
@@ -97,6 +99,8 @@ class Config:
     disk_fail_gb: int = 2
     tailscale_path: Path | None = None
     gate_timeout_min: int = GATE_TIMEOUT_DEFAULT_MIN
+    selfcheck_min_age_days: int = SELFCHECK_MIN_AGE_DEFAULT_DAYS
+    selfcheck_hold: tuple[str, ...] = ()
 
 
 def _absolute_path(value: object) -> Path:
@@ -439,6 +443,7 @@ def load_config(home: Path) -> Config:
             "usage_limit_patterns",
             "doctor",
             "gate",
+            "selfcheck",
         },
     )
     backend = data.get("terminal_backend", "tmux")
@@ -483,6 +488,19 @@ def load_config(home: Path) -> Config:
     )
     if gate_timeout_min > GATE_TIMEOUT_MAX_MIN:
         raise ConfigError("gate timeout_min exceeds maximum")
+    selfcheck = _table(data.get("selfcheck", {}), {"min_age_days", "hold"})
+    selfcheck_min_age_days = _positive_integer(
+        selfcheck.get("min_age_days", SELFCHECK_MIN_AGE_DEFAULT_DAYS)
+    )
+    if selfcheck_min_age_days > SELFCHECK_MIN_AGE_MAX_DAYS:
+        raise ConfigError("selfcheck min_age_days exceeds maximum")
+    selfcheck_hold = selfcheck.get("hold", [])
+    if not isinstance(selfcheck_hold, list) or any(
+        not isinstance(item, str)
+        or not re.fullmatch(r"(claude|codex)@[0-9]+\.[0-9]+\.[0-9]+", item)
+        for item in selfcheck_hold
+    ):
+        raise ConfigError("Invalid selfcheck hold list")
     patterns_data = _table(data.get("usage_limit_patterns", {}), {"codex", "claude"})
     defaults = (
         "usage limit",
@@ -518,4 +536,6 @@ def load_config(home: Path) -> Config:
         disk_fail_gb=disk_fail_gb,
         tailscale_path=tailscale_path,
         gate_timeout_min=gate_timeout_min,
+        selfcheck_min_age_days=selfcheck_min_age_days,
+        selfcheck_hold=tuple(selfcheck_hold),
     )
