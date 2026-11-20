@@ -16,6 +16,8 @@ MARKER_FILE = ".orch-target.toml"
 NOTIFICATION_TOPIC_PATTERN = r"[A-Za-z0-9_-]{20,64}"
 GATE_TIMEOUT_DEFAULT_MIN = 30
 GATE_TIMEOUT_MAX_MIN = 120
+SELFCHECK_MIN_AGE_DEFAULT_DAYS = 3
+SELFCHECK_MIN_AGE_MAX_DAYS = 90
 
 
 class ConfigError(Exception):
@@ -97,6 +99,8 @@ class Config:
     disk_fail_gb: int = 2
     tailscale_path: Path | None = None
     gate_timeout_min: int = GATE_TIMEOUT_DEFAULT_MIN
+    selfcheck_min_age_days: int = SELFCHECK_MIN_AGE_DEFAULT_DAYS
+    selfcheck_hold: tuple[str, ...] = ()
 
 
 def _absolute_path(value: object) -> Path:
