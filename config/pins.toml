@@ -59,7 +59,7 @@ warn = [
   "P5-M5: read-only explore answer format, exit code, -o, usage per question",
   "W-M1: rollout session_meta, token_count and rate_limits format",
   "FL-M2: mise install does not switch or lock; mise lock --global prunes the old entry; a wrong checksum makes mise install exit 1",
-  "FL-M5: with MISE_CONFIG_DIR and the MISE_*_DIR variables on ~/.orch/mise, mise config ls lists only the orch config",
+  "FL-M5: with MISE_CONFIG_DIR and the MISE_*_DIR variables on ~/.orch/agent-mise (FL-M7: never a dir named mise or .mise under ~/.orch), mise config ls lists only the orch config",
 ]
 
 # tmux and macOS have no latest_url and selfcheck does not install them: orch versions
