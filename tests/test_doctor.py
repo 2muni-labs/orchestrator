@@ -12,7 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from orch import config, doctor, lifecycle, notify, service, store, tracking, tracksync
+from orch import (
+    config,
+    doctor,
+    lifecycle,
+    notify,
+    selfcheck,
+    service,
+    store,
+    tracking,
+    tracksync,
+)
 from orch.config import Config, Target, target_paths
 from orch.doctor import DoctorReport, run_doctor
 from orch.gc import GcReport
@@ -29,6 +39,7 @@ from orch.models import (
     Task,
     TaskState,
 )
+from orch.selfcheck import CurrentCheck
 from orch.terminal import MainPaneStatus
 
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
@@ -71,6 +82,8 @@ class Harness:
         self.kills: list[tuple[str, dict[str, object]]] = []
         self.kill_results: dict[str, KillReport | Exception] = {}
         self.targets: dict[str, Target] = {}
+        self.current: CurrentCheck | Exception = CurrentCheck("ok", None, "2.1.319")
+        self.current_calls: list[dict[str, object]] = []
 
     def run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = list(argv)
@@ -123,6 +136,12 @@ class Harness:
             raise value
         return value
 
+    def check_current(self, **kwargs: object) -> CurrentCheck:
+        self.current_calls.append(kwargs)
+        if isinstance(self.current, Exception):
+            raise self.current
+        return self.current
+
     def go(self, **overrides: object) -> DoctorReport:
         values: dict[str, object] = {
             "settings": SETTINGS,
@@ -137,6 +156,7 @@ class Harness:
             "send": self.send,
             "collect": self.collect,
             "kill": self.kill,
+            "check_current": self.check_current,
         }
         values.update(overrides)
         return run_doctor(self.conn, **values)  # type: ignore[arg-type]
@@ -208,6 +228,7 @@ def test_a_healthy_pass_reports_every_item_ok_and_sends_nothing(h: Harness) -> N
         ("github_app", CheckLevel.OK),
         ("disk", CheckLevel.OK),
         ("network", CheckLevel.OK),
+        ("agent_versions", CheckLevel.OK),
     ]
     assert all(c.at == NOW.isoformat() for c in report.checks)
     assert h.sent == []
@@ -235,6 +256,7 @@ def test_every_item_is_recorded(h: Harness, conn: sqlite3.Connection) -> None:
         "github_app",
         "disk",
         "network",
+        "agent_versions",
     }
 
 
@@ -601,7 +623,7 @@ def test_private_values_reach_no_report_record_pause_or_notification_body(
     stored_details = {
         row[0]: row[1] for row in conn.execute("SELECT item, detail FROM doctor_checks")
     }
-    assert stored_details == {**details, "disk": "free_gb=50"}
+    assert stored_details == {**details, "disk": "free_gb=50", "agent_versions": None}
     assert bodies == [
         b"orch doctor_claude_auth",
         b"orch doctor_codex_auth",
@@ -1834,6 +1856,7 @@ def test_a_track_sync_error_is_isolated(
         "github_app",
         "disk",
         "network",
+        "agent_versions",
     ]
 
 
@@ -1848,3 +1871,98 @@ def test_track_sync_never_reaches_github(
     ) == 1
     source = Path(doctor.__file__).read_text(encoding="utf-8")
     assert "tracksync.sync" not in source and "github." not in source
+
+
+# agent_versions (m-selfcheck-cli)
+
+
+def test_agent_versions_checks_the_configured_claude(
+    h: Harness, orch_home: Path
+) -> None:
+    report = h.go()
+    assert result_of(report, "agent_versions") == (CheckLevel.OK, None)
+    assert h.current_calls == [{"orch_home": orch_home, "claude_path": CLAUDE}]
+
+
+def test_the_default_check_is_the_selfcheck_function() -> None:
+    default = inspect.signature(run_doctor).parameters["check_current"].default
+
+    assert default is selfcheck.check_current_claude
+
+
+@pytest.mark.parametrize(
+    ("current", "detail"),
+    [
+        (CurrentCheck("no_record", None, None), "no_record"),
+        (CurrentCheck("mismatch", "sha256", "2.1.319"), "mismatch:sha256"),
+        (CurrentCheck("mismatch", "path", "2.1.319"), "mismatch:path"),
+        (CurrentCheck("error", "state", None), "error:state"),
+    ],
+)
+def test_an_unverified_claude_fails_and_pauses_dispatch(
+    h: Harness, conn: sqlite3.Connection, current: CurrentCheck, detail: str
+) -> None:
+    h.current = current
+    report = h.go()
+    assert result_of(report, "agent_versions") == (CheckLevel.FAIL, detail)
+    assert report.paused == ("agent_unverified",)
+    assert [p.note for p in store.list_pauses(conn)] == [detail]
+    assert stored(conn, "agent_versions") is CheckLevel.FAIL
+    assert h.events() == ["doctor_agent_versions"]
+    assert h.sent[0]["level"] == "fail"
+
+
+def test_a_verified_claude_lifts_the_pause(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.current = CurrentCheck("mismatch", "sha256", "2.1.319")
+    h.go()
+    h.current = CurrentCheck("ok", None, "2.1.326")
+    report = h.go()
+    assert report.paused == ()
+    assert pauses(conn) == []
+
+
+def test_a_continuing_mismatch_notifies_once(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.current = CurrentCheck("mismatch", "version", "2.1.319")
+    h.go()
+    h.go()
+    assert h.events() == ["doctor_agent_versions"]
+    assert pauses(conn) == ["agent_unverified"]
+
+
+def test_no_claude_path_fails_without_calling_the_check(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    settings = Config(codex_path=CODEX, retention_days=30)
+    report = h.go(settings=settings)
+    assert result_of(report, "agent_versions") == (CheckLevel.FAIL, "not_configured")
+    assert h.current_calls == []
+    assert "agent_unverified" in pauses(conn)
+
+
+def test_the_pause_reason_is_not_the_item_name(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.current = CurrentCheck("no_record", None, None)
+    h.go()
+    assert "agent_versions" not in pauses(conn)
+
+
+def test_other_pause_items_keep_their_names(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.results["claude"] = (1, "")
+    h.current = CurrentCheck("no_record", None, None)
+    assert h.go().paused == ("agent_unverified", "claude_auth")
+
+
+def test_an_exception_in_the_check_is_isolated(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.current = RuntimeError("boom")
+    report = h.go()
+    assert report.errors == ("agent_versions RuntimeError",)
+    assert [c.item for c in report.checks][-1] == "network"

@@ -627,7 +627,7 @@ def launched_argv(tmp_path: Path, claude: Path) -> tuple[str, ...]:
         orch_home=tmp_path / "orch",
         default_orch_home=tmp_path / "orch",
         claude=claude,
-        claude_version="2.1.319",
+        selfcheck_warnings=[],
         dirty=False,
     ).argv
 

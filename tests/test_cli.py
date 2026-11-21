@@ -12,6 +12,7 @@ import sys
 import tomllib
 import urllib.request
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3563,7 +3564,8 @@ def test_notify_needs_the_test_subcommand(orch: Call, args: tuple[str, ...]) -> 
 # orch open and orch watch --panels (M13)
 
 from orch import cli as cli_module  # noqa: E402
-from orch import launcher  # noqa: E402
+from orch import selfcheck  # noqa: E402
+from orch.selfcheck import ClaudeReport, CurrentCheck, SwitchReport  # noqa: E402
 from orch.terminal import (  # noqa: E402
     MainPaneStatus,
     PaneRecord,
@@ -3665,7 +3667,90 @@ def openable(env: Env, monkeypatch: pytest.MonkeyPatch, target: None) -> None:
     write(env.hub / "config" / "main.md", "# Main rules\n")
     write(env.hub / "config" / "agents" / "probe.md", OPEN_AGENT)
     write(env.orch_home / "config", f'[agents]\nclaude = "{CLAUDE_BIN}"\n')
-    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: "2.1.319")
+    fake_current(monkeypatch)
+    fake_start(monkeypatch)
+
+
+class Recorder(list[dict[str, object]]):
+    """Calls of a faked function, with the value it returns or raises."""
+
+    def __init__(self, value: object = None) -> None:
+        super().__init__()
+        self.value = value
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        self.append({"args": args, **kwargs})
+        if isinstance(self.value, BaseException):
+            raise self.value
+        return self.value
+
+
+CURRENT_OK = CurrentCheck("ok", None, "2.1.319")
+
+
+def fake_current(
+    monkeypatch: pytest.MonkeyPatch, value: object = CURRENT_OK
+) -> Recorder:
+    recorder = Recorder(value)
+    monkeypatch.setattr(selfcheck, "check_current_claude", recorder)
+    return recorder
+
+
+def fake_start(monkeypatch: pytest.MonkeyPatch, value: object = None) -> Recorder:
+    recorder = Recorder(value)
+    monkeypatch.setattr(cli_module, "_start_selfcheck", recorder)
+    return recorder
+
+
+def fake_send(monkeypatch: pytest.MonkeyPatch) -> Recorder:
+    recorder = Recorder(notify.Outcome.SENT)
+    monkeypatch.setattr(notify, "send", recorder)
+    return recorder
+
+
+def pause_rows(env: Env) -> list[tuple[str, str | None]]:
+    with closing(connect(env)) as conn:
+        return [(p.reason, p.note) for p in store.list_pauses(conn)]
+
+
+def write_agents(env: Env, candidate: dict[str, object] | None) -> None:
+    write(
+        env.orch_home / "agents.json",
+        json.dumps(
+            {
+                "format": 1,
+                "agents": {
+                    "claude": {
+                        "current": None,
+                        "previous": None,
+                        "candidate": candidate,
+                    }
+                },
+            }
+        ),
+    )
+
+
+def candidate_entry(
+    version: str = "2.1.326", status: str = "ready"
+) -> dict[str, object]:
+    return {
+        "version": version,
+        "status": status,
+        "sha256": "a" * 64 if status == "ready" else None,
+        "path": f"/abs/versions/{version}" if status == "ready" else None,
+        "pins_sha256": "b" * 64,
+        "checks": [],
+        "warnings": [],
+        "at": "2026-11-20T00:00:00+00:00",
+    }
+
+
+NO_RECORD_WARNING = (
+    "Claude Code 지금 버전 기록이 없어 새 배분을 멈췄습니다. "
+    "selfcheck가 초기 기록을 만들면 풀립니다."
+)
+START_WARNING = "selfcheck를 시작하지 못했습니다."
 
 
 def open_options(terminals: list[FakeTerminal]) -> dict[str, bool]:
@@ -3725,7 +3810,10 @@ def test_open_starts_the_main_session_and_panels(
         ),
     ]
     assert env.paths.logs.is_dir()
-    assert not config.state_db_path(env.orch_home).exists()
+    assert pause_rows(env) == []
+    assert cli_module._start_selfcheck == [  # type: ignore[comparison-overlap]
+        {"args": (env.orch_home, env.hub)}
+    ]
 
 
 @pytest.mark.usefixtures("openable")
@@ -3741,39 +3829,134 @@ def test_open_reattaches_to_an_existing_session(
         ("has_session",),
         ("main_pane_status", Path(CLAUDE_BIN)),
     ]
+    assert cli_module._start_selfcheck == []  # type: ignore[comparison-overlap]
 
 
 @pytest.mark.usefixtures("openable")
-def test_open_reports_version_and_dirty_warnings(
+def test_open_reports_selfcheck_and_dirty_warnings(
     orch: Call,
     repo: Path,
     terminals: list[FakeTerminal],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: "2.2.0")
+    fake_current(monkeypatch, CurrentCheck("mismatch", "sha256", "2.1.319"))
     write(repo / "scratch.txt")
     code, data = orch("open", TARGET)
     assert code == 0, data
     warnings = data["warnings"]
     assert isinstance(warnings, list) and len(warnings) == 2
-    assert warnings[0] == launcher.version_warning("2.2.0")
+    assert warnings[0] == (
+        "Claude Code가 마지막 전환 기록과 다릅니다(sha256). 새 배분을 멈췄습니다."
+    )
 
 
 @pytest.mark.usefixtures("openable")
-def test_open_passes_the_probed_version_and_claude_path(
-    orch: Call, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+def test_open_checks_the_configured_claude_path(
+    orch: Call, env: Env, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[Path] = []
-
-    def probe(claude: Path) -> None:
-        seen.append(claude)
-        return None
-
-    monkeypatch.setattr(launcher, "probe_claude_version", probe)
+    current = fake_current(monkeypatch)
     code, data = orch("open", TARGET)
     assert code == 0, data
-    assert seen == [Path(CLAUDE_BIN)]
-    assert data["warnings"] == [launcher.version_warning(None)]
+    assert current == [
+        {"args": (), "orch_home": env.orch_home, "claude_path": Path(CLAUDE_BIN)}
+    ]
+    assert data["warnings"] == []
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_pauses_dispatch_and_notifies_once_without_a_record(
+    orch: Call, env: Env, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_current(monkeypatch, CurrentCheck("no_record", None, None))
+    sent = fake_send(monkeypatch)
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data["warnings"] == [NO_RECORD_WARNING]
+    assert pause_rows(env) == [("agent_unverified", "no_record")]
+    assert [(c["args"], c["target"]) for c in sent] == [
+        (("agent_unverified",), "claude")
+    ]
+    open_options(terminals)["exists"] = True
+    orch("open", TARGET)
+    assert len(sent) == 1
+    assert pause_rows(env) == [("agent_unverified", "no_record")]
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_records_the_mismatch_reason_in_the_pause(
+    orch: Call, env: Env, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_current(monkeypatch, CurrentCheck("error", "state", None))
+    fake_send(monkeypatch)
+    orch("open", TARGET)
+    assert pause_rows(env) == [("agent_unverified", "error:state")]
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_lifts_the_pause_when_the_version_is_verified(
+    orch: Call, env: Env, terminals: list[FakeTerminal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_current(monkeypatch, CurrentCheck("mismatch", "path", "2.1.319"))
+    fake_send(monkeypatch)
+    orch("open", TARGET)
+    assert pause_rows(env) == [("agent_unverified", "mismatch:path")]
+    fake_current(monkeypatch)
+    open_options(terminals)["exists"] = True
+    orch("open", TARGET)
+    assert pause_rows(env) == []
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_announces_a_ready_candidate(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    write_agents(env, candidate_entry())
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data["warnings"] == [
+        "Claude Code 2.1.326 후보가 검증을 통과했습니다. "
+        "전환하려면 사용자가 orch selfcheck --apply를 실행하세요."
+    ]
+
+
+@pytest.mark.usefixtures("openable")
+@pytest.mark.parametrize("status", ["failed", "not_automated"])
+def test_open_does_not_announce_other_candidates(
+    orch: Call, env: Env, terminals: list[FakeTerminal], status: str
+) -> None:
+    write_agents(env, candidate_entry(status=status))
+    assert orch("open", TARGET)[1]["warnings"] == []
+
+
+@pytest.mark.usefixtures("openable")
+def test_open_ignores_an_unreadable_agents_file(
+    orch: Call, env: Env, terminals: list[FakeTerminal]
+) -> None:
+    write(env.orch_home / "agents.json", "{not json")
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    assert data["warnings"] == []
+
+
+@pytest.mark.usefixtures("openable")
+@pytest.mark.parametrize(
+    "error", [OSError("spawn"), config.ConfigError("Cannot locate orch")]
+)
+def test_open_continues_when_selfcheck_cannot_start(
+    orch: Call,
+    repo: Path,
+    terminals: list[FakeTerminal],
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    fake_start(monkeypatch, error)
+    write(repo / "scratch.txt")
+    code, data = orch("open", TARGET)
+    assert code == 0, data
+    warnings = data["warnings"]
+    assert isinstance(warnings, list) and len(warnings) == 2
+    assert warnings[-1] == START_WARNING
+    assert len(terminals[0].calls) == 4
 
 
 @pytest.mark.usefixtures("openable")
@@ -4272,7 +4455,10 @@ def test_doctor_refuses_a_tailscale_path_that_is_not_absolute(
 def test_a_missing_tailscale_file_only_warns_on_network(
     orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The file is not checked in config: the check itself reports it, with exit 0."""
+    """The file is not checked in config: the check itself reports it, with exit 0.
+
+    No agents.json exists, so agent_versions fails with no_record and pauses dispatch.
+    """
     tools = env.home / "tools"
     claude = add_script(tools / "claude", output='{"loggedIn": true}')
     codex = add_script(tools / "codex")
@@ -4291,7 +4477,8 @@ def test_a_missing_tailscale_file_only_warns_on_network(
     }
     assert levels["network"] == ("warn", "FileNotFoundError")
     assert levels["codex_auth"] == ("ok", None)
-    assert data["paused"] == []
+    assert levels["agent_versions"] == ("fail", "no_record")
+    assert data["paused"] == ["agent_unverified"]
     assert data["errors"] == []
 
 
@@ -4408,7 +4595,10 @@ def add_script(path: Path, *, output: str = "", code: int = 0) -> Path:
 def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
     orch: Call, env: Env
 ) -> None:
-    """Commands run for real through config paths; only the disk limits are lowered."""
+    """Commands run for real through config paths; only the disk limits are lowered.
+
+    No agents.json exists, so agent_versions fails and agent_unverified stays paused.
+    """
     tools = env.home / "tools"
     claude = add_script(tools / "claude", output='{"loggedIn": true}')
     codex = add_script(tools / "codex", code=1)
@@ -4432,19 +4622,23 @@ def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
         "github_app": "ok",
         "disk": "ok",
         "network": "ok",
+        "agent_versions": "fail",
     }
-    assert data["paused"] == ["codex_auth"]
+    assert data["paused"] == ["agent_unverified", "codex_auth"]
     assert TOKEN not in json.dumps(data)
-    assert orch("next")[1]["paused"] == ["codex_auth"]
-    [pause] = orch("status")[1]["paused"]  # type: ignore[misc]
-    assert (pause["reason"], pause["note"]) == ("codex_auth", "exit=1")
+    assert orch("next")[1]["paused"] == ["agent_unverified", "codex_auth"]
+    pauses = orch("status")[1]["paused"]
+    assert [(pause["reason"], pause["note"]) for pause in pauses] == [  # type: ignore[union-attr,index]
+        ("agent_unverified", "no_record"),
+        ("codex_auth", "exit=1"),
+    ]
 
     add_script(codex)
     code, data = orch("doctor")
     assert code == 0, data
-    assert data["paused"] == []
-    assert orch("next")[1]["paused"] == []
-    assert orch("status")[1]["paused"] == []
+    assert data["paused"] == ["agent_unverified"]
+    assert orch("next")[1]["paused"] == ["agent_unverified"]
+    assert [p["reason"] for p in orch("status")[1]["paused"]] == ["agent_unverified"]  # type: ignore[union-attr,index]
 
 
 # gc
@@ -4797,7 +4991,8 @@ def test_open_output_is_redacted(
         f'[agents]\nclaude = "{CLAUDE_BIN}"\n'
         f'[notify]\nmethod = "ntfy"\ntopic = "{TOPIC}"\n',
     )
-    monkeypatch.setattr(launcher, "probe_claude_version", lambda claude: TOPIC)
+    fake_current(monkeypatch, CurrentCheck("mismatch", TOPIC, "2.1.319"))
+    fake_send(monkeypatch)
     code, data = orch("open", TARGET)
     assert code == 0, data
     assert TOPIC not in json.dumps(data, ensure_ascii=False)
@@ -5076,3 +5271,328 @@ def test_sandbox_run_does_not_touch_the_state_database(
     assert code == 0, data
     assert not config.state_db_path(env.orch_home).exists()
     assert not env.paths.todo.exists()
+
+
+# _start_selfcheck (m-selfcheck-cli)
+
+
+def test_start_selfcheck_spawns_a_detached_orch(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def popen(argv: list[str], **kwargs: object) -> object:
+        calls.append((list(argv), kwargs))
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(cli_module, "_which_absolute", lambda name: Path("/abs/orch"))
+    env.orch_home.mkdir(parents=True, exist_ok=True)
+    cli_module._start_selfcheck(env.orch_home, env.hub)
+    [(argv, kwargs)] = calls
+    assert argv == ["/abs/orch", "selfcheck"]
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.STDOUT
+    assert kwargs["start_new_session"] is True
+    log = kwargs["stdout"]
+    assert Path(log.name) == env.orch_home / "selfcheck.log"  # type: ignore[attr-defined]
+    assert "a" in log.mode  # type: ignore[attr-defined]
+    assert log.closed  # type: ignore[attr-defined]
+    environ = kwargs["env"]
+    assert isinstance(environ, dict)
+    assert environ["ORCH_HUB"] == str(env.hub)
+    assert environ["ORCH_HOME"] == str(env.orch_home)
+    assert environ["HOME"] == str(env.home)
+
+
+def test_start_selfcheck_appends_to_the_log(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kwargs: object())
+    monkeypatch.setattr(cli_module, "_which_absolute", lambda name: Path("/abs/orch"))
+    write(env.orch_home / "selfcheck.log", "earlier\n")
+    cli_module._start_selfcheck(env.orch_home, env.hub)
+    assert (env.orch_home / "selfcheck.log").read_text(encoding="utf-8") == "earlier\n"
+
+
+# orch selfcheck (m-selfcheck-cli)
+
+CLAUDE_REPORT = ClaudeReport(
+    "up_to_date", "latest", "2.1.319", "2.1.319", None, (), (), False, None
+)
+
+
+@pytest.fixture
+def selfcheckable(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    write(env.orch_home / "config", f'[agents]\nclaude = "{CLAUDE_BIN}"\n')
+    fake_current(monkeypatch)
+
+
+def fake_run_claude(
+    monkeypatch: pytest.MonkeyPatch, report: ClaudeReport = CLAUDE_REPORT
+) -> Recorder:
+    recorder = Recorder(report)
+    monkeypatch.setattr(selfcheck, "run_claude", recorder)
+    return recorder
+
+
+def fake_switch(
+    monkeypatch: pytest.MonkeyPatch, name: str, report: SwitchReport
+) -> Recorder:
+    recorder = Recorder(report)
+    monkeypatch.setattr(selfcheck, name, recorder)
+    return recorder
+
+
+APPLIED = SwitchReport("applied", None, "2.1.326", "2.1.319", None, ("2.1.317",))
+ROLLED_BACK = SwitchReport(
+    "rolled_back", None, "2.1.319", "2.1.326", "claude@2.1.326", ()
+)
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_runs_claude_and_checks_the_version(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = fake_run_claude(monkeypatch)
+    code, data = orch("selfcheck")
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "claude": CLAUDE_REPORT.to_json(),
+        "current": CURRENT_OK.to_json(),
+        "paused": [],
+    }
+    [call] = run
+    assert call["args"] == ()
+    assert (call["hub"], call["orch_home"], call["home"]) == (
+        env.hub,
+        env.orch_home,
+        env.home,
+    )
+    assert isinstance(call["settings"], config.Config)
+    assert call["settings"].claude_path == Path(CLAUDE_BIN)  # type: ignore[attr-defined]
+    now = call["now"]
+    assert isinstance(now, datetime) and now.utcoffset() is not None
+    assert set(call) == {"args", "hub", "orch_home", "home", "settings", "now"}
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_reports_an_error_with_exit_20(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = ClaudeReport("error", "state", None, None, None, (), (), False, None)
+    fake_run_claude(monkeypatch, report)
+    code, data = orch("selfcheck")
+    assert code == 20
+    assert data["ok"] is False
+    assert data["error"] == "selfcheck_error"
+    assert data["message"] == "selfcheck를 완료하지 못했습니다."
+    assert data["claude"] == report.to_json()
+    assert data["current"] == CURRENT_OK.to_json()
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize("status", ["busy", "unverified", "failed", "ready"])
+def test_selfcheck_other_statuses_exit_zero(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    report = ClaudeReport(status, None, "2.1.319", None, None, (), (), False, None)
+    fake_run_claude(monkeypatch, report)
+    code, data = orch("selfcheck")
+    assert code == 0, data
+    assert data["claude"]["status"] == status  # type: ignore[index]
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_pauses_on_an_unverified_version_and_notifies_once(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_run_claude(monkeypatch)
+    fake_current(monkeypatch, CurrentCheck("mismatch", "version", "2.1.319"))
+    sent = fake_send(monkeypatch)
+    code, data = orch("selfcheck")
+    assert code == 0, data
+    assert data["paused"] == ["agent_unverified"]
+    assert pause_rows(env) == [("agent_unverified", "mismatch:version")]
+    orch("selfcheck")
+    assert [(c["args"], c["target"]) for c in sent] == [
+        (("agent_unverified",), "claude")
+    ]
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_lifts_the_pause_after_bootstrap(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_run_claude(monkeypatch)
+    fake_send(monkeypatch)
+    fake_current(monkeypatch, CurrentCheck("no_record", None, None))
+    assert orch("selfcheck")[1]["paused"] == ["agent_unverified"]
+    fake_current(monkeypatch)
+    assert orch("selfcheck")[1]["paused"] == []
+    assert pause_rows(env) == []
+
+
+def test_selfcheck_without_a_claude_path_pauses_without_checking(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_run_claude(monkeypatch)
+    fake_send(monkeypatch)
+    current = fake_current(monkeypatch)
+    code, data = orch("selfcheck")
+    assert code == 0, data
+    assert data["current"] == {
+        "status": "error",
+        "reason": "not_configured",
+        "version": None,
+    }
+    assert current == []
+    assert pause_rows(env) == [("agent_unverified", "error:not_configured")]
+
+
+def test_selfcheck_needs_the_hub(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = fake_run_claude(monkeypatch)
+    monkeypatch.delenv("ORCH_HUB")
+    assert_error(orch("selfcheck"), USAGE, "usage")
+    assert run == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize("args", [("--apply",), ("--apply", "claude")])
+def test_selfcheck_apply_switches_claude(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
+    apply = fake_switch(monkeypatch, "apply_claude", APPLIED)
+    run = fake_run_claude(monkeypatch)
+    code, data = orch("selfcheck", *args)
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "switch": APPLIED.to_json(),
+        "current": CURRENT_OK.to_json(),
+        "paused": [],
+    }
+    [call] = apply
+    assert set(call) == {"args", "hub", "orch_home", "home", "now"}
+    assert (call["args"], call["hub"], call["orch_home"], call["home"]) == (
+        (),
+        env.hub,
+        env.orch_home,
+        env.home,
+    )
+    assert run == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_rollback_reports_the_hold_example(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rollback = fake_switch(monkeypatch, "rollback_claude", ROLLED_BACK)
+    code, data = orch("selfcheck", "--rollback", "claude")
+    assert code == 0, data
+    assert data["switch"] == ROLLED_BACK.to_json()
+    assert data["switch"]["hold"] == "claude@2.1.326"  # type: ignore[index]
+    [call] = rollback
+    assert set(call) == {"args", "orch_home", "home", "now"}
+    assert (call["orch_home"], call["home"]) == (env.orch_home, env.home)
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_a_switch_lifts_the_pause(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_run_claude(monkeypatch)
+    fake_send(monkeypatch)
+    fake_current(monkeypatch, CurrentCheck("mismatch", "path", "2.1.319"))
+    orch("selfcheck")
+    fake_current(monkeypatch)
+    fake_switch(monkeypatch, "apply_claude", APPLIED)
+    assert orch("selfcheck", "--apply")[1]["paused"] == []
+    assert pause_rows(env) == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize(
+    ("args", "name"),
+    [(("--apply",), "apply_claude"), (("--rollback", "claude"), "rollback_claude")],
+)
+def test_a_refused_switch_exits_64_without_checking(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...], name: str
+) -> None:
+    report = SwitchReport("refused", "link", "2.1.319", None, None, ())
+    fake_switch(monkeypatch, name, report)
+    current = fake_current(monkeypatch)
+    code, data = orch("selfcheck", *args)
+    assert code == USAGE
+    assert data == {
+        "ok": False,
+        "error": "refused",
+        "message": "전환할 수 없습니다: link",
+        "switch": report.to_json(),
+    }
+    assert current == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_a_busy_switch_exits_20(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = SwitchReport("busy", None, None, None, None, ())
+    fake_switch(monkeypatch, "apply_claude", report)
+    code, data = orch("selfcheck", "--apply")
+    assert code == 20
+    assert data == {
+        "ok": False,
+        "error": "busy",
+        "message": "다른 selfcheck가 실행 중입니다.",
+        "switch": report.to_json(),
+    }
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_a_switch_error_exits_20(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = SwitchReport("error", "link_write", "2.1.319", None, None, ())
+    fake_switch(monkeypatch, "rollback_claude", report)
+    code, data = orch("selfcheck", "--rollback", "claude")
+    assert code == 20
+    assert data == {
+        "ok": False,
+        "error": "switch_error",
+        "message": "전환 중 오류가 발생했습니다: link_write",
+        "switch": report.to_json(),
+    }
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize("args", [("--apply", "codex"), ("--rollback", "codex")])
+def test_codex_is_not_switched_yet(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
+    apply = fake_switch(monkeypatch, "apply_claude", APPLIED)
+    rollback = fake_switch(monkeypatch, "rollback_claude", ROLLED_BACK)
+    code, data = orch("selfcheck", *args)
+    assert code == USAGE
+    assert data == {
+        "ok": False,
+        "error": "refused",
+        "message": "Codex는 아직 selfcheck 전환 대상이 아닙니다.",
+    }
+    assert apply == [] and rollback == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--apply", "--rollback", "claude"),
+        ("--rollback",),
+        ("--apply", "other"),
+        ("--rollback", "other"),
+    ],
+)
+def test_bad_selfcheck_arguments_are_usage_errors(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
+    apply = fake_switch(monkeypatch, "apply_claude", APPLIED)
+    run = fake_run_claude(monkeypatch)
+    assert_error(orch("selfcheck", *args), USAGE, "usage")
+    assert apply == [] and run == []

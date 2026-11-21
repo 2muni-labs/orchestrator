@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import traceback
 from contextlib import closing
@@ -30,6 +31,7 @@ from orch import (
     review,
     runner,
     scheduler,
+    selfcheck,
     service,
     store,
     taskfile,
@@ -64,6 +66,7 @@ _REFRESH_COMMANDS = {
 }
 
 
+AGENT_PAUSE = "agent_unverified"
 _HOOK_NAMES = ("session-start", "pre-bash", "subagent-stop", "notification")
 
 
@@ -158,6 +161,12 @@ def _parser() -> argparse.ArgumentParser:
     open_parser.add_argument("--no-attach", action="store_true")
     commands.add_parser("hook").add_argument("name", choices=_HOOK_NAMES)
     commands.add_parser("doctor")
+    selfcheck_parser = commands.add_parser("selfcheck")
+    switch = selfcheck_parser.add_mutually_exclusive_group()
+    switch.add_argument(
+        "--apply", nargs="?", const="claude", choices=("claude", "codex")
+    )
+    switch.add_argument("--rollback", choices=("claude", "codex"))
     commands.add_parser("gc").add_argument("--dry-run", action="store_true")
     service_commands = commands.add_parser("service").add_subparsers(
         dest="service_command", required=True
@@ -223,6 +232,7 @@ def _environment(
     if require_hub or command in {
         "target",
         "open",
+        "selfcheck",
         "prepare",
         "run",
         "gate",
@@ -237,6 +247,65 @@ def _environment(
             raise _UsageError("ORCH_HUB must be an explicit absolute path")
         hub = Path(value)
     return orch_home, hub
+
+
+def _check_agent(
+    conn: sqlite3.Connection,
+    *,
+    settings: config.Config,
+    orch_home: Path,
+    home: Path,
+    now: datetime,
+    secrets: list[str],
+) -> selfcheck.CurrentCheck:
+    current = (
+        selfcheck.CurrentCheck("error", "not_configured", None)
+        if settings.claude_path is None
+        else selfcheck.check_current_claude(
+            orch_home=orch_home, claude_path=settings.claude_path
+        )
+    )
+    if current.status == "ok":
+        store.remove_pause(conn, AGENT_PAUSE)
+    else:
+        detail = (
+            "no_record"
+            if current.status == "no_record"
+            else f"{current.status}:{current.reason}"
+        )
+        if store.add_pause(conn, AGENT_PAUSE, since=now.isoformat(), note=detail):
+            _send_notification(
+                "agent_unverified",
+                settings=settings,
+                orch_home=orch_home,
+                home=home,
+                secrets=secrets,
+                target="claude",
+            )
+    return current
+
+
+def _ready_candidate(orch_home: Path) -> str | None:
+    try:
+        state = selfcheck.load_agents_state(selfcheck.agents_state_path(orch_home))
+    except selfcheck.SelfcheckError:
+        return None
+    candidate = state["agents"].get("claude", {}).get("candidate")
+    if isinstance(candidate, dict) and candidate.get("status") == "ready":
+        return candidate["version"]
+    return None
+
+
+def _start_selfcheck(orch_home: Path, hub: Path) -> None:
+    with (orch_home / "selfcheck.log").open("a", encoding="utf-8") as log:
+        subprocess.Popen(
+            [str(_which_absolute("orch")), "selfcheck"],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "ORCH_HUB": str(hub), "ORCH_HOME": str(orch_home)},
+        )
 
 
 def _get_task(conn: sqlite3.Connection, task_id: str) -> Task:
@@ -552,6 +621,12 @@ def _execute(
         ),
     )
     home = Path.home()
+    if args.command == "selfcheck" and "codex" in (args.apply, args.rollback):
+        return 64, {
+            "ok": False,
+            "error": "refused",
+            "message": "Codex는 아직 selfcheck 전환 대상이 아닙니다.",
+        }
     if args.command == "service":
         if args.service_command == "uninstall":
             report = service.uninstall(home=home, uid=os.getuid())
@@ -598,14 +673,23 @@ def _execute(
             dirty = gitops.has_uncommitted_changes(target.path)
         except gitops.GitError:
             dirty = True
-        version = launcher.probe_claude_version(settings.claude_path)
+        with closing(store.connect(config.state_db_path(orch_home))) as conn:
+            current = _check_agent(
+                conn,
+                settings=settings,
+                orch_home=orch_home,
+                home=home,
+                now=datetime.now(UTC),
+                secrets=secrets,
+            )
+        ready = _ready_candidate(orch_home)
         plan = launcher.build_plan(
             target=target,
             hub=hub,
             orch_home=orch_home,
             default_orch_home=config.orch_home({}),
             claude=settings.claude_path,
-            claude_version=version,
+            selfcheck_warnings=launcher.selfcheck_warnings(current, ready),
             dirty=dirty,
         )
         session = f"orch-{target.name}"
@@ -625,6 +709,10 @@ def _execute(
                 vertical=True,
                 percent=30,
             )
+            try:
+                _start_selfcheck(orch_home, hub)
+            except OSError, config.ConfigError:
+                warnings.append("selfcheck를 시작하지 못했습니다.")
         else:
             status = terminal.main_pane_status(settings.claude_path)
             if status is not MainPaneStatus.ALIVE:
@@ -817,6 +905,68 @@ def _command(
     settings = config.load_config(orch_home)
     if settings.notify_topic:
         secrets.append(settings.notify_topic)
+    if command == "selfcheck":
+        assert hub is not None
+        now = datetime.now(UTC)
+        if args.apply is not None or args.rollback is not None:
+            switch = (
+                selfcheck.apply_claude(hub=hub, orch_home=orch_home, home=home, now=now)
+                if args.apply is not None
+                else selfcheck.rollback_claude(orch_home=orch_home, home=home, now=now)
+            )
+            if switch.status not in {"applied", "rolled_back"}:
+                if switch.status == "refused":
+                    code, error, message = (
+                        64,
+                        "refused",
+                        f"전환할 수 없습니다: {switch.reason}",
+                    )
+                elif switch.status == "busy":
+                    code, error, message = (
+                        20,
+                        "busy",
+                        "다른 selfcheck가 실행 중입니다.",
+                    )
+                else:
+                    code, error, message = (
+                        20,
+                        "switch_error",
+                        f"전환 중 오류가 발생했습니다: {switch.reason}",
+                    )
+                return code, {
+                    "ok": False,
+                    "error": error,
+                    "message": message,
+                    "switch": switch.to_json(),
+                }
+            output: dict[str, object] = {"ok": True, "switch": switch.to_json()}
+            code = 0
+        else:
+            report = selfcheck.run_claude(
+                hub=hub, orch_home=orch_home, home=home, settings=settings, now=now
+            )
+            output = {"ok": True, "claude": report.to_json()}
+            code = 0
+            if report.status == "error":
+                output.update(
+                    ok=False,
+                    error="selfcheck_error",
+                    message="selfcheck를 완료하지 못했습니다.",
+                )
+                code = 20
+        current = _check_agent(
+            conn,
+            settings=settings,
+            orch_home=orch_home,
+            home=home,
+            now=now,
+            secrets=secrets,
+        )
+        output.update(
+            current=current.to_json(),
+            paused=[pause.reason for pause in store.list_pauses(conn)],
+        )
+        return code, output
     if command == "doctor":
         assert hub is not None
         report = doctor.run_doctor(

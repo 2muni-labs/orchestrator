@@ -10,7 +10,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final
 
-from orch import config, gc, lifecycle, notify, service, store, tracking, tracksync
+from orch import (
+    config,
+    gc,
+    lifecycle,
+    notify,
+    selfcheck,
+    service,
+    store,
+    tracking,
+    tracksync,
+)
 from orch.config import Config, Target
 from orch.gc import GcReport
 from orch.lifecycle import KillReport
@@ -22,7 +32,12 @@ DEFAULT_DISK_FAIL_GB: Final = 2
 TAILSCALE: Final = "/usr/local/bin/tailscale"
 STUCK_MARGIN_SEC: Final = 600
 EXPIRY_WARN_DAYS: Final = 7
-PAUSE_ITEMS: Final = frozenset({"claude_auth", "codex_auth", "disk"})
+PAUSE_ITEMS: Final = {
+    "claude_auth": "claude_auth",
+    "codex_auth": "codex_auth",
+    "disk": "disk",
+    "agent_versions": "agent_unverified",
+}
 TRACK_STALE_SEC: Final = 3600
 
 
@@ -58,6 +73,9 @@ def run_doctor(
     send: Callable[..., notify.Outcome] = notify.send,
     collect: Callable[..., GcReport] = gc.collect,
     kill: Callable[..., KillReport] = lifecycle.kill_task,
+    check_current: Callable[
+        ..., selfcheck.CurrentCheck
+    ] = selfcheck.check_current_claude,
 ) -> DoctorReport:
     """Check health independently, pause dispatch as needed and kill stuck runs."""
     checks: list[DoctorCheck] = []
@@ -84,6 +102,18 @@ def run_doctor(
 
         if item == "track_sync":
             return track_sync_check(conn, target, now=now)
+
+        if item == "agent_versions":
+            if settings.claude_path is None:
+                return CheckLevel.FAIL, "not_configured"
+            current = check_current(
+                orch_home=orch_home, claude_path=settings.claude_path
+            )
+            if current.status == "ok":
+                return CheckLevel.OK, None
+            if current.status == "no_record":
+                return CheckLevel.FAIL, "no_record"
+            return CheckLevel.FAIL, f"{current.status}:{current.reason}"
 
         if item == "disk":
             result = _disk_check(free_bytes(orch_home), disk_warn_gb, disk_fail_gb)
@@ -150,10 +180,11 @@ def run_doctor(
                     at=at,
                 )
                 if item in PAUSE_ITEMS:
+                    reason = PAUSE_ITEMS[item]
                     if level is CheckLevel.FAIL:
-                        store.add_pause(conn, item, since=at, note=detail)
+                        store.add_pause(conn, reason, since=at, note=detail)
                     else:
-                        store.remove_pause(conn, item)
+                        store.remove_pause(conn, reason)
         except Exception as exc:
             label = (
                 f"{target}/{item}" if item in ("main_session", "track_sync") else item
@@ -164,7 +195,14 @@ def run_doctor(
         process_item("main_session", name)
     for name in sorted(targets):
         process_item("track_sync", name)
-    for item in ("claude_auth", "codex_auth", "github_app", "disk", "network"):
+    for item in (
+        "claude_auth",
+        "codex_auth",
+        "github_app",
+        "disk",
+        "network",
+        "agent_versions",
+    ):
         process_item(item)
 
     for task in store.list_tasks(conn, states=[TaskState.RUNNING]):
