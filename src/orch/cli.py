@@ -32,6 +32,7 @@ from orch import (
     runner,
     scheduler,
     selfcheck,
+    selfcheck_codex,
     service,
     store,
     taskfile,
@@ -257,32 +258,49 @@ def _check_agent(
     home: Path,
     now: datetime,
     secrets: list[str],
-) -> selfcheck.CurrentCheck:
-    current = (
-        selfcheck.CurrentCheck("error", "not_configured", None)
-        if settings.claude_path is None
-        else selfcheck.check_current_claude(
-            orch_home=orch_home, claude_path=settings.claude_path
-        )
-    )
-    if current.status == "ok":
+) -> dict[str, selfcheck.CurrentCheck]:
+    currents = {
+        "claude": (
+            selfcheck.CurrentCheck("error", "not_configured", None)
+            if settings.claude_path is None
+            else selfcheck.check_current_claude(
+                orch_home=orch_home, claude_path=settings.claude_path
+            )
+        ),
+        "codex": (
+            selfcheck.CurrentCheck("error", "not_configured", None)
+            if settings.codex_path is None
+            else selfcheck_codex.check_current_codex(
+                orch_home=orch_home, codex_path=settings.codex_path
+            )
+        ),
+    }
+    unverified = {
+        agent: current for agent, current in currents.items() if current.status != "ok"
+    }
+    if not unverified:
         store.remove_pause(conn, AGENT_PAUSE)
     else:
-        detail = (
-            "no_record"
-            if current.status == "no_record"
-            else f"{current.status}:{current.reason}"
-        )
-        if store.add_pause(conn, AGENT_PAUSE, since=now.isoformat(), note=detail):
+        details = []
+        for agent, current in unverified.items():
+            detail = (
+                "no_record"
+                if current.status == "no_record"
+                else f"{current.status}:{current.reason}"
+            )
+            details.append(f"{agent}={detail}")
+        if store.add_pause(
+            conn, AGENT_PAUSE, since=now.isoformat(), note=",".join(details)
+        ):
             _send_notification(
                 "agent_unverified",
                 settings=settings,
                 orch_home=orch_home,
                 home=home,
                 secrets=secrets,
-                target="claude",
+                target=",".join(unverified),
             )
-    return current
+    return currents
 
 
 def _ready_candidate(orch_home: Path) -> str | None:
@@ -674,7 +692,7 @@ def _execute(
         except gitops.GitError:
             dirty = True
         with closing(store.connect(config.state_db_path(orch_home))) as conn:
-            current = _check_agent(
+            currents = _check_agent(
                 conn,
                 settings=settings,
                 orch_home=orch_home,
@@ -689,7 +707,7 @@ def _execute(
             orch_home=orch_home,
             default_orch_home=config.orch_home({}),
             claude=settings.claude_path,
-            selfcheck_warnings=launcher.selfcheck_warnings(current, ready),
+            selfcheck_warnings=launcher.selfcheck_warnings(currents, ready),
             dirty=dirty,
         )
         session = f"orch-{target.name}"
@@ -945,16 +963,23 @@ def _command(
             report = selfcheck.run_claude(
                 hub=hub, orch_home=orch_home, home=home, settings=settings, now=now
             )
-            output = {"ok": True, "claude": report.to_json()}
+            codex_report = selfcheck_codex.run_codex(
+                hub=hub, orch_home=orch_home, home=home, settings=settings, now=now
+            )
+            output = {
+                "ok": True,
+                "claude": report.to_json(),
+                "codex": codex_report.to_json(),
+            }
             code = 0
-            if report.status == "error":
+            if report.status == "error" or codex_report.status == "error":
                 output.update(
                     ok=False,
                     error="selfcheck_error",
                     message="selfcheck를 완료하지 못했습니다.",
                 )
                 code = 20
-        current = _check_agent(
+        currents = _check_agent(
             conn,
             settings=settings,
             orch_home=orch_home,
@@ -963,7 +988,7 @@ def _command(
             secrets=secrets,
         )
         output.update(
-            current=current.to_json(),
+            current={agent: current.to_json() for agent, current in currents.items()},
             paused=[pause.reason for pause in store.list_pauses(conn)],
         )
         return code, output
