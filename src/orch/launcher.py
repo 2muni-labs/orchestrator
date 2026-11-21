@@ -2,8 +2,7 @@
 
 import json
 import re
-import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -11,11 +10,8 @@ from typing import Final
 from orch import selfcheck
 from orch.config import Target, target_paths
 
-PINNED_CLAUDE_VERSION: Final = "2.1.319"
 MAIN_MODEL: Final = "claude-opus-5-5"
 AGENT_KEYS: Final = frozenset({"name", "description", "model", "tools"})
-
-VersionRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
 class LaunchError(Exception):
@@ -30,10 +26,6 @@ class LaunchPlan:
     warnings: tuple[str, ...]
 
 
-def _run(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=10)
-
-
 def parse_claude_version(output: str) -> str | None:
     words = output.strip().split()
     if words and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", words[0]):
@@ -41,32 +33,29 @@ def parse_claude_version(output: str) -> str | None:
     return None
 
 
-def probe_claude_version(claude: Path, *, runner: VersionRunner = _run) -> str | None:
-    try:
-        result = runner([str(claude), "--version"])
-    except OSError, subprocess.TimeoutExpired:
-        return None
-    if result.returncode != 0:
-        return None
-    return parse_claude_version(result.stdout)
-
-
-def version_warning(version: str | None) -> str | None:
-    if version == PINNED_CLAUDE_VERSION:
-        return None
-    if version is None:
-        return (
-            "Claude Code 버전을 확인하지 못했습니다. "
-            f"고정 버전은 {PINNED_CLAUDE_VERSION}입니다."
-        )
-    return (
-        f"Claude Code 실제 버전 {version}이 "
-        f"고정 버전 {PINNED_CLAUDE_VERSION}과 다릅니다."
-    )
-
-
 def selfcheck_warnings(current: selfcheck.CurrentCheck, ready: str | None) -> list[str]:
-    raise NotImplementedError
+    warnings: list[str] = []
+    if current.status == "no_record":
+        warnings.append(
+            "Claude Code 지금 버전 기록이 없어 새 배분을 멈췄습니다. "
+            "selfcheck가 초기 기록을 만들면 풀립니다."
+        )
+    elif current.status == "mismatch":
+        warnings.append(
+            f"Claude Code가 마지막 전환 기록과 다릅니다({current.reason}). "
+            "새 배분을 멈췄습니다."
+        )
+    elif current.status == "error":
+        warnings.append(
+            f"Claude Code 버전 기록을 확인하지 못했습니다({current.reason}). "
+            "새 배분을 멈췄습니다."
+        )
+    if ready is not None:
+        warnings.append(
+            f"Claude Code {ready} 후보가 검증을 통과했습니다. "
+            "전환하려면 사용자가 orch selfcheck --apply를 실행하세요."
+        )
+    return warnings
 
 
 def parse_agent(text: str, *, stem: str) -> dict[str, object]:
@@ -139,7 +128,7 @@ def build_plan(
     orch_home: Path,
     default_orch_home: Path,
     claude: Path,
-    claude_version: str | None,
+    selfcheck_warnings: Sequence[str],
     dirty: bool,
 ) -> LaunchPlan:
     if not claude.is_absolute():
@@ -164,10 +153,7 @@ def build_plan(
     if orch_home != default_orch_home:
         env["ORCH_HOME"] = str(orch_home)
 
-    warnings: list[str] = []
-    warning = version_warning(claude_version)
-    if warning is not None:
-        warnings.append(warning)
+    warnings = list(selfcheck_warnings)
     if dirty:
         warnings.append("대상 작업 트리에 미커밋 변경이 있습니다.")
 
