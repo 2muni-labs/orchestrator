@@ -1233,3 +1233,29 @@ def test_an_invalid_selfcheck_setting_is_an_error(tmp_path: Path, text: str) -> 
     write_config(tmp_path, text)
     with pytest.raises(ConfigError):
         load_config(tmp_path)
+
+
+# [agents] mise (m-selfcheck-codex)
+
+
+def test_the_mise_path_is_read_like_the_agent_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", "/fake/home")
+    write_config(
+        tmp_path, '[agents]\nmise = "~/.local/bin/mise"\ncodex = "/opt/codex"\n'
+    )
+    settings = load_config(tmp_path)
+    assert settings.mise_path == Path("/fake/home/.local/bin/mise")
+    assert settings.codex_path == Path("/opt/codex")
+    assert load_config(tmp_path / "missing").mise_path is None
+    assert Config().mise_path is None
+
+
+@pytest.mark.parametrize(
+    "text", ['[agents]\nmise = "bin/mise"\n', "[agents]\nmise = 1\n"]
+)
+def test_an_invalid_mise_path_is_an_error(tmp_path: Path, text: str) -> None:
+    write_config(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)

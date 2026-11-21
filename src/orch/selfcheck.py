@@ -375,25 +375,26 @@ def load_agents_state(path: Path) -> dict[str, object]:
             or not isinstance(data.get("agents"), dict)
         ):
             raise ValueError("Invalid state format")
-        claude = data["agents"].get("claude", {})
-        if not isinstance(claude, dict):
-            raise ValueError("Invalid claude state")
-        for name in ("current", "previous"):
-            entry = claude.get(name)
-            if entry is None:
-                continue
-            if (
-                not isinstance(entry, dict)
-                or any(
-                    not isinstance(entry.get(key), str)
-                    for key in ("version", "sha256", "path", "at")
-                )
-                or entry.get("source") not in ("bootstrap", "apply", "rollback")
-            ):
-                raise ValueError("Invalid installed version")
-        candidate = claude.get("candidate")
-        if candidate is not None:
-            _validate_candidate(candidate)
+        for agent_name in ("claude", "codex"):
+            agent = data["agents"].get(agent_name, {})
+            if not isinstance(agent, dict):
+                raise ValueError(f"Invalid {agent_name} state")
+            for name in ("current", "previous"):
+                entry = agent.get(name)
+                if entry is None:
+                    continue
+                if (
+                    not isinstance(entry, dict)
+                    or any(
+                        not isinstance(entry.get(key), str)
+                        for key in ("version", "sha256", "path", "at")
+                    )
+                    or entry.get("source") not in ("bootstrap", "apply", "rollback")
+                ):
+                    raise ValueError("Invalid installed version")
+            candidate = agent.get("candidate")
+            if candidate is not None:
+                _validate_candidate(candidate)
         return data
     except (ValueError, TypeError, KeyError) as exc:
         raise SelfcheckError("Invalid agents state") from exc
