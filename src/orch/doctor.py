@@ -16,6 +16,7 @@ from orch import (
     lifecycle,
     notify,
     selfcheck,
+    selfcheck_codex,
     service,
     store,
     tracking,
@@ -76,6 +77,9 @@ def run_doctor(
     check_current: Callable[
         ..., selfcheck.CurrentCheck
     ] = selfcheck.check_current_claude,
+    check_current_codex: Callable[
+        ..., selfcheck.CurrentCheck
+    ] = selfcheck_codex.check_current_codex,
 ) -> DoctorReport:
     """Check health independently, pause dispatch as needed and kill stuck runs."""
     checks: list[DoctorCheck] = []
@@ -104,16 +108,35 @@ def run_doctor(
             return track_sync_check(conn, target, now=now)
 
         if item == "agent_versions":
-            if settings.claude_path is None:
-                return CheckLevel.FAIL, "not_configured"
-            current = check_current(
-                orch_home=orch_home, claude_path=settings.claude_path
-            )
-            if current.status == "ok":
-                return CheckLevel.OK, None
-            if current.status == "no_record":
-                return CheckLevel.FAIL, "no_record"
-            return CheckLevel.FAIL, f"{current.status}:{current.reason}"
+            currents = {
+                "claude": (
+                    selfcheck.CurrentCheck("error", "not_configured", None)
+                    if settings.claude_path is None
+                    else check_current(
+                        orch_home=orch_home, claude_path=settings.claude_path
+                    )
+                ),
+                "codex": (
+                    selfcheck.CurrentCheck("error", "not_configured", None)
+                    if settings.codex_path is None
+                    else check_current_codex(
+                        orch_home=orch_home, codex_path=settings.codex_path
+                    )
+                ),
+            }
+            details = []
+            for agent, current in currents.items():
+                if current.status == "ok":
+                    continue
+                detail = (
+                    "no_record"
+                    if current.status == "no_record"
+                    else f"{current.status}:{current.reason}"
+                )
+                details.append(f"{agent}={detail}")
+            if details:
+                return CheckLevel.FAIL, ",".join(details)
+            return CheckLevel.OK, None
 
         if item == "disk":
             result = _disk_check(free_bytes(orch_home), disk_warn_gb, disk_fail_gb)

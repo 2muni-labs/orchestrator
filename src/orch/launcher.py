@@ -33,23 +33,34 @@ def parse_claude_version(output: str) -> str | None:
     return None
 
 
-def selfcheck_warnings(current: selfcheck.CurrentCheck, ready: str | None) -> list[str]:
+def selfcheck_warnings(
+    currents: Mapping[str, selfcheck.CurrentCheck], ready: str | None
+) -> list[str]:
     warnings: list[str] = []
-    if current.status == "no_record":
-        warnings.append(
-            "Claude Code 지금 버전 기록이 없어 새 배분을 멈췄습니다. "
-            "selfcheck가 초기 기록을 만들면 풀립니다."
-        )
-    elif current.status == "mismatch":
-        warnings.append(
-            f"Claude Code가 마지막 전환 기록과 다릅니다({current.reason}). "
-            "새 배분을 멈췄습니다."
-        )
-    elif current.status == "error":
-        warnings.append(
-            f"Claude Code 버전 기록을 확인하지 못했습니다({current.reason}). "
-            "새 배분을 멈췄습니다."
-        )
+    for agent, name in (("claude", "Claude Code"), ("codex", "Codex")):
+        current = currents.get(agent)
+        if current is None:
+            continue
+        if current.status == "no_record":
+            warnings.append(
+                f"{name} 지금 버전 기록이 없어 새 배분을 멈췄습니다. "
+                "selfcheck가 초기 기록을 만들면 풀립니다."
+            )
+        elif current.status == "mismatch":
+            warnings.append(
+                f"{name}가 마지막 전환 기록과 다릅니다({current.reason}). "
+                "새 배분을 멈췄습니다."
+            )
+            if agent == "codex" and current.reason == "path":
+                warnings.append(
+                    "~/.orch/config의 [agents] codex가 ~/.orch/bin/codex를 "
+                    "가리키는지 확인하세요."
+                )
+        elif current.status == "error":
+            warnings.append(
+                f"{name} 버전 기록을 확인하지 못했습니다({current.reason}). "
+                "새 배분을 멈췄습니다."
+            )
     if ready is not None:
         warnings.append(
             f"Claude Code {ready} 후보가 검증을 통과했습니다. "

@@ -67,41 +67,107 @@ def ready_warning(version: str) -> str:
     )
 
 
+OK = CurrentCheck("ok", None, "2.1.319")
+CODEX_OK = CurrentCheck("ok", None, "0.160.0")
+
+
+def claude(current: CurrentCheck) -> dict[str, CurrentCheck]:
+    return {"claude": current, "codex": CODEX_OK}
+
+
 def test_an_ok_check_without_a_candidate_has_no_warning() -> None:
-    assert selfcheck_warnings(CurrentCheck("ok", None, "2.1.319"), None) == []
+    assert selfcheck_warnings(claude(OK), None) == []
 
 
 def test_a_ready_candidate_is_announced() -> None:
-    assert selfcheck_warnings(CurrentCheck("ok", None, "2.1.319"), "2.1.326") == [
-        ready_warning("2.1.326")
-    ]
+    assert selfcheck_warnings(claude(OK), "2.1.326") == [ready_warning("2.1.326")]
 
 
 def test_no_record_warns_that_dispatch_is_paused() -> None:
-    assert selfcheck_warnings(CurrentCheck("no_record", None, None), None) == [
+    assert selfcheck_warnings(claude(CurrentCheck("no_record", None, None)), None) == [
         NO_RECORD
     ]
 
 
 def test_a_mismatch_names_the_reason() -> None:
-    assert selfcheck_warnings(CurrentCheck("mismatch", "sha256", "2.1.319"), None) == [
+    current = CurrentCheck("mismatch", "sha256", "2.1.319")
+    assert selfcheck_warnings(claude(current), None) == [
         "Claude Code가 마지막 전환 기록과 다릅니다(sha256). 새 배분을 멈췄습니다."
     ]
 
 
 def test_an_error_names_the_reason() -> None:
-    assert selfcheck_warnings(CurrentCheck("error", "state", None), None) == [
+    assert selfcheck_warnings(claude(CurrentCheck("error", "state", None)), None) == [
         "Claude Code 버전 기록을 확인하지 못했습니다(state). 새 배분을 멈췄습니다."
     ]
 
 
 def test_the_ready_warning_follows_the_pause_warning() -> None:
-    assert selfcheck_warnings(
-        CurrentCheck("mismatch", "path", "2.1.319"), "2.1.326"
-    ) == [
+    current = CurrentCheck("mismatch", "path", "2.1.319")
+    assert selfcheck_warnings(claude(current), "2.1.326") == [
         "Claude Code가 마지막 전환 기록과 다릅니다(path). 새 배분을 멈췄습니다.",
         ready_warning("2.1.326"),
     ]
+
+
+# selfcheck_warnings for Codex (m-selfcheck-codex-cli)
+
+CODEX_PATH_HINT = (
+    "~/.orch/config의 [agents] codex가 ~/.orch/bin/codex를 가리키는지 확인하세요."
+)
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (
+            CurrentCheck("no_record", None, None),
+            [
+                "Codex 지금 버전 기록이 없어 새 배분을 멈췄습니다. "
+                "selfcheck가 초기 기록을 만들면 풀립니다."
+            ],
+        ),
+        (
+            CurrentCheck("mismatch", "sha256", "0.160.0"),
+            ["Codex가 마지막 전환 기록과 다릅니다(sha256). 새 배분을 멈췄습니다."],
+        ),
+        (
+            CurrentCheck("mismatch", "path", "0.160.0"),
+            [
+                "Codex가 마지막 전환 기록과 다릅니다(path). 새 배분을 멈췄습니다.",
+                CODEX_PATH_HINT,
+            ],
+        ),
+        (
+            CurrentCheck("error", "not_configured", None),
+            [
+                "Codex 버전 기록을 확인하지 못했습니다(not_configured). "
+                "새 배분을 멈췄습니다."
+            ],
+        ),
+    ],
+)
+def test_codex_warnings(current: CurrentCheck, expected: list[str]) -> None:
+    assert selfcheck_warnings({"claude": OK, "codex": current}, None) == expected
+
+
+def test_claude_comes_first_and_the_ready_warning_last() -> None:
+    currents = {
+        "codex": CurrentCheck("mismatch", "path", "0.160.0"),
+        "claude": CurrentCheck("no_record", None, None),
+    }
+    assert selfcheck_warnings(currents, "2.1.326") == [
+        NO_RECORD,
+        "Codex가 마지막 전환 기록과 다릅니다(path). 새 배분을 멈췄습니다.",
+        CODEX_PATH_HINT,
+        ready_warning("2.1.326"),
+    ]
+
+
+def test_a_missing_agent_is_skipped() -> None:
+    only_codex = {"codex": CurrentCheck("no_record", None, None)}
+    assert selfcheck_warnings(only_codex, None)[0].startswith("Codex ")
+    assert selfcheck_warnings({}, None) == []
 
 
 # plan

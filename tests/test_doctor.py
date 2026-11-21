@@ -18,6 +18,7 @@ from orch import (
     lifecycle,
     notify,
     selfcheck,
+    selfcheck_codex,
     service,
     store,
     tracking,
@@ -84,6 +85,10 @@ class Harness:
         self.targets: dict[str, Target] = {}
         self.current: CurrentCheck | Exception = CurrentCheck("ok", None, "2.1.319")
         self.current_calls: list[dict[str, object]] = []
+        self.codex_current: CurrentCheck | Exception = CurrentCheck(
+            "ok", None, "0.160.0"
+        )
+        self.codex_calls: list[dict[str, object]] = []
 
     def run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = list(argv)
@@ -142,6 +147,12 @@ class Harness:
             raise self.current
         return self.current
 
+    def check_current_codex(self, **kwargs: object) -> CurrentCheck:
+        self.codex_calls.append(kwargs)
+        if isinstance(self.codex_current, Exception):
+            raise self.codex_current
+        return self.codex_current
+
     def go(self, **overrides: object) -> DoctorReport:
         values: dict[str, object] = {
             "settings": SETTINGS,
@@ -157,6 +168,7 @@ class Harness:
             "collect": self.collect,
             "kill": self.kill,
             "check_current": self.check_current,
+            "check_current_codex": self.check_current_codex,
         }
         values.update(overrides)
         return run_doctor(self.conn, **values)  # type: ignore[arg-type]
@@ -1882,21 +1894,25 @@ def test_agent_versions_checks_the_configured_claude(
     report = h.go()
     assert result_of(report, "agent_versions") == (CheckLevel.OK, None)
     assert h.current_calls == [{"orch_home": orch_home, "claude_path": CLAUDE}]
+    assert h.codex_calls == [{"orch_home": orch_home, "codex_path": CODEX}]
 
 
 def test_the_default_check_is_the_selfcheck_function() -> None:
     default = inspect.signature(run_doctor).parameters["check_current"].default
 
     assert default is selfcheck.check_current_claude
+    parameter = inspect.signature(run_doctor).parameters["check_current_codex"]
+    assert parameter.default is selfcheck_codex.check_current_codex
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 @pytest.mark.parametrize(
     ("current", "detail"),
     [
-        (CurrentCheck("no_record", None, None), "no_record"),
-        (CurrentCheck("mismatch", "sha256", "2.1.319"), "mismatch:sha256"),
-        (CurrentCheck("mismatch", "path", "2.1.319"), "mismatch:path"),
-        (CurrentCheck("error", "state", None), "error:state"),
+        (CurrentCheck("no_record", None, None), "claude=no_record"),
+        (CurrentCheck("mismatch", "sha256", "2.1.319"), "claude=mismatch:sha256"),
+        (CurrentCheck("mismatch", "path", "2.1.319"), "claude=mismatch:path"),
+        (CurrentCheck("error", "state", None), "claude=error:state"),
     ],
 )
 def test_an_unverified_claude_fails_and_pauses_dispatch(
@@ -1938,9 +1954,77 @@ def test_no_claude_path_fails_without_calling_the_check(
 ) -> None:
     settings = Config(codex_path=CODEX, retention_days=30)
     report = h.go(settings=settings)
-    assert result_of(report, "agent_versions") == (CheckLevel.FAIL, "not_configured")
+    assert result_of(report, "agent_versions") == (
+        CheckLevel.FAIL,
+        "claude=error:not_configured",
+    )
     assert h.current_calls == []
+    assert h.codex_calls == [{"orch_home": h.orch_home, "codex_path": CODEX}]
     assert "agent_unverified" in pauses(conn)
+
+
+# agent_versions for Codex (m-selfcheck-codex-cli)
+
+
+@pytest.mark.parametrize(
+    ("current", "detail"),
+    [
+        (CurrentCheck("no_record", None, None), "codex=no_record"),
+        (CurrentCheck("mismatch", "path", "0.160.0"), "codex=mismatch:path"),
+        (CurrentCheck("error", "io", None), "codex=error:io"),
+    ],
+)
+def test_an_unverified_codex_fails_and_pauses_dispatch(
+    h: Harness, conn: sqlite3.Connection, current: CurrentCheck, detail: str
+) -> None:
+    h.codex_current = current
+    report = h.go()
+    assert result_of(report, "agent_versions") == (CheckLevel.FAIL, detail)
+    assert report.paused == ("agent_unverified",)
+    assert [p.note for p in store.list_pauses(conn)] == [detail]
+    assert h.events() == ["doctor_agent_versions"]
+
+
+def test_both_agents_are_named_in_order(h: Harness, conn: sqlite3.Connection) -> None:
+    h.current = CurrentCheck("no_record", None, None)
+    h.codex_current = CurrentCheck("mismatch", "path", "0.160.0")
+    report = h.go()
+    detail = "claude=no_record,codex=mismatch:path"
+    assert result_of(report, "agent_versions") == (CheckLevel.FAIL, detail)
+    assert [p.note for p in store.list_pauses(conn)] == [detail]
+
+
+def test_no_codex_path_fails_without_calling_the_codex_check(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    settings = Config(claude_path=CLAUDE, retention_days=30)
+    report = h.go(settings=settings)
+    assert result_of(report, "agent_versions") == (
+        CheckLevel.FAIL,
+        "codex=error:not_configured",
+    )
+    assert h.codex_calls == []
+    assert len(h.current_calls) == 1
+
+
+def test_a_verified_codex_and_claude_lift_the_pause(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.codex_current = CurrentCheck("no_record", None, None)
+    h.go()
+    assert pauses(conn) == ["agent_unverified"]
+    h.codex_current = CurrentCheck("ok", None, "0.160.0")
+    assert h.go().paused == ()
+    assert pauses(conn) == []
+
+
+def test_an_exception_in_the_codex_check_is_isolated(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.codex_current = RuntimeError("boom")
+    report = h.go()
+    assert report.errors == ("agent_versions RuntimeError",)
+    assert [c.item for c in report.checks][-1] == "network"
 
 
 def test_the_pause_reason_is_not_the_item_name(
