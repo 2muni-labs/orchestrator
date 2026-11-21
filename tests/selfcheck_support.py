@@ -276,17 +276,26 @@ def _expand(rule_path: str, home: str) -> str:
     return home + rule_path[1:] if rule_path.startswith("~/") else rule_path
 
 
+def _prompt_tool(prompt: str) -> str:
+    return "Edit" if "Edit tool" in prompt else prompt.split()[2]
+
+
 @dataclass
 class FakeClaude:
     """Behaves like Claude Code 2.1.319 as FL-M6 measured, unless a knob says so.
 
     Case keys: hook-<mode>, deny-control, <Tool>-<mode>, inject, inject-control.
+
+    Edit cases follow the fl-switch measurement (2.1.319 and 2.1.327): the model
+    Reads the file before it Edits. A Read denied by the settings ends the case
+    with only Read in the denials and no Edit call.
     """
 
     hook_blocks: set[str] = field(default_factory=lambda: {"exit2", "deny"})
     hook_skipped: set[str] = field(default_factory=set)
     unlisted_denials: set[str] = field(default_factory=set)
     not_denied: set[str] = field(default_factory=set)
+    edit_echo: bool = False
     control_blocked: bool = False
     run_session_start: bool = True
     load_system_prompt: bool = True
@@ -326,7 +335,7 @@ class FakeClaude:
             words = shlex.split(command)
             key = f"hook-{words[-2]}"
         elif "permissions" in settings:
-            tool = prompt.split()[2]
+            tool = _prompt_tool(prompt)
             path = re.search(r"(/[^\s,]+)", prompt)
             assert path is not None
             if "selfcheck-open-" in path.group(1):
@@ -392,26 +401,37 @@ class FakeClaude:
         env: Mapping[str, str],
         denials: list[dict[str, object]],
     ) -> str:
-        tool = prompt.split()[2]
+        tool = _prompt_tool(prompt)
         match = re.search(r"(/[^\s,]+)", prompt)
         assert match is not None
         target = match.group(1)
-        denied = False
-        for rule in settings["permissions"]["deny"]:  # type: ignore[index]
-            found = re.fullmatch(r"(\w+)\((.*)/\*\*\)", rule)
-            assert found is not None
-            prefix = _expand(found.group(2), env["HOME"]) + "/"
-            if found.group(1) == tool and (target + "/").startswith(prefix):
-                denied = True
+
+        def ruled(name: str) -> bool:
+            for rule in settings["permissions"]["deny"]:  # type: ignore[index]
+                found = re.fullmatch(r"(\w+)\((.*)/\*\*\)", rule)
+                assert found is not None
+                prefix = _expand(found.group(2), env["HOME"]) + "/"
+                if found.group(1) == name and (target + "/").startswith(prefix):
+                    return True
+            return False
+
+        if tool == "Edit" and ruled("Read"):
+            denials.append({"tool_name": "Read", "tool_use_id": "t1"})
+            return "I could not read the file, so I did not edit it."
+        denied = ruled(tool)
         if key == "deny-control" and self.control_blocked:
             denied = True
         if key in self.not_denied:
             denied = False
+        path = Path(target)
         if denied:
             if key not in self.unlisted_denials:
                 denials.append({"tool_name": tool, "tool_use_id": "t1"})
+            if tool == "Edit" and self.edit_echo:
+                return "I read the file but cannot edit it:\n" + path.read_text(
+                    encoding="utf-8"
+                )
             return "I cannot access that file."
-        path = Path(target)
         if tool == "Read":
             return path.read_text(encoding="utf-8")
         if tool == "Grep":

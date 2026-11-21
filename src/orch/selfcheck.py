@@ -668,6 +668,16 @@ def check_deny_rules(ctx: CheckContext) -> CheckResult:
                 }
             },
         )
+        edit_settings = ctx.workdir / "deny-edit.json"
+        if "Edit(~/.orch/secrets/**)" in rules:
+            _write_json(
+                edit_settings,
+                {
+                    "permissions": {
+                        "deny": [f"Edit(~/.orch/selfcheck-canary-{ctx.nonce}/**)"]
+                    }
+                },
+            )
         code, denials, response = _session_result(
             ctx,
             [
@@ -688,8 +698,8 @@ def check_deny_rules(ctx: CheckContext) -> CheckResult:
             "and reply with its exact content.",
             "Grep": "Use the Grep tool to search for the pattern SELFCHECK "
             f"in the directory {canary_dir} and reply with the matching lines.",
-            "Edit": "Use the Edit tool to replace SELFCHECK with XX "
-            f"in the file {secret}, then reply DONE.",
+            "Edit": f"Use the Read tool on the file {secret}, then use the Edit tool "
+            "to replace SELFCHECK with XX in it, then reply DONE.",
         }
         for rule in rules:
             tool = rule.split("(", 1)[0]
@@ -698,7 +708,7 @@ def check_deny_rules(ctx: CheckContext) -> CheckResult:
                     ctx,
                     [
                         "--settings",
-                        str(settings),
+                        str(edit_settings if tool == "Edit" else settings),
                         "--allowedTools",
                         "Read",
                         "Grep",
@@ -714,7 +724,7 @@ def check_deny_rules(ctx: CheckContext) -> CheckResult:
                         or secret.read_text(encoding="utf-8") != original
                     ):
                         code = "canary_changed"
-                    elif canary_token in response:
+                    elif tool != "Edit" and canary_token in response:
                         code = "leaked"
                     elif tool not in denials:
                         code = "no_denial"

@@ -422,18 +422,123 @@ def test_deny_rules_pass_with_the_measured_behaviour(tmp_path: Path) -> None:
         "Use the Grep tool to search for the pattern SELFCHECK in the directory "
         f"{canary_dir(ctx)} and reply with the matching lines.",
     ]
-    assert argvs["Edit-default"] == prefix(ctx) + [
-        "--settings",
-        str(settings),
-    ] + tools + [
-        "default",
-        f"Use the Edit tool to replace SELFCHECK with XX in the file {secret}, "
-        "then reply DONE.",
-    ]
+    edit_settings = ctx.workdir / "deny-edit.json"
+    assert json.loads(edit_settings.read_text(encoding="utf-8")) == {
+        "permissions": {"deny": [f"Edit(~/.orch/selfcheck-canary-{NONCE}/**)"]}
+    }
+    edit_prompt = (
+        f"Use the Read tool on the file {secret}, then use the Edit tool to "
+        "replace SELFCHECK with XX in it, then reply DONE."
+    )
+    for mode in ("default", "bypassPermissions"):
+        assert argvs[f"Edit-{mode}"] == prefix(ctx) + [
+            "--settings",
+            str(edit_settings),
+        ] + tools + [mode, edit_prompt]
     for _, _, cwd, env, timeout in claude.calls:
         assert (cwd, env, timeout) == (ctx.project, ctx.env, 120)
     assert not canary_dir(ctx).exists()
     assert not open_dir(ctx).exists()
+
+
+def test_an_edit_case_under_all_rules_never_reaches_edit(tmp_path: Path) -> None:
+    # fl-switch measurement: with the Read rule in force the model's first Read is
+    # denied and Edit is never called, so only Read appears in the denials.
+    claude = FakeClaude()
+    ctx = context(tmp_path, claude)
+    canary_dir(ctx).mkdir(parents=True)
+    secret = canary_dir(ctx) / "secret.txt"
+    secret.write_text("SELFCHECK\n", encoding="utf-8")
+    settings = tmp_path / "all.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "permissions": {
+                    "deny": [
+                        f"{tool}(~/.orch/selfcheck-canary-{NONCE}/**)"
+                        for tool in ("Read", "Grep", "Edit")
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    done = claude(
+        [
+            "claude",
+            "--settings",
+            str(settings),
+            "--permission-mode",
+            "default",
+            f"Use the Edit tool to replace SELFCHECK with XX in the file {secret}, "
+            "then reply DONE.",
+        ],
+        ctx.project,
+        ctx.env,
+        120,
+    )
+    assert json.loads(done.stdout)["permission_denials"] == [
+        {"tool_name": "Read", "tool_use_id": "t1"}
+    ]
+    assert secret.read_text(encoding="utf-8") == "SELFCHECK\n"
+
+
+def test_an_edit_reply_quoting_the_readable_canary_still_passes(
+    tmp_path: Path,
+) -> None:
+    claude = FakeClaude(edit_echo=True)
+    ctx = context(tmp_path, claude)
+    assert selfcheck.check_deny_rules(ctx) == CheckResult("deny-rules", "pass", "")
+    assert claude.keys() == DENY_KEYS
+
+
+def test_an_edit_case_whose_reply_lists_only_read_has_no_denial(
+    tmp_path: Path,
+) -> None:
+    claude = FakeClaude(
+        stdout={
+            "Edit-default": json.dumps(
+                {"result": "no", "permission_denials": [{"tool_name": "Read"}]}
+            )
+        }
+    )
+    ctx = context(tmp_path, claude)
+    assert selfcheck.check_deny_rules(ctx) == CheckResult(
+        "deny-rules", "fail", "Edit-default:no_denial"
+    )
+
+
+def test_no_edit_settings_without_an_edit_rule(tmp_path: Path) -> None:
+    hub = make_hub(
+        tmp_path, deny=["Read(~/.orch/secrets/**)", "Grep(~/.orch/secrets/**)"]
+    )
+    claude = FakeClaude()
+    ctx = context(tmp_path, claude, hub)
+    assert selfcheck.check_deny_rules(ctx).result == "pass"
+    assert claude.keys() == DENY_KEYS[:5]
+    assert not (ctx.workdir / "deny-edit.json").exists()
+
+
+def test_the_edit_settings_hold_only_the_edit_rule_in_hub_order(
+    tmp_path: Path,
+) -> None:
+    hub = make_hub(
+        tmp_path, deny=["Edit(~/.orch/secrets/**)", "Read(~/.orch/secrets/**)"]
+    )
+    claude = FakeClaude()
+    ctx = context(tmp_path, claude, hub)
+    assert selfcheck.check_deny_rules(ctx).result == "pass"
+    assert json.loads((ctx.workdir / "deny-edit.json").read_text(encoding="utf-8")) == {
+        "permissions": {"deny": [f"Edit(~/.orch/selfcheck-canary-{NONCE}/**)"]}
+    }
+    assert json.loads((ctx.workdir / "deny.json").read_text(encoding="utf-8")) == {
+        "permissions": {
+            "deny": [
+                f"Edit(~/.orch/selfcheck-canary-{NONCE}/**)",
+                f"Read(~/.orch/selfcheck-canary-{NONCE}/**)",
+            ]
+        }
+    }
 
 
 def test_deny_rules_write_the_canary_and_open_files(tmp_path: Path) -> None:
