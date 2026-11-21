@@ -1756,13 +1756,20 @@ def test_other_agents_in_the_state_file_are_kept(world: World) -> None:
     world.release.publish_measured()
     world.record_current()
     state = world.state()
-    state["agents"]["codex"] = {"current": {"version": "0.160.0"}, "x": [1]}  # type: ignore[index]
-    world.write_state(state)
-    world.run()
-    assert world.state()["agents"]["codex"] == {  # type: ignore[index]
-        "current": {"version": "0.160.0"},
+    codex = {
+        "current": {
+            "version": "0.160.0",
+            "sha256": "a" * 64,
+            "path": "/x/codex",
+            "at": "2026-11-21T00:00:00+00:00",
+            "source": "bootstrap",
+        },
         "x": [1],
     }
+    state["agents"]["codex"] = codex  # type: ignore[index]
+    world.write_state(state)
+    world.run()
+    assert world.state()["agents"]["codex"] == codex  # type: ignore[index]
     assert stat.S_IMODE(world.state_path.stat().st_mode) == 0o600
 
 
