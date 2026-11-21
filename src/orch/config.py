@@ -471,7 +471,7 @@ def load_config(home: Path) -> Config:
         NOTIFICATION_TOPIC_PATTERN, notify["topic"]
     ):
         raise ConfigError("Invalid notification topic")
-    agents = _table(data.get("agents", {}), {"codex", "claude"})
+    agents = _table(data.get("agents", {}), {"codex", "claude", "mise"})
     agent_paths = {key: _absolute_path(value) for key, value in agents.items()}
     doctor = _table(
         data.get("doctor", {}), {"disk_warn_gb", "disk_fail_gb", "tailscale"}
@@ -532,6 +532,7 @@ def load_config(home: Path) -> Config:
         notify_topic=notify.get("topic"),
         codex_path=agent_paths.get("codex"),
         claude_path=agent_paths.get("claude"),
+        mise_path=agent_paths.get("mise"),
         usage_limit_patterns=patterns,
         disk_warn_gb=disk_warn_gb,
         disk_fail_gb=disk_fail_gb,
