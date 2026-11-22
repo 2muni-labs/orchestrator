@@ -59,6 +59,27 @@ class TargetPaths:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SelectGroup:
+    """One test group of a target: what selects it and how it runs."""
+
+    name: str
+    sources: tuple[str, ...] = ()
+    tests: tuple[str, ...]
+    command: str
+    also: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SelectConfig:
+    """A target's test groups, by name, and its selection settings."""
+
+    groups: tuple[SelectGroup, ...]
+    import_roots: tuple[str, ...] = ()
+    full_paths: tuple[str, ...] = ()
+    ignore_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Target:
     """One entry of targets.toml."""
 
@@ -71,6 +92,7 @@ class Target:
     lint_command: str
     shared_paths: tuple[str, ...] = ()
     safety_paths: tuple[str, ...] = ()
+    test_select: SelectConfig | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -290,6 +312,13 @@ def _target_path_list(value: object, *, field: str, label: str) -> tuple[str, ..
     return tuple(value)
 
 
+def _select_config(entry: dict[str, object]) -> SelectConfig | None:
+    """Validate the test_select and test_groups tables of a target entry."""
+    if "test_select" not in entry and "test_groups" not in entry:
+        return None
+    raise NotImplementedError
+
+
 def _target_from_entry(name: str, entry: object) -> Target:
     """Validate a target entry using the same rules for loading and registration."""
     required = {
@@ -300,7 +329,10 @@ def _target_from_entry(name: str, entry: object) -> Target:
         "test_command",
         "lint_command",
     }
-    entry = _table(entry, required | {"shared_paths", "safety_paths"})
+    entry = _table(
+        entry,
+        required | {"shared_paths", "safety_paths", "test_select", "test_groups"},
+    )
     if not required <= entry.keys() or any(
         not _nonempty_string(entry[key]) for key in required
     ):
@@ -323,6 +355,7 @@ def _target_from_entry(name: str, entry: object) -> Target:
         lint_command=entry["lint_command"],
         shared_paths=shared,
         safety_paths=safety,
+        test_select=_select_config(entry),
     )
 
 
