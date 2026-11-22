@@ -1755,7 +1755,13 @@ def test_next_and_status_without_a_session_target_show_all(
 def test_status_on_a_new_home_is_empty(orch: Call) -> None:
     assert orch("status") == (
         0,
-        {"ok": True, "tasks": [], "blocked_chains": [], "paused": []},
+        {
+            "ok": True,
+            "schema_version": 1,
+            "tasks": [],
+            "blocked_chains": [],
+            "paused": [],
+        },
     )
 
 
@@ -4411,7 +4417,7 @@ def test_doctor_hands_over_settings_targets_and_thresholds(
 ) -> None:
     write(env.orch_home / "config", "[doctor]\ndisk_warn_gb = 20\ndisk_fail_gb = 5\n")
     calls = fake_doctor(monkeypatch)
-    assert orch("doctor") == (0, {"ok": True, **NO_REPORT})
+    assert orch("doctor") == (0, {"ok": True, "schema_version": 1, **NO_REPORT})
     [call] = calls
     settings = call["settings"]
     assert isinstance(settings, config.Config)
@@ -4629,6 +4635,7 @@ def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
 
     code, data = orch("doctor")
     assert code == 0, data
+    assert contract_errors("doctor", data) == []
     levels = {check["item"]: check["level"] for check in data["checks"]}  # type: ignore[attr-defined]
     assert levels == {
         "claude_auth": "ok",
@@ -6320,3 +6327,177 @@ def test_a_closed_pipe_ends_events_quietly(env: Env) -> None:
             process.communicate()
     assert code == 0, err
     assert err == b""
+
+
+# Output contract for status and doctor (schemas/cli/<command>.v1.json)
+
+
+def contract_errors(command: str, data: dict[str, object]) -> list[str]:
+    import jsonschema
+
+    schema = json.loads(
+        (HUB_SOURCE / "schemas" / "cli" / f"{command}.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator = jsonschema.Draft202012Validator(schema)
+    return [error.message for error in validator.iter_errors(data)]
+
+
+def assert_versioned(data: dict[str, object]) -> None:
+    assert list(data)[:2] == ["ok", "schema_version"], data
+    assert data["schema_version"] == 1
+
+
+def test_status_of_a_new_home_matches_the_contract(orch: Call) -> None:
+    code, data = orch("status")
+    assert code == 0, data
+    assert_versioned(data)
+    assert contract_errors("status", data) == []
+
+
+def test_status_with_tasks_chains_and_pauses_matches_the_contract(
+    orch: Call, env: Env
+) -> None:
+    insert(env, "with-pr", pr_url=URL)
+    add_blocked_chain(env, TARGET, "mine")
+    add_pauses(env, "disk")
+    assert orch("next")[0] == 0
+    code, data = orch("status")
+    assert code == 0, data
+    assert_versioned(data)
+    assert len(data["tasks"]) == 3  # type: ignore[arg-type]
+    assert data["blocked_chains"] != []
+    assert data["paused"] != []
+    assert contract_errors("status", data) == []
+
+
+def test_status_usage_error_matches_the_contract(orch: Call) -> None:
+    result = orch("status", "--bogus")
+    assert_error(result, USAGE, "usage")
+    assert_versioned(result[1])
+    assert contract_errors("status", result[1]) == []
+
+
+def test_status_without_an_absolute_orch_home_is_a_versioned_usage_error(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_HOME", "relative")
+    result = orch("status")
+    assert_error(result, USAGE, "usage")
+    assert_versioned(result[1])
+    assert contract_errors("status", result[1]) == []
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), KeyboardInterrupt()])
+def test_status_internal_errors_match_the_contract(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    def broken(*args: object, **kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(store, "list_tasks", broken)
+    result = orch("status")
+    assert_error(result, INTERNAL, "internal")
+    assert_versioned(result[1])
+    assert contract_errors("status", result[1]) == []
+
+
+def test_status_human_output_is_unchanged(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    assert main(["status", "--human"]) == 0
+    out = capsys.readouterr().out
+    assert "schema_version" not in out
+    assert out.startswith(f"{TASK} pr_open ")
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_success_matches_the_contract(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = DoctorCheck(
+        target=TARGET, item="disk", level=CheckLevel.WARN, detail="low", at="t"
+    )
+    fake_doctor(monkeypatch, DoctorReport(checks=(check,), paused=("disk",)))
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert_versioned(data)
+    assert contract_errors("doctor", data) == []
+    assert data["checks"] == [
+        {"target": TARGET, "item": "disk", "level": "warn", "at": "t", "detail": "low"}
+    ]
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_with_gc_matches_the_contract(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gc_report = GcReport(dry_run=False, removed_files=("a",))
+    fake_doctor(monkeypatch, DoctorReport(gc=gc_report))
+    code, data = orch("doctor")
+    assert code == 0, data
+    assert_versioned(data)
+    assert contract_errors("doctor", data) == []
+
+
+def test_doctor_internal_error_keeps_the_report_and_matches_the_contract(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = DoctorCheck(
+        target="", item="network", level=CheckLevel.OK, detail=None, at="t"
+    )
+    fake_doctor(monkeypatch, DoctorReport(checks=(check,), errors=("disk OSError",)))
+    result = orch("doctor")
+    assert_error(result, INTERNAL, "internal")
+    data = result[1]
+    assert_versioned(data)
+    assert data["errors"] == ["disk OSError"]
+    assert contract_errors("doctor", data) == []
+
+
+def test_doctor_without_the_hub_is_a_versioned_usage_error(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    result = orch("doctor")
+    assert_error(result, USAGE, "usage")
+    assert_versioned(result[1])
+    assert contract_errors("doctor", result[1]) == []
+
+
+def test_doctor_refusal_matches_the_contract(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(env.orch_home / "config", "[doctor]\ndisk_warn_gb = 1\ndisk_fail_gb = 5\n")
+    fake_doctor(monkeypatch)
+    result = orch("doctor")
+    assert_error(result, USAGE, "refused")
+    assert_versioned(result[1])
+    assert contract_errors("doctor", result[1]) == []
+
+
+@pytest.mark.usefixtures("target")
+def test_doctor_unexpected_errors_match_the_contract(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(conn: sqlite3.Connection, **kwargs: object) -> DoctorReport:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(doctor, "run_doctor", broken)
+    result = orch("doctor")
+    assert_error(result, INTERNAL, "internal")
+    assert_versioned(result[1])
+    assert contract_errors("doctor", result[1]) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("next",), ("gc", "--bogus"), ("selfcheck", "--bogus"), ("track", "status", "-x")],
+)
+def test_commands_outside_the_contract_stay_unversioned(
+    orch: Call, args: tuple[str, ...]
+) -> None:
+    _, data = orch(*args)
+    assert "schema_version" not in data
