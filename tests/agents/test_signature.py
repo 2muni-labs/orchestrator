@@ -6,7 +6,7 @@ import pytest
 
 from orch.signature import PublicKey, SignatureError, load_public_key, verify_detached
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "tests" / "data" / "claude-manifests"
 KEY_TEXT = (ROOT / "config" / "keys" / "claude-code.asc").read_text()
 FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"

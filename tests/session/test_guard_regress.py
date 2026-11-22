@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "guard_regress.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "guard_regress.py"
 REAL_HOME = Path.home()
 REAL_CLAUDE = REAL_HOME / ".claude"
 

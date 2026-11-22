@@ -10,7 +10,7 @@ import pytest
 from orch.models import Outcome
 from orch.results import load_result
 
-AGENTS = Path(__file__).parent / "fake_agents"
+AGENTS = Path(__file__).resolve().parents[1] / "fake_agents"
 SPEC = '+++\nid = "fake-task"\ntarget = "t"\n+++\n\n# Purpose\n'
 RESULT = ".orch-result.json"
 CHANGED = "src/fake_change.py"

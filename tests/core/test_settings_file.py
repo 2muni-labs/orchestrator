@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-HUB = Path(__file__).resolve().parents[1]
+HUB = Path(__file__).resolve().parents[2]
 SETTINGS = json.loads((HUB / "config" / "settings.json").read_text(encoding="utf-8"))
 DENY = (
     '{"hookSpecificOutput": {"hookEventName": "PreToolUse", '

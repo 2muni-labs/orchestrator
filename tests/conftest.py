@@ -1,7 +1,9 @@
 """Shared test setup.
 
-pytest inserts this directory into sys.path for this conftest, so helper modules
-here, such as transitions.py, can be imported from tests/integration as well.
+Tests live in one directory per test group (tests/<group>/, tests/integration/).
+pyproject.toml puts this directory and every group directory on sys.path, so
+helper modules here, such as transitions.py, and test modules of other groups can
+be imported by bare name.
 """
 
 import pytest

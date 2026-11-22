@@ -68,7 +68,7 @@ from orch.prflow import PullRequestFlowError, PullRequestReport, UpdateReport
 from orch.service import RestoreReport, ServiceReport
 from transitions import check_call
 
-HUB_SOURCE = Path(__file__).resolve().parents[1]
+HUB_SOURCE = Path(__file__).resolve().parents[2]
 TARGET = "sample"
 TASK = "feat-x"
 TITLE = "Add feature X"

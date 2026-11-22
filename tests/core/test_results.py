@@ -28,7 +28,7 @@ from orch.results import (
 )
 
 TASK = "m4-results"
-SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
+SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
 THREADS = 8
 
 VALID_RESULT = {

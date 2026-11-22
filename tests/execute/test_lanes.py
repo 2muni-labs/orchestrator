@@ -18,7 +18,7 @@ LOG_LABEL = "~/.orch/sample/logs/feat-x.log"
 THREAD = "01a1a500-74e7-78d2-b6b3-56a6d2a73346"
 LIMIT_MESSAGE = "You’ve hit your usage limit. Upgrade to Pro or try again later."
 PATTERNS = ("usage limit", "rate limit", "hit your .*limit", "quota")
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 HUB_ENV = {"PATH": "/usr/bin", "ORCH_HUB": str(REPO)}
 
 
@@ -427,7 +427,7 @@ def test_fake_mode_is_on_only_for_the_value_one(tmp_path: Path) -> None:
 
 
 def test_repository_fake_agents_are_executable() -> None:
-    root = Path(__file__).parent / "fake_agents"
+    root = Path(__file__).resolve().parents[1] / "fake_agents"
     for name in ("codex", "claude"):
         assert (root / name).stat().st_mode & stat.S_IXUSR
 

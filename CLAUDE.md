@@ -60,11 +60,11 @@ The sandboxed checks in `config/main.md` take this form in the hub:
    same with `.venv/bin/python -m ruff check .` and
    `.venv/bin/python -m ruff format --check .`. Each must print `ok` true.
 3. Read the pytest log at `log_path`. Every `SKIPPED` line must name
-   `tests/test_sandbox_real.py` or `tests/integration/test_sandbox_gate.py` with the
-   reason `already inside a sandbox, where sandbox-exec cannot start`. Any other skip
-   is a failure.
+   `tests/gate/test_sandbox_real.py` or `tests/integration/test_sandbox_gate.py`
+   with the reason `already inside a sandbox, where sandbox-exec cannot start`. Any
+   other skip is a failure.
 4. Then run exactly those two files outside the sandbox in the same worktree,
-   `.venv/bin/python -m pytest -rs tests/test_sandbox_real.py
+   `.venv/bin/python -m pytest -rs tests/gate/test_sandbox_real.py
    tests/integration/test_sandbox_gate.py`, and confirm 0 skipped. They start the
    real `sandbox-exec`, which cannot start inside a sandbox.
 
@@ -102,15 +102,21 @@ outside the sandbox, before that code merges.
 ## Tests in the hub
 
 - Write `verify` as `.venv/bin/python -m pytest ...`.
-- The `orch` fixture in `tests/test_cli.py` writes back what it reads from `capsys`
-  (`sys.stderr.write(captured.err)`), so a test can still assert on the capture
-  (m-notify-cli).
+- Tests live in one directory per test group, `tests/<group>/`, as in the table of
+  `기술 설계.md` 4.14; `tests/integration/` is the integration group. Put a new test
+  file in the group of the module it tests. Shared helpers and fakes stay directly
+  under `tests/`. A new group directory also goes into `pythonpath` in
+  `pyproject.toml`, because test modules import each other by bare name.
+- The `orch` fixture in `tests/cli/test_cli.py` writes back what it reads from
+  `capsys` (`sys.stderr.write(captured.err)`), so a test can still assert on the
+  capture (m-notify-cli).
 - Call state-changing `orch` commands in tests through the `orch` fixture in
-  `tests/test_cli.py` or the integration `Sandbox`. Both check the transition with
-  `models.can_transition` before the call (`tests/transitions.py`). Mark a call that
-  expects a refusal, or whose command is replaced with a fake, `unchecked=True`. In a
-  test with several calls, make every call before asserting on behavior the stubs
-  lack, so that an early failure cannot hide a later call from the check.
+  `tests/cli/test_cli.py` or the integration `Sandbox`. Both check the transition
+  with `models.can_transition` before the call (`tests/transitions.py`). Mark a call
+  that expects a refusal, or whose command is replaced with a fake,
+  `unchecked=True`. In a test with several calls, make every call before asserting
+  on behavior the stubs lack, so that an early failure cannot hide a later call from
+  the check.
 - Run integration tests in the integration `Sandbox` with frozen commit dates. One
   test that expected two commits to have different ids passed 20 of 20 runs on one
   machine and failed on a faster one.
