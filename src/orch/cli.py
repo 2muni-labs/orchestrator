@@ -1327,7 +1327,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run one orch command and return its exit code."""
     secrets: list[str] = []
     command = (sys.argv[1:] if argv is None else argv)[:1]
-    is_show = command == ["show"]
+    is_contract_command = bool(command) and command[0] in {
+        "status",
+        "show",
+        "events",
+        "doctor",
+    }
     is_events = command == ["events"]
     try:
         try:
@@ -1382,7 +1387,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": f"내부 오류가 발생했습니다: {exc}",
             }
-        if is_show or is_events:
+        if is_contract_command:
             output = {"ok": output["ok"], "schema_version": 1, **output}
         print(
             credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
@@ -1410,7 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": "내부 오류가 발생했습니다.",
             }
-            if is_show or is_events:
+            if is_contract_command:
                 output = {"ok": output["ok"], "schema_version": 1, **output}
             print(
                 credentials.redact_secrets(
