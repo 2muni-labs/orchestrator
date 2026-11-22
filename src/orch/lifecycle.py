@@ -160,6 +160,17 @@ def prepare_task(
             missing.append(dependency_id)
     if missing:
         raise LifecycleError(f"Dependency not registered: {', '.join(missing)}")
+    if spec.replaces is not None:
+        replaced = store.get_task(conn, spec.replaces)
+        if replaced is None or replaced.target != target.name:
+            raise LifecycleError(f"Replaced task not registered: {spec.replaces}")
+        if replaced.state != TaskState.DISCARDED:
+            raise LifecycleError(f"Replaced task is not discarded: {spec.replaces}")
+        replacing = store.find_replacing(conn, spec.replaces)
+        if replacing is not None and replacing != spec.id:
+            raise LifecycleError(
+                f"Replaced task already replaced by {replacing}: {spec.replaces}"
+            )
 
     saved_path = paths.tasks / f"{spec.id}.md"
     save_spec = spec_path.resolve() != saved_path.resolve()
@@ -202,6 +213,8 @@ def prepare_task(
             attempt=0,
             base_sha=base,
             depends_on=spec.depends_on,
+            milestone=spec.milestone,
+            replaces=spec.replaces,
             worktree=str(worktree),
             created_at=at,
             updated_at=at,

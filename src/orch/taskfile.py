@@ -38,6 +38,8 @@ class TaskSpec:
     effort: Effort | None = None
     tests: str | None = None
     review: bool = False
+    milestone: str | None = None
+    replaces: str | None = None
 
 
 def _validate_id(value: object) -> None:
@@ -89,7 +91,7 @@ def parse_task(text: str) -> TaskSpec:
         "verify",
         "depends_on",
     }
-    optional = {"effort", "tests", "review"}
+    optional = {"effort", "tests", "review", "milestone", "replaces"}
     if not required <= data.keys() or data.keys() - (required | optional):
         raise TaskFileError("Missing or unknown task field")
     review = data.get("review", False)
@@ -104,6 +106,17 @@ def parse_task(text: str) -> TaskSpec:
     ):
         raise TaskFileError("Invalid task title")
     _validate_id(data["id"])
+    milestone = data.get("milestone")
+    if "milestone" in data and (
+        not isinstance(milestone, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", milestone) is None
+    ):
+        raise TaskFileError("Invalid milestone")
+    replaces = data.get("replaces")
+    if "replaces" in data:
+        _validate_id(replaces)
+        if replaces == data["id"]:
+            raise TaskFileError("Task cannot replace itself")
     try:
         validate_target_name(data["target"])
     except TargetNameError as exc:
@@ -167,6 +180,8 @@ def parse_task(text: str) -> TaskSpec:
         body="".join(lines[end + 1 :]),
         tests=data.get("tests"),
         review=review,
+        milestone=milestone,
+        replaces=replaces,
     )
 
 

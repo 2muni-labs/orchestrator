@@ -168,6 +168,8 @@ def test_task_fields_match_the_tasks_table() -> None:
         "slot_expires_at",
         "created_at",
         "updated_at",
+        "milestone",
+        "replaces",
     }
 
 
@@ -184,6 +186,8 @@ def test_task_defaults() -> None:
         "pushed_sha",
         "gated_sha",
         "slot_expires_at",
+        "milestone",
+        "replaces",
     ):
         assert getattr(task, name) is None
 

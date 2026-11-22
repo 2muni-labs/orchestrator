@@ -82,6 +82,8 @@ EXPECTED_COLUMNS = {
         "slot_expires_at",
         "created_at",
         "updated_at",
+        "milestone",
+        "replaces",
     },
     "runs": {
         "run_id",
@@ -1484,7 +1486,6 @@ def test_a_v5_database_gains_the_v6_tables_and_keeps_its_data(db_path: Path) -> 
     old.execute("INSERT INTO pauses VALUES ('disk', 's', NULL)")
     old.close()
     conn = connect(db_path)
-    assert user_version(conn) == 6
     assert user_version(conn) == len(store.MIGRATIONS)
     assert get_task(conn, "kept") is not None
     assert store.list_pauses(conn)[0].reason == "disk"
@@ -1501,7 +1502,7 @@ def test_a_v5_database_gains_the_v6_tables_and_keeps_its_data(db_path: Path) -> 
 
 
 def test_the_v6_migration_creates_only_the_tracking_tables() -> None:
-    assert len(store.MIGRATIONS) == 6
+    assert len(store.MIGRATIONS) >= 6
     assert [s.split("(")[0].split()[-1] for s in store.MIGRATIONS[5]] == [
         "tracking_targets",
         "tracking_projects",
@@ -1513,3 +1514,95 @@ def test_the_v6_migration_creates_only_the_tracking_tables() -> None:
     ]
     assert all(s.lstrip().startswith("CREATE TABLE") for s in store.MIGRATIONS[5])
     assert all("tracking_" not in s for m in store.MIGRATIONS[:5] for s in m)
+
+
+# Schema v7: milestone and replaces
+
+
+def test_the_v7_migration_is_the_two_task_columns_only() -> None:
+    assert len(store.MIGRATIONS) == 7
+    assert store.MIGRATIONS[6] == (
+        "ALTER TABLE tasks ADD COLUMN milestone TEXT",
+        "ALTER TABLE tasks ADD COLUMN replaces TEXT",
+    )
+
+
+def test_a_v6_database_gains_milestone_and_replaces_and_keeps_its_data(
+    db_path: Path,
+) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statements in store.MIGRATIONS[:6]:
+        for statement in statements:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 6")
+    old.execute(
+        """INSERT INTO tasks (id, target, title, grade, lane, model, state,
+        timeout_sec, depends_on, created_at, updated_at, pushed_sha)
+        VALUES ('kept', 't', 'T', 'L2', 'B', 'm', 'closed', 60, '["dep"]', 'c', 'u',
+        'ppp')"""
+    )
+    old.execute("INSERT INTO tracking_targets VALUES ('t', 'o/r', 'at')")
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == 7
+    loaded = get_task(conn, "kept")
+    assert loaded is not None
+    assert loaded.state is TaskState.CLOSED
+    assert loaded.depends_on == ("dep",)
+    assert loaded.pushed_sha == "ppp"
+    assert loaded.milestone is None
+    assert loaded.replaces is None
+    assert conn.execute("SELECT COUNT(*) FROM tracking_targets").fetchone()[0] == 1
+
+
+def test_milestone_and_replaces_round_trip(conn: sqlite3.Connection) -> None:
+    task = dataclasses.replace(make_task(), milestone="M17", replaces="feat-old")
+    insert_task(conn, task)
+    assert get_task(conn, "feat-x") == task
+    assert list_tasks(conn) == (task,)
+    row = conn.execute(
+        "SELECT milestone, replaces FROM tasks WHERE id = 'feat-x'"
+    ).fetchone()
+    assert row == ("M17", "feat-old")
+
+
+def test_milestone_and_replaces_default_to_null(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    row = conn.execute(
+        "SELECT milestone, replaces FROM tasks WHERE id = 'feat-x'"
+    ).fetchone()
+    assert row == (None, None)
+    loaded = get_task(conn, "feat-x")
+    assert loaded is not None
+    assert loaded.milestone is None
+    assert loaded.replaces is None
+
+
+def test_find_replacing_returns_none_without_a_replacement(
+    conn: sqlite3.Connection,
+) -> None:
+    insert_task(conn, make_task("old", TaskState.DISCARDED))
+    insert_task(conn, dataclasses.replace(make_task("other"), replaces="unrelated"))
+    assert store.find_replacing(conn, "old") is None
+    assert store.find_replacing(conn, "missing") is None
+
+
+def test_find_replacing_returns_the_replacing_task(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task("old", TaskState.DISCARDED))
+    insert_task(conn, dataclasses.replace(make_task("old-2"), replaces="old"))
+    assert store.find_replacing(conn, "old") == "old-2"
+    assert store.find_replacing(conn, "old-2") is None
+
+
+def test_find_replacing_takes_the_oldest_then_the_smallest_id(
+    conn: sqlite3.Connection,
+) -> None:
+    def replacing(task_id: str, created_at: str) -> Task:
+        return dataclasses.replace(
+            make_task(task_id), replaces="old", created_at=created_at
+        )
+
+    insert_task(conn, replacing("c-late", "2026-11-05T00:00:00+00:00"))
+    insert_task(conn, replacing("b-early", "2026-11-04T00:00:00+00:00"))
+    insert_task(conn, replacing("a-early", "2026-11-04T00:00:00+00:00"))
+    assert store.find_replacing(conn, "old") == "a-early"

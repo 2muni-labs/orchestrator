@@ -70,6 +70,7 @@ def spec_text(
     target: str = TARGET,
     depends_on: tuple[str, ...] = (),
     modify: str = "src/**",
+    extra: str = "",
 ) -> str:
     dependencies = ", ".join(f'"{item}"' for item in depends_on)
     return (
@@ -86,6 +87,7 @@ def spec_text(
         'read = ["src/**"]\n'
         'verify = "true"\n'
         f"depends_on = [{dependencies}]\n"
+        f"{extra}"
         "+++\n\n# Purpose\n\n본문\n"
     )
 
@@ -157,6 +159,8 @@ def add_task(
     test_sha: str | None = None,
     depends_on: tuple[str, ...] = (),
     pr_url: str | None = None,
+    replaces: str | None = None,
+    created_at: str = "2026-01-01T00:00:00+00:00",
 ) -> None:
     insert_task(
         conn,
@@ -175,8 +179,9 @@ def add_task(
             worktree=str(worktree) if worktree is not None else None,
             depends_on=depends_on,
             pr_url=pr_url,
-            created_at="2026-01-01T00:00:00+00:00",
-            updated_at="2026-01-01T00:00:00+00:00",
+            replaces=replaces,
+            created_at=created_at,
+            updated_at=created_at,
         ),
     )
 
@@ -459,6 +464,172 @@ def test_prepare_accepts_a_registered_dependency_in_any_state(
     write(draft, spec_text(depends_on=("known",)))
     task = prepare_task(conn, draft, make_target(repo), paths)
     assert task.depends_on == ("known",)
+
+
+# prepare: milestone and replaces (schema v7)
+
+REPLACES = 'replaces = "old"\n'
+
+
+def test_prepare_stores_milestone_and_replaces(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    add_task(conn, "old", TaskState.DISCARDED)
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra='milestone = "M17"\n' + REPLACES))
+    task = prepare_task(conn, draft, make_target(repo), paths)
+    assert task.milestone == "M17"
+    assert task.replaces == "old"
+    assert task == task_of(conn)
+    assert task.state is TaskState.PREPARED
+
+
+def test_prepare_stores_none_without_the_fields(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, draft: Path
+) -> None:
+    task = prepare_task(conn, draft, make_target(repo), paths)
+    assert task.milestone is None
+    assert task.replaces is None
+    assert task_of(conn).milestone is None
+    assert task_of(conn).replaces is None
+
+
+def test_prepare_stores_a_milestone_without_replaces(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra='milestone = "FL"\n'))
+    task = prepare_task(conn, draft, make_target(repo), paths)
+    assert task_of(conn).milestone == "FL"
+    assert task.replaces is None
+
+
+def test_prepare_refuses_replacing_a_task_that_is_not_registered(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(LifecycleError, match="^Replaced task not registered: old$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+
+
+def test_prepare_refuses_replacing_a_task_of_another_target(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    add_task(conn, "old", TaskState.DISCARDED, target="other")
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(LifecycleError, match="^Replaced task not registered: old$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        TaskState.PREPARED,
+        TaskState.RUNNING,
+        TaskState.JUDGING,
+        TaskState.BLOCKED,
+        TaskState.PR_OPEN,
+        TaskState.CLOSED,
+        TaskState.ORPHANED,
+    ],
+)
+def test_prepare_refuses_replacing_a_task_that_is_not_discarded(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    tmp_path: Path,
+    state: TaskState,
+) -> None:
+    add_task(conn, "old", state)
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(LifecycleError, match="^Replaced task is not discarded: old$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+    assert state_of(conn, "old") is state
+
+
+def test_prepare_refuses_replacing_a_task_already_replaced(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    add_task(conn, "old", TaskState.DISCARDED)
+    add_task(conn, "old-2", TaskState.PREPARED, replaces="old")
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(
+        LifecycleError, match="^Replaced task already replaced by old-2: old$"
+    ):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+
+
+def test_prepare_names_the_first_replacement_of_several(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    add_task(conn, "old", TaskState.DISCARDED)
+    add_task(
+        conn,
+        "old-b",
+        TaskState.DISCARDED,
+        replaces="old",
+        created_at="2026-01-03T00:00:00+00:00",
+    )
+    add_task(
+        conn,
+        "old-a",
+        TaskState.DISCARDED,
+        replaces="old",
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(LifecycleError, match="already replaced by old-a: old$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+
+
+def test_prepare_accepts_replacing_the_end_of_a_chain(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    add_task(conn, "old", TaskState.DISCARDED)
+    add_task(conn, "old-2", TaskState.DISCARDED, replaces="old")
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra='replaces = "old-2"\n'))
+    task = prepare_task(conn, draft, make_target(repo), paths)
+    assert task.replaces == "old-2"
+    assert task_of(conn).replaces == "old-2"
+
+
+def test_prepare_checks_dependencies_before_replaces(
+    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, tmp_path: Path
+) -> None:
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(depends_on=("missing",), extra=REPLACES))
+    with pytest.raises(LifecycleError, match="^Dependency not registered: missing$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert_prepare_left_nothing(conn, repo, paths)
+
+
+def test_prepare_checks_replaces_before_fetching(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda *args: calls.append("fetch"))
+    monkeypatch.setattr(
+        gitops, "create_worktree", lambda *args: calls.append("create_worktree")
+    )
+    draft = tmp_path / "new.md"
+    write(draft, spec_text(extra=REPLACES))
+    with pytest.raises(LifecycleError, match="^Replaced task not registered: old$"):
+        prepare_task(conn, draft, make_target(repo), paths)
+    assert calls == []
 
 
 def test_prepare_refuses_a_spec_for_another_target(
