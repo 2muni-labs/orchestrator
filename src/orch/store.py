@@ -552,6 +552,14 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Run | None:
     return _run_from_row(cursor, row)
 
 
+def list_runs(conn: sqlite3.Connection, task_id: str) -> tuple[Run, ...]:
+    """Return every run of the task in run_id order."""
+    cursor = conn.execute(
+        "SELECT * FROM runs WHERE task_id = ? ORDER BY run_id", (task_id,)
+    )
+    return tuple(_run_from_row(cursor, row) for row in cursor)
+
+
 def _run_from_row(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> Run:
     """Restore a run's enum fields from a database row."""
     fields = dict(zip((column[0] for column in cursor.description), row, strict=True))

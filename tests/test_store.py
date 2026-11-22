@@ -1606,3 +1606,28 @@ def test_find_replacing_takes_the_oldest_then_the_smallest_id(
     insert_task(conn, replacing("b-early", "2026-11-04T00:00:00+00:00"))
     insert_task(conn, replacing("a-early", "2026-11-04T00:00:00+00:00"))
     assert store.find_replacing(conn, "old") == "a-early"
+
+
+# list_runs (orch show)
+
+
+def test_list_runs_returns_every_run_of_the_task_in_run_id_order(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "a")
+    add_task(conn, "b")
+    first = insert_run(conn, make_run("a", 1))
+    insert_run(conn, make_run("b", 1))
+    second = insert_run(conn, dataclasses.replace(make_run("a", 2), effort=None))
+    runs = store.list_runs(conn, "a")
+    assert isinstance(runs, tuple)
+    assert [run.run_id for run in runs] == [first, second]
+    assert runs[0] == dataclasses.replace(make_run("a", 1), run_id=first)
+    assert runs[1] == dataclasses.replace(make_run("a", 2), run_id=second, effort=None)
+    assert isinstance(runs[0].lane, Lane)
+
+
+def test_list_runs_of_a_task_without_runs_is_empty(conn: sqlite3.Connection) -> None:
+    add_task(conn, "a")
+    assert store.list_runs(conn, "a") == ()
+    assert store.list_runs(conn, "missing") == ()
