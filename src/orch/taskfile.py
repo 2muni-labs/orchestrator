@@ -38,6 +38,8 @@ class TaskSpec:
     effort: Effort | None = None
     tests: str | None = None
     review: bool = False
+    milestone: str | None = None
+    replaces: str | None = None
 
 
 def _validate_id(value: object) -> None:

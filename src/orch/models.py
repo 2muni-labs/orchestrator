@@ -128,6 +128,8 @@ class Task:
     pushed_sha: str | None = None
     gated_sha: str | None = None
     slot_expires_at: str | None = None
+    milestone: str | None = None
+    replaces: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

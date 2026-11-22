@@ -287,6 +287,11 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
     return _task_from_row(cursor, row)
 
 
+def find_replacing(conn: sqlite3.Connection, task_id: str) -> str | None:
+    """Return the id of the task whose replaces names task_id, or None."""
+    raise NotImplementedError
+
+
 def _task_from_row(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> Task:
     """Restore a task's enum and sequence fields from a database row."""
     fields = dict(zip((column[0] for column in cursor.description), row, strict=True))

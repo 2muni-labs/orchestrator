@@ -469,3 +469,84 @@ def test_title_accepts_every_printable_ascii_character() -> None:
     title = "Fix `a_b` (#3): don't use x/y, z=1; 100% ok?"
     text = spec_text(title=f"'''{title}'''")
     assert parse_task(text).title == title
+
+
+# milestone and replaces (schema v7)
+
+
+def test_milestone_and_replaces_default_to_none() -> None:
+    spec = parse_task(spec_text())
+    assert spec.milestone is None
+    assert spec.replaces is None
+
+
+def test_milestone_and_replaces_are_parsed() -> None:
+    spec = parse_task(spec_text(milestone='"M17"', replaces='"feat-login-1"'))
+    assert spec.milestone == "M17"
+    assert spec.replaces == "feat-login-1"
+    assert spec == TaskSpec(
+        id="feat-login",
+        title="Add the login form",
+        target="sample-app",
+        grade=Grade.L2,
+        lane=Lane.B,
+        model="gpt-6.1-sol",
+        effort=Effort.MEDIUM,
+        timeout_min=45,
+        modify=("src/auth/**",),
+        read=("src/**", "docs/auth.md"),
+        verify=".venv/bin/python -m pytest tests/test_auth.py",
+        depends_on=(),
+        tests=None,
+        body=BODY,
+        milestone="M17",
+        replaces="feat-login-1",
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["M17", "FL", "CU1", "5a", "m.1-x_y", "A" * 32, "a" + "-" * 31]
+)
+def test_valid_milestones_are_accepted(value: str) -> None:
+    assert parse_task(spec_text(milestone=f'"{value}"')).milestone == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '""',
+        '"-M17"',
+        '".M17"',
+        '"_M17"',
+        '"M 17"',
+        '"M17/"',
+        '"M17\\n"',
+        '"마일스톤"',
+        f'"{"A" * 33}"',
+        "17",
+        "true",
+        '["M17"]',
+    ],
+)
+def test_invalid_milestones_raise(value: str) -> None:
+    with pytest.raises(TaskFileError, match="^Invalid milestone$"):
+        parse_task(spec_text(milestone=value))
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['""', '"bad id"', '"-old"', '"old..x"', '"old."', '"old.lock"', "7", '["old"]'],
+)
+def test_invalid_replaces_raise(value: str) -> None:
+    with pytest.raises(TaskFileError, match="^Invalid task id$"):
+        parse_task(spec_text(replaces=value))
+
+
+def test_a_task_cannot_replace_itself() -> None:
+    with pytest.raises(TaskFileError, match="^Task cannot replace itself$"):
+        parse_task(spec_text(replaces='"feat-login"'))
+
+
+def test_unknown_keys_are_still_refused_next_to_the_new_fields() -> None:
+    with pytest.raises(TaskFileError, match="^Missing or unknown task field$"):
+        parse_task(spec_text(milestone='"M17"', replace='"old"'))
