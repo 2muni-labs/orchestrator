@@ -42,7 +42,7 @@ from orch.selfcheck_codex import (
     run_codex,
 )
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 MACHINE = "x86_64"
 TEAM = "2DC432GLL2"

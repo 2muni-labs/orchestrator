@@ -23,7 +23,7 @@ ORCH = HOME / ".orch"
 WORKTREE = f"{ORCH}/orchestrator/worktrees/m1-store"
 OUTSIDE = Path("/opt/orch")
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(text: str, **kwargs: object) -> str:
@@ -583,7 +583,9 @@ def test_this_file_assembles_its_path_strings_at_run_time() -> None:
         assert value.replace("\\", "\\\\") not in source
 
 
-@pytest.mark.parametrize("relative", ["tests/test_redact.py", "src/orch/redact.py"])
+@pytest.mark.parametrize(
+    "relative", ["tests/core/test_redact.py", "src/orch/redact.py"]
+)
 def test_sources_hold_no_token_shaped_string(relative: str) -> None:
     source = (REPO_ROOT / relative).read_text(encoding="utf-8")
     shapes = [

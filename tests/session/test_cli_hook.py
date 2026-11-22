@@ -501,7 +501,7 @@ def test_the_cli_keeps_no_hook_logic() -> None:
 
 def test_the_hook_runner_is_on_a_safety_path() -> None:
     """A change to hook failure handling must need the user's own check."""
-    hub = Path(__file__).resolve().parents[1]
+    hub = Path(__file__).resolve().parents[2]
     targets = tomllib.loads((hub / "targets.toml").read_text(encoding="utf-8"))
     safety = targets["targets"]["orchestrator"]["safety_paths"]
     for function in (hooks.run_hook, guard.handle):

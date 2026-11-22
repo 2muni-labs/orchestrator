@@ -7,7 +7,7 @@ import pytest
 
 from orch.redact import ResidualPathError, redact
 
-TARGETS_FILE = Path(__file__).resolve().parents[1] / "targets.toml"
+TARGETS_FILE = Path(__file__).resolve().parents[2] / "targets.toml"
 
 # Values that cannot appear in a real file, so redact replaces nothing and only its
 # residual path check applies. A real home would be replaced, hiding the leak.

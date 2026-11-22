@@ -333,7 +333,7 @@ def test_plan_writes_nothing(layout: dict[str, Path], tmp_path: Path) -> None:
 
 
 def test_the_real_hub_settings_file_exists() -> None:
-    hub = Path(__file__).resolve().parents[1]
+    hub = Path(__file__).resolve().parents[2]
     assert (hub / "config" / "settings.json").is_file()
 
 
@@ -532,7 +532,7 @@ def test_agents_json_is_sorted_and_keeps_non_ascii() -> None:
 
 
 def test_the_real_hub_agents_convert() -> None:
-    hub = Path(__file__).resolve().parents[1]
+    hub = Path(__file__).resolve().parents[2]
     agents = load_agents(hub / "config" / "agents")
     assert sorted(agents) == ["orch-explorer", "orch-reviewer"]
     for definition in agents.values():

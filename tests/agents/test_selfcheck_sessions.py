@@ -692,7 +692,7 @@ def test_missing_hub_settings_fail_without_a_session(tmp_path: Path) -> None:
 
 def test_the_real_hub_rules_are_supported(tmp_path: Path) -> None:
     settings = json.loads(
-        (Path(__file__).resolve().parents[1] / "config" / "settings.json").read_text(
+        (Path(__file__).resolve().parents[2] / "config" / "settings.json").read_text(
             encoding="utf-8"
         )
     )

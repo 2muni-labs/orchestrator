@@ -38,7 +38,7 @@ from orch.runner import (
 )
 from orch.store import StateMismatchError, connect, get_task, insert_task, latest_run
 
-HUB = Path(__file__).resolve().parents[1]
+HUB = Path(__file__).resolve().parents[2]
 MAIN = "origin/main"
 TASK = "feat-x"
 CHANGED = "src/fake_change.py"

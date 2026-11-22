@@ -81,7 +81,7 @@ warn = [
 [macos]
 version = "15.8.1"
 blocking = [
-  { id = "gate-profile", what = "tests/test_sandbox_real.py and tests/integration/test_sandbox_gate.py pass outside the sandbox" },
+  { id = "gate-profile", what = "tests/gate/test_sandbox_real.py and tests/integration/test_sandbox_gate.py pass outside the sandbox" },
   { id = "S-M2", what = "sandbox-exec inside sandbox-exec fails (sandbox_apply: Operation not permitted, exit 71)" },
   { id = "S-M3", what = "bind filter accepts only * or localhost and limits the port only" },
   { id = "S-M2b", what = "outbound (remote ip \"localhost:<port>\") limits the address to loopback" },

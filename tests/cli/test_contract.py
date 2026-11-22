@@ -7,7 +7,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "schemas" / "cli"
 PIPELINE = ROOT / "src" / "orch"
 COMMANDS = ("status", "show", "events", "doctor")
