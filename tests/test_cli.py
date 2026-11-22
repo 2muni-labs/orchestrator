@@ -5816,3 +5816,158 @@ def test_selfcheck_pauses_for_codex_and_lifts_after_the_bootstrap(
     assert [(c["args"], c["target"]) for c in sent] == [
         (("agent_unverified",), "codex")
     ]
+
+
+# orch show (schemas/cli/show.v1.json)
+
+
+def show_schema_errors(data: dict[str, object]) -> list[str]:
+    import jsonschema
+
+    schema = json.loads(
+        (HUB_SOURCE / "schemas" / "cli" / "show.v1.json").read_text(encoding="utf-8")
+    )
+    validator = jsonschema.Draft202012Validator(schema)
+    return [error.message for error in validator.iter_errors(data)]
+
+
+def test_show_prints_the_task_record_with_schema_version(orch: Call, env: Env) -> None:
+    insert(env, pr_url=URL)
+    paths = env.paths
+    write(paths.results / f"{TASK}.json", json.dumps({"task_id": TASK}))
+    write(paths.reviews / f"{TASK}.json", review_text())
+    write(paths.triage_path(TASK), "# triage\n")
+    code, data = orch("show", TASK)
+    assert code == 0, data
+    assert list(data) == [
+        "ok",
+        "schema_version",
+        "task",
+        "spec",
+        "result",
+        "gates",
+        "review",
+        "triage",
+        "runs",
+    ]
+    assert data["ok"] is True
+    assert data["schema_version"] == 1
+    task = data["task"]
+    assert isinstance(task, dict)
+    assert task["id"] == TASK
+    assert task["state"] == "pr_open"
+    assert task["pr_url"] == URL
+    assert data["result"] == {"task_id": TASK}
+    assert data["review"] == json.loads(review_text())
+    assert data["triage"] == str(paths.triage_path(TASK))
+    assert show_schema_errors(data) == []
+
+
+def test_show_of_a_prepared_task_matches_the_schema(
+    orch: Call, env: Env, target: None
+) -> None:
+    worktree = prepare(orch, env)
+    code, data = orch("show", TASK)
+    assert code == 0, data
+    assert show_schema_errors(data) == []
+    task = data["task"]
+    assert isinstance(task, dict)
+    assert task["worktree"] == str(worktree)
+    assert task["state"] == "prepared"
+    spec = data["spec"]
+    assert isinstance(spec, dict)
+    assert spec["id"] == TASK
+    assert spec["title"] == TITLE
+    assert data["runs"] == []
+    assert data["gates"] == []
+
+
+def test_show_of_a_run_task_lists_the_run_and_its_log(
+    orch: Call, env: Env, target: None
+) -> None:
+    worktree = judge(orch, env)
+    code, data = orch("show", TASK)
+    assert code == 0, data
+    assert show_schema_errors(data) == []
+    runs = data["runs"]
+    assert isinstance(runs, list) and len(runs) == 1
+    assert runs[0]["worktree"] == str(worktree)
+    assert runs[0]["outcome"] == "DONE"
+    assert runs[0]["log_path"] == str(env.paths.logs / f"{TASK}.1.log")
+    assert isinstance(data["result"], dict)
+
+
+def test_show_of_a_gated_task_lists_its_gates(
+    orch: Call, env: Env, target: None
+) -> None:
+    make_ready(orch, env)
+    code, data = orch("show", TASK)
+    assert code == 0, data
+    assert show_schema_errors(data) == []
+    gates = data["gates"]
+    assert isinstance(gates, list)
+    assert [(g["attempt"], g["gate"], g["passed"]) for g in gates] == [
+        (1, "G1", True),
+        (1, "G2", True),
+        (1, "G3", True),
+    ]
+    assert data["task"]["state"] == "ready"
+
+
+def test_show_of_an_unknown_task_is_refused_with_schema_version(orch: Call) -> None:
+    result = orch("show", "nope")
+    assert_error(result, USAGE, "refused")
+    data = result[1]
+    assert list(data)[:2] == ["ok", "schema_version"]
+    assert data["schema_version"] == 1
+    assert show_schema_errors(data) == []
+
+
+def test_show_of_another_targets_task_is_refused(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert(env)
+    monkeypatch.setenv("ORCH_TARGET", "other")
+    result = orch("show", TASK)
+    assert_error(result, USAGE, "refused")
+    assert result[1]["schema_version"] == 1
+    assert show_schema_errors(result[1]) == []
+
+
+def test_show_works_in_the_task_target_session(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert(env)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("show", TASK)
+    assert code == 0, data
+
+
+def test_show_needs_neither_the_hub_nor_a_registered_target(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert(env)
+    monkeypatch.delenv("ORCH_HUB")
+    code, data = orch("show", TASK)
+    assert code == 0, data
+    assert data["spec"] is None
+
+
+def test_show_changes_no_task_state(orch: Call, env: Env) -> None:
+    insert(env, state=TaskState.JUDGING)
+    code, _ = orch("show", TASK)
+    assert code == 0
+    conn = connect(env)
+    try:
+        task = store.get_task(conn, TASK)
+        assert task is not None
+        assert task.state is TaskState.JUDGING
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_other_commands_still_omit_schema_version_in_errors(orch: Call) -> None:
+    result = orch("close", "nope", unchecked=True)
+    assert_error(result, USAGE, "refused")
+    assert "schema_version" not in result[1]
