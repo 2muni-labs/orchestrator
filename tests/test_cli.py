@@ -5971,3 +5971,352 @@ def test_other_commands_still_omit_schema_version_in_errors(orch: Call) -> None:
     result = orch("close", "nope", unchecked=True)
     assert_error(result, USAGE, "refused")
     assert "schema_version" not in result[1]
+
+
+# orch events (schemas/cli/events.v1.json)
+
+
+def events_schema_errors(data: dict[str, object]) -> list[str]:
+    import jsonschema
+
+    schema = json.loads(
+        (HUB_SOURCE / "schemas" / "cli" / "events.v1.json").read_text(encoding="utf-8")
+    )
+    validator = jsonschema.Draft202012Validator(schema)
+    return [error.message for error in validator.iter_errors(data)]
+
+
+EVENT_KEYS = [
+    "schema_version",
+    "id",
+    "task_id",
+    "target",
+    "from_state",
+    "to_state",
+    "actor",
+    "note",
+    "at",
+]
+
+
+def run_events(
+    capsys: pytest.CaptureFixture[str], *args: str
+) -> tuple[int, list[dict]]:
+    code = main(["events", *args])
+    captured = capsys.readouterr()
+    sys.stderr.write(captured.err)
+    out = captured.out
+    assert out == "" or out.endswith("\n"), out
+    return code, [json.loads(line) for line in out.splitlines()]
+
+
+def add_events(env: Env) -> None:
+    """Record three events: feat-x, other-y (target other), feat-x."""
+    insert(env, state=TaskState.PREPARED)
+    insert(env, "other-y", TaskState.PREPARED, target="other")
+    conn = connect(env)
+    try:
+        store.transition(
+            conn,
+            TASK,
+            TaskState.PREPARED,
+            TaskState.RESERVED,
+            actor="orch",
+            note="메모",
+        )
+        store.transition(
+            conn, "other-y", TaskState.PREPARED, TaskState.QUEUED, actor="orch"
+        )
+        store.transition(
+            conn, TASK, TaskState.RESERVED, TaskState.RUNNING, actor="orch"
+        )
+    finally:
+        conn.close()
+
+
+def test_events_prints_every_event_as_json_lines(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys)
+    assert code == 0
+    assert [(e["id"], e["task_id"], e["target"]) for e in lines] == [
+        (1, TASK, TARGET),
+        (2, "other-y", "other"),
+        (3, TASK, TARGET),
+    ]
+    for line in lines:
+        assert list(line) == EVENT_KEYS
+        assert events_schema_errors(line) == []
+    assert lines[0]["note"] == "메모"
+    assert lines[1]["note"] is None
+    assert (lines[0]["from_state"], lines[0]["to_state"]) == ("prepared", "reserved")
+
+
+def test_events_prints_no_final_object(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys)
+    assert code == 0
+    assert all("ok" not in line for line in lines)
+
+
+def test_events_with_no_events_prints_nothing(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["events"])
+    assert code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_events_since_skips_earlier_events(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys, "--since", "2")
+    assert code == 0
+    assert [e["id"] for e in lines] == [3]
+    code, lines = run_events(capsys, "--since", "0")
+    assert [e["id"] for e in lines] == [1, 2, 3]
+
+
+def test_events_target_keeps_only_that_target(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys, "--target", "other")
+    assert code == 0
+    assert [e["id"] for e in lines] == [2]
+
+
+def test_events_in_a_session_shows_only_the_session_target(
+    env: Env, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_events(env)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, lines = run_events(capsys)
+    assert code == 0
+    assert [e["id"] for e in lines] == [1, 3]
+    code, lines = run_events(capsys, "--target", TARGET)
+    assert code == 0
+    assert [e["id"] for e in lines] == [1, 3]
+
+
+def test_events_target_other_than_the_session_is_refused(
+    env: Env, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_events(env)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, lines = run_events(capsys, "--target", "other")
+    assert code == USAGE
+    assert len(lines) == 1
+    assert_error((code, lines[0]), USAGE, "refused")
+    assert list(lines[0])[:2] == ["ok", "schema_version"]
+    assert lines[0]["schema_version"] == 1
+    assert events_schema_errors(lines[0]) == []
+
+
+def test_events_unregistered_target_is_not_an_error(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys, "--target", "nobody")
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--target", "bad/name"),
+        ("--target", ""),
+        ("--since", "-1"),
+        ("--since", "x"),
+        ("--since", "1.5"),
+        ("--bogus",),
+        ("extra",),
+    ],
+)
+def test_events_bad_arguments_are_usage_errors_with_schema_version(
+    env: Env, capsys: pytest.CaptureFixture[str], args: tuple[str, ...]
+) -> None:
+    add_events(env)
+    code, lines = run_events(capsys, *args)
+    assert len(lines) == 1
+    assert_error((code, lines[0]), USAGE, "usage")
+    assert list(lines[0])[:2] == ["ok", "schema_version"]
+    assert lines[0]["schema_version"] == 1
+    assert events_schema_errors(lines[0]) == []
+
+
+def test_events_needs_no_hub(
+    env: Env, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_events(env)
+    monkeypatch.delenv("ORCH_HUB")
+    code, lines = run_events(capsys)
+    assert code == 0
+    assert [e["id"] for e in lines] == [1, 2, 3]
+
+
+def test_events_changes_no_state(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+    add_events(env)
+    code, _ = run_events(capsys)
+    assert code == 0
+    conn = connect(env)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
+        assert state_of(env) is TaskState.RUNNING
+    finally:
+        conn.close()
+
+
+def test_events_restores_the_sigterm_handler(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import signal
+    import threading
+
+    add_events(env)
+    called: list[int] = []
+
+    def early(signum: int, frame: object) -> None:
+        called.append(signum)
+        raise RuntimeError("SIGTERM arrived before orch events handled it")
+
+    previous = signal.signal(signal.SIGTERM, early)
+    try:
+        timer = threading.Timer(1.5, os.kill, (os.getpid(), signal.SIGTERM))
+        timer.start()
+        try:
+            code, lines = run_events(capsys, "--follow")
+        finally:
+            timer.cancel()
+        assert code == 0
+        assert [e["id"] for e in lines] == [1, 2, 3]
+        assert called == []
+        assert signal.getsignal(signal.SIGTERM) is early
+        code, _ = run_events(capsys)
+        assert code == 0
+        assert signal.getsignal(signal.SIGTERM) is early
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+# orch events in a real process: --follow, signals and a closed pipe
+
+EVENTS_PROCESS = (
+    "import signal; signal.signal(signal.SIGINT, signal.default_int_handler); "
+    "from orch.cli import main; raise SystemExit(main())"
+)
+
+
+def start_events(*args: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, "-c", EVENTS_PROCESS, "events", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=os.environ,
+    )
+
+
+def read_lines(
+    process: subprocess.Popen[bytes],
+    count: int,
+    timeout: float = 15.0,
+    *,
+    exact: bool = True,
+) -> list[dict]:
+    """Read count JSON lines from the process's stdout within timeout seconds.
+
+    exact also fails when more than count lines arrived; otherwise the first count
+    lines are returned and the rest is dropped.
+    """
+    import select
+    import time
+
+    assert process.stdout is not None
+    buffer = b""
+    deadline = time.monotonic() + timeout
+    while buffer.count(b"\n") < count:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        ready, _, _ = select.select([process.stdout], [], [], left)
+        if not ready:
+            break
+        chunk = os.read(process.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        buffer += chunk
+    complete = buffer.count(b"\n")
+    assert complete == count if exact else complete >= count, (buffer, process.poll())
+    lines = buffer.split(b"\n")[:count]
+    return [json.loads(line.decode("utf-8")) for line in lines]
+
+
+def finish(process: subprocess.Popen[bytes]) -> tuple[int, bytes, bytes]:
+    try:
+        out, err = process.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    return process.returncode, out, err
+
+
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT"])
+def test_follow_prints_new_events_and_ends_on_a_signal(env: Env, signame: str) -> None:
+    import signal
+
+    add_events(env)
+    process = start_events("--follow", "--target", TARGET)
+    try:
+        assert [e["id"] for e in read_lines(process, 2)] == [1, 3]
+        conn = connect(env)
+        try:
+            store.transition(
+                conn, TASK, TaskState.RUNNING, TaskState.JUDGING, actor="orch"
+            )
+        finally:
+            conn.close()
+        new = read_lines(process, 1)
+        assert [(e["id"], e["to_state"]) for e in new] == [(4, "judging")]
+        assert events_schema_errors(new[0]) == []
+        process.send_signal(getattr(signal, signame))
+        code, out, err = finish(process)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert code == 0, err
+    assert out == b""
+    assert err == b""
+
+
+def test_a_closed_pipe_ends_events_quietly(env: Env) -> None:
+    insert(env, state=TaskState.PREPARED)
+    conn = connect(env)
+    try:
+        conn.executemany(
+            "INSERT INTO events (task_id, from_state, to_state, actor, note, at)"
+            " VALUES (?, 'prepared', 'queued', 'orch', ?, 'x')",
+            [(TASK, "n" * 200) for _ in range(3000)],
+        )
+    finally:
+        conn.close()
+    process = start_events()
+    try:
+        assert [e["id"] for e in read_lines(process, 1, exact=False)] == [1]
+        assert process.stdout is not None
+        process.stdout.close()
+        process.stdout = None
+        code, _, err = finish(process)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert code == 0, err
+    assert err == b""
