@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from orch import (
     config,
     credentials,
     doctor,
+    events,
     gate,
     gc,
     gitops,
@@ -103,6 +105,13 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return number
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="orch")
     parser.add_argument(
@@ -118,6 +127,10 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("--shared", action="append", default=[])
     commands.add_parser("prepare").add_argument("spec")
     commands.add_parser("show").add_argument("id")
+    events_parser = commands.add_parser("events")
+    events_parser.add_argument("--follow", action="store_true")
+    events_parser.add_argument("--since", type=_nonnegative_int, default=0)
+    events_parser.add_argument("--target")
     for name in (
         "dispatch",
         "run",
@@ -591,9 +604,49 @@ def _track(
         }
 
 
+def _events(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
+    target = args.target
+    if target is not None:
+        try:
+            config.validate_target_name(target)
+        except config.TargetNameError as exc:
+            raise _UsageError(str(exc)) from exc
+        _check_target(target)
+    else:
+        target = os.environ.get("ORCH_TARGET")
+    orch_home, _ = _environment(args.command)
+    stopped = False
+
+    def stop(signum: int, frame: object) -> None:
+        nonlocal stopped
+        stopped = True
+
+    def write(line: str) -> None:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+    previous = signal.signal(signal.SIGTERM, stop) if args.follow else None
+    try:
+        with closing(store.connect(config.state_db_path(orch_home))) as conn:
+            events.stream(
+                conn,
+                write,
+                since=args.since,
+                target=target,
+                follow=args.follow,
+                stopped=lambda: stopped,
+            )
+    finally:
+        if args.follow:
+            signal.signal(signal.SIGTERM, previous)
+    return 0, {}
+
+
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "events":
+        return _events(args)
     if args.command == "show":
         orch_home, _ = _environment(args.command)
         with closing(store.connect(config.state_db_path(orch_home))) as conn:
@@ -1273,14 +1326,16 @@ def _command(
 def main(argv: list[str] | None = None) -> int:
     """Run one orch command and return its exit code."""
     secrets: list[str] = []
-    is_show = (sys.argv[1:] if argv is None else argv)[:1] == ["show"]
+    command = (sys.argv[1:] if argv is None else argv)[:1]
+    is_show = command == ["show"]
+    is_events = command == ["events"]
     try:
         try:
             args = _parser().parse_args(argv)
             if args.command == "hook":
                 return hooks.run_hook(args.name)
             code, data = _execute(args, secrets)
-            if args.command in {"open", "watch"}:
+            if args.command in {"open", "watch", "events"}:
                 return code
             if args.command == "status" and args.human:
                 for line in data["lines"]:
@@ -1319,19 +1374,26 @@ def main(argv: list[str] | None = None) -> int:
                 "message": f"명령을 수행할 수 없습니다: {exc}",
             }
         except Exception as exc:
+            if is_events and isinstance(exc, BrokenPipeError):
+                raise
             code = 70
             output = {
                 "ok": False,
                 "error": "internal",
                 "message": f"내부 오류가 발생했습니다: {exc}",
             }
-        if is_show:
+        if is_show or is_events:
             output = {"ok": output["ok"], "schema_version": 1, **output}
         print(
             credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
         )
         return code
     except BaseException as exc:
+        if is_events and isinstance(exc, (KeyboardInterrupt, BrokenPipeError)):
+            if isinstance(exc, BrokenPipeError):
+                with open(os.devnull, "w") as sink:
+                    os.dup2(sink.fileno(), sys.stdout.fileno())
+            return 0
         if isinstance(exc, SystemExit) and not secrets:
             raise
         try:
@@ -1348,7 +1410,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": "내부 오류가 발생했습니다.",
             }
-            if is_show:
+            if is_show or is_events:
                 output = {"ok": output["ok"], "schema_version": 1, **output}
             print(
                 credentials.redact_secrets(
