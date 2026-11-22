@@ -34,6 +34,7 @@ from orch import (
     selfcheck,
     selfcheck_codex,
     service,
+    show,
     store,
     taskfile,
     tracking,
@@ -116,6 +117,7 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("--default-branch", default="main")
     add.add_argument("--shared", action="append", default=[])
     commands.add_parser("prepare").add_argument("spec")
+    commands.add_parser("show").add_argument("id")
     for name in (
         "dispatch",
         "run",
@@ -592,6 +594,13 @@ def _track(
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "show":
+        orch_home, _ = _environment(args.command)
+        with closing(store.connect(config.state_db_path(orch_home))) as conn:
+            task = _get_task(conn, args.id)
+            _check_target(task.target)
+            paths = config.target_paths(orch_home, task.target)
+            return 0, show.show_task(conn, task, paths)
     if args.command == "track":
         return _track(args, secrets)
     if args.command == "sandbox":
@@ -1264,6 +1273,7 @@ def _command(
 def main(argv: list[str] | None = None) -> int:
     """Run one orch command and return its exit code."""
     secrets: list[str] = []
+    is_show = (sys.argv[1:] if argv is None else argv)[:1] == ["show"]
     try:
         try:
             args = _parser().parse_args(argv)
@@ -1315,6 +1325,8 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": f"내부 오류가 발생했습니다: {exc}",
             }
+        if is_show:
+            output = {"ok": output["ok"], "schema_version": 1, **output}
         print(
             credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
         )
@@ -1336,6 +1348,8 @@ def main(argv: list[str] | None = None) -> int:
                 "error": "internal",
                 "message": "내부 오류가 발생했습니다.",
             }
+            if is_show:
+                output = {"ok": output["ok"], "schema_version": 1, **output}
             print(
                 credentials.redact_secrets(
                     json.dumps(output, ensure_ascii=False), secrets
