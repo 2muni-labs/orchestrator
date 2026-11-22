@@ -65,6 +65,7 @@ class GateReport:
     failed_gate: str | None = None
     detail: str | None = None
     log_path: str | None = None
+    safety_paths_changed: tuple[str, ...] = ()
 
 
 def glob_matches(path: str, glob: str) -> bool:
@@ -310,8 +311,15 @@ def run_gates(
     return GateReport(passed=True, gates=gates, log_path=str(log_path))
 
 
-def review_required(grade: Grade, *, flag: bool = False) -> bool:
-    """Return whether a passing task of this grade goes to cross-review."""
+def safety_path_changes(
+    changed: Iterable[str], safety_paths: Iterable[str]
+) -> tuple[str, ...]:
+    """Return the changed paths under the target's safety paths, sorted and unique."""
+    raise NotImplementedError
+
+
+def review_required(grade: Grade, *, flag: bool = False, safety: bool = False) -> bool:
+    """Return whether a passing task goes to cross-review."""
     return grade in (Grade.L3, Grade.L3R) or flag
 
 

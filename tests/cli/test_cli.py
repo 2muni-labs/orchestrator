@@ -1527,6 +1527,7 @@ def test_the_token_is_not_taken_from_the_environment(
                 "failed_gate": None,
                 "detail": None,
                 "log_path": "log",
+                "safety_paths_changed": [],
             },
         ),
         (
@@ -1547,6 +1548,7 @@ def test_the_token_is_not_taken_from_the_environment(
                 "failed_gate": "G1",
                 "detail": "scope",
                 "log_path": "log",
+                "safety_paths_changed": [],
             },
         ),
         (UpdateReport(state=TaskState.CONFLICT, conflicts=("a.py",)), 20, None),
