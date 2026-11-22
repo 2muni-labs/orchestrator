@@ -178,7 +178,8 @@ def create_worktree(repo: Path, worktree: Path, branch: str, start_point: str) -
 
 def add_detached_worktree(repo: Path, worktree: Path, commit: str) -> None:
     """Create a worktree with a detached HEAD at a commit."""
-    raise NotImplementedError
+    _validate_value(commit)
+    _git(repo, "worktree", "add", "--detach", str(worktree), commit)
 
 
 def remove_worktree(repo: Path, worktree: Path, *, force: bool = False) -> None:
