@@ -23,6 +23,7 @@ from orch.gate import (
     run_command,
     run_gates,
     run_tests,
+    safety_path_changes,
     scope_violations,
 )
 from orch.gitops import GitError, create_worktree, fetch, temporary_merge
@@ -1652,3 +1653,222 @@ def test_gate_task_never_commits_a_change_made_during_the_gates(
     assert recorded(conn) == {Gate.G1: True, Gate.G2: False}
     assert git(worktree, "rev-parse", "HEAD") == test_sha
     assert all(SECRET not in (r.detail or "") for r in gate_results(conn, "feat-x", 1))
+
+
+# Safety paths send a task to review (ADR 0014)
+
+
+@pytest.mark.parametrize(
+    ("changed", "safety", "expected"),
+    [
+        (["src/orch/gate.py"], ["src/orch/gate.py"], ("src/orch/gate.py",)),
+        (
+            ["scripts/a.sh", "scripts/x/b.sh"],
+            ["scripts/**"],
+            ("scripts/a.sh", "scripts/x/b.sh"),
+        ),
+        (["config/main.md"], ["config/"], ("config/main.md",)),
+        (["config/agents/r.md"], ["config"], ("config/agents/r.md",)),
+        (["src/orch/gate.py"], ["src/orch/*.py"], ("src/orch/gate.py",)),
+        (["src/orch/lanes/base.py"], ["src/orch/*.py"], ()),
+        (["src/orch/gates.py", "src/orch/gate.pyc"], ["src/orch/gate.py"], ()),
+        (["docs/x.md"], [], ()),
+        ([], ["scripts/**"], ()),
+    ],
+)
+def test_safety_path_changes_follows_the_user_check_rule(
+    changed: list[str], safety: list[str], expected: tuple[str, ...]
+) -> None:
+    assert safety_path_changes(changed, safety) == expected
+
+
+def test_safety_path_changes_is_sorted_and_unique_and_skips_the_result_file() -> None:
+    changed = ["z.md", "CLAUDE.md", ".orch-result.json", "z.md", "a/b.py"]
+    safety = ["CLAUDE.md", "z.md", "a/**", ".orch-result.json"]
+    assert safety_path_changes(changed, safety) == ("CLAUDE.md", "a/b.py", "z.md")
+
+
+def test_safety_path_changes_accepts_any_iterables() -> None:
+    assert safety_path_changes(iter(["a.py"]), (s for s in ["a.py"])) == ("a.py",)
+
+
+@pytest.mark.parametrize("grade", list(Grade))
+@pytest.mark.parametrize("flag", [False, True])
+def test_a_safety_change_always_requires_a_review(grade: Grade, flag: bool) -> None:
+    assert review_required(grade, flag=flag, safety=True) is True
+
+
+@pytest.mark.parametrize(
+    ("grade", "expected"),
+    [(Grade.L1, False), (Grade.L2, False), (Grade.L3, True), (Grade.L3R, True)],
+)
+def test_no_safety_change_keeps_the_grade_rule(grade: Grade, expected: bool) -> None:
+    assert review_required(grade, safety=False) is expected
+
+
+def test_the_safety_argument_is_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        review_required(Grade.L2, False, True)  # type: ignore[misc]
+
+
+def test_a_gate_report_lists_no_safety_paths_by_default() -> None:
+    assert GateReport(passed=True).safety_paths_changed == ()
+
+
+def safety_target(*paths: str) -> Target:
+    return make_target(safety_paths=paths)
+
+
+@pytest.mark.parametrize("grade", [Grade.L1, Grade.L2])
+def test_a_lower_grade_task_changing_a_safety_path_goes_to_review(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    grade: Grade,
+) -> None:
+    add_judged_task(conn, worktree, test_sha, grade=grade)
+    write(worktree / "src" / "guarded.py")
+    write(worktree / "src" / "plain.py")
+    report = run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert report.passed is True
+    assert report.safety_paths_changed == ("src/guarded.py",)
+    assert state_of(conn) is TaskState.REVIEWING
+    assert states_passed(conn) == [("judging", "gating"), ("gating", "reviewing")]
+    head = git(worktree, "rev-parse", "HEAD")
+    assert head != test_sha
+    assert gated_of(conn) == head
+    names = git(worktree, "show", "--name-only", "--format=", "HEAD").split()
+    assert names == ["src/guarded.py", "src/plain.py"]
+
+
+def test_a_task_outside_the_safety_paths_stays_ready(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "plain.py")
+    report = run_flow(conn, log_path, safety_target("src/guarded.py", "scripts/**"))
+    assert report.passed is True
+    assert report.safety_paths_changed == ()
+    assert state_of(conn) is TaskState.READY
+
+
+@pytest.mark.parametrize("grade", [Grade.L3, Grade.L3R])
+def test_a_higher_grade_task_lists_its_safety_paths(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    grade: Grade,
+) -> None:
+    add_judged_task(conn, worktree, test_sha, grade=grade)
+    write(worktree / "src" / "b.py")
+    write(worktree / "src" / "a.py")
+    report = run_flow(conn, log_path, safety_target("src/**"))
+    assert report.safety_paths_changed == ("src/a.py", "src/b.py")
+    assert state_of(conn) is TaskState.REVIEWING
+
+
+def test_a_deleted_safety_file_counts(
+    conn: sqlite3.Connection, worktree: Path, log_path: Path
+) -> None:
+    add_commit(worktree, "src/guarded.py")
+    test_sha = add_commit(worktree, "tests/test_x.py")
+    add_judged_task(conn, worktree, test_sha)
+    (worktree / "src" / "guarded.py").unlink()
+    report = run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert report.safety_paths_changed == ("src/guarded.py",)
+    assert state_of(conn) is TaskState.REVIEWING
+
+
+def stub_in_test_commit(worktree: Path) -> tuple[str, str]:
+    """Return the base and the test commit, which here spans a stub commit too."""
+    base = git(worktree, "rev-parse", "HEAD")
+    add_commit(worktree, "src/guarded.py")
+    return base, add_commit(worktree, "tests/test_x.py")
+
+
+def test_a_safety_file_from_the_main_agents_commits_counts_from_the_base(
+    conn: sqlite3.Connection, worktree: Path, log_path: Path
+) -> None:
+    base, test_sha = stub_in_test_commit(worktree)
+    add_judged_task(conn, worktree, test_sha)
+    update_task(conn, "feat-x", base_sha=base)
+    write(worktree / "src" / "plain.py")
+    report = run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert report.safety_paths_changed == ("src/guarded.py",)
+    assert state_of(conn) is TaskState.REVIEWING
+
+
+def test_without_a_base_the_changes_count_from_the_test_commit(
+    conn: sqlite3.Connection, worktree: Path, log_path: Path
+) -> None:
+    _, test_sha = stub_in_test_commit(worktree)
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "plain.py")
+    report = run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert report.passed is True
+    assert report.safety_paths_changed == ()
+    assert state_of(conn) is TaskState.READY
+
+
+def test_safety_files_merged_from_the_default_branch_do_not_count(
+    conn: sqlite3.Connection, repo: Path, worktree: Path, log_path: Path
+) -> None:
+    base = git(worktree, "rev-parse", "HEAD")
+    test_sha = add_commit(worktree, "tests/test_x.py")
+    add_judged_task(conn, worktree, test_sha)
+    update_task(conn, "feat-x", base_sha=base)
+    add_commit(repo, "src/guarded.py")
+    git(repo, "push", "-q", "origin", "main")
+    git(repo, "fetch", "-q", "origin")
+    git(worktree, "merge", "-q", "--no-edit", MAIN)
+    write(worktree / "src" / "plain.py")
+    report = run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert report.passed is True
+    assert report.safety_paths_changed == ()
+    assert state_of(conn) is TaskState.READY
+
+
+def test_a_failing_gate_lists_no_safety_paths(
+    conn: sqlite3.Connection, worktree: Path, test_sha: str, log_path: Path
+) -> None:
+    add_judged_task(conn, worktree, test_sha)
+    write(worktree / "src" / "guarded.py")
+    target = make_target(test_command="exit 1", safety_paths=("src/guarded.py",))
+    report = run_flow(conn, log_path, target)
+    assert report.passed is False
+    assert report.safety_paths_changed == ()
+    assert state_of(conn) is TaskState.JUDGING
+
+
+def test_a_failure_finding_the_changes_returns_to_judging_without_a_commit(
+    conn: sqlite3.Connection,
+    worktree: Path,
+    test_sha: str,
+    log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = git(worktree, "rev-parse", "HEAD~1")
+    add_judged_task(conn, worktree, test_sha)
+    update_task(conn, "feat-x", base_sha=base)
+    real = gitops.task_changed_paths
+    asked: list[str] = []
+
+    def changed(worktree: Path, since: str, main_ref: str) -> frozenset[str]:
+        asked.append(since)
+        if since == base:
+            raise GitError("cannot list")
+        return real(worktree, since, main_ref)
+
+    monkeypatch.setattr(gitops, "task_changed_paths", changed)
+    write(worktree / "src" / "guarded.py")
+    with pytest.raises(GitError):
+        run_flow(conn, log_path, safety_target("src/guarded.py"))
+    assert base in asked
+    assert state_of(conn) is TaskState.JUDGING
+    assert git(worktree, "rev-parse", "HEAD") == test_sha
+    assert "src/guarded.py" in git(
+        worktree, "status", "--porcelain", "--untracked-files=all"
+    )
+    assert gated_of(conn) is None
