@@ -161,6 +161,10 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             last_error TEXT
         )""",
     ),
+    (
+        "ALTER TABLE tasks ADD COLUMN milestone TEXT",
+        "ALTER TABLE tasks ADD COLUMN replaces TEXT",
+    ),
 )
 
 
@@ -251,8 +255,9 @@ def insert_task(conn: sqlite3.Connection, task: Task) -> None:
         """INSERT INTO tasks (
             id, target, title, grade, lane, model, effort, state, attempt,
             timeout_sec, base_sha, test_sha, depends_on, worktree, pr_url,
-            slot_expires_at, created_at, updated_at, pushed_sha, gated_sha
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            slot_expires_at, created_at, updated_at, pushed_sha, gated_sha,
+            milestone, replaces
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             task.id,
             task.target,
@@ -274,6 +279,8 @@ def insert_task(conn: sqlite3.Connection, task: Task) -> None:
             task.updated_at,
             task.pushed_sha,
             task.gated_sha,
+            task.milestone,
+            task.replaces,
         ),
     )
 
@@ -289,7 +296,11 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
 
 def find_replacing(conn: sqlite3.Connection, task_id: str) -> str | None:
     """Return the id of the task whose replaces names task_id, or None."""
-    raise NotImplementedError
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE replaces = ? ORDER BY created_at, id LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row[0] if row is not None else None
 
 
 def _task_from_row(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> Task:
