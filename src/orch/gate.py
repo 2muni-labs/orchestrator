@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -315,12 +315,25 @@ def safety_path_changes(
     changed: Iterable[str], safety_paths: Iterable[str]
 ) -> tuple[str, ...]:
     """Return the changed paths under the target's safety paths, sorted and unique."""
-    raise NotImplementedError
+    safety = tuple(s.removesuffix("/**").removesuffix("/") for s in safety_paths)
+    return tuple(
+        sorted(
+            {
+                path
+                for path in changed
+                if path != RESULT_FILE
+                and any(
+                    glob_matches(path, entry) or glob_matches(path, entry + "/**")
+                    for entry in safety
+                )
+            }
+        )
+    )
 
 
 def review_required(grade: Grade, *, flag: bool = False, safety: bool = False) -> bool:
     """Return whether a passing task goes to cross-review."""
-    return grade in (Grade.L3, Grade.L3R) or flag
+    return grade in (Grade.L3, Grade.L3R) or flag or safety
 
 
 def gate_task(
@@ -384,6 +397,13 @@ def gate_task(
             )
             return report
 
+        matched = safety_path_changes(
+            gitops.task_changed_paths(
+                worktree, task.base_sha or task.test_sha, main_ref
+            ),
+            target.safety_paths,
+        )
+        report = replace(report, safety_paths_changed=matched)
         paths = sorted(gitops.changed_paths(worktree, "HEAD") - {RESULT_FILE})
         if paths:
             gitops.commit(
@@ -392,7 +412,7 @@ def gate_task(
         store.update_task(conn, spec.id, gated_sha=gitops.rev_parse(worktree, "HEAD"))
         next_state = (
             TaskState.REVIEWING
-            if review_required(task.grade, flag=spec.review)
+            if review_required(task.grade, flag=spec.review, safety=bool(matched))
             else TaskState.READY
         )
         store.transition(conn, spec.id, TaskState.GATING, next_state, actor="orch")
