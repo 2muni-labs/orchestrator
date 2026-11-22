@@ -49,6 +49,7 @@ def validate_event(event: str) -> None:
             "selfcheck_ready",
             "selfcheck_failed",
             "agent_unverified",
+            "fulltest_failed",
         }
         and not re.fullmatch(r"doctor_[a-z0-9_]+", event)
     ):

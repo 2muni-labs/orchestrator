@@ -20,6 +20,7 @@ from orch import (
     credentials,
     doctor,
     events,
+    fulltest,
     gate,
     gc,
     gitops,
@@ -212,6 +213,9 @@ def _parser() -> argparse.ArgumentParser:
     track_accept.add_argument("record")
     track_accept.add_argument("--target")
     track.add_parser("status").add_argument("--target")
+    fulltest_parser = commands.add_parser("fulltest")
+    fulltest_parser.add_argument("--all", action="store_true")
+    fulltest_parser.add_argument("--target")
     return parser
 
 
@@ -456,6 +460,61 @@ def _refresh_todos(
         _refresh_target_plans(conn, orch_home, target, now, secrets)
 
 
+def _fulltest(
+    args: argparse.Namespace, secrets: list[str]
+) -> tuple[int, dict[str, object]]:
+    """Run orch fulltest for one target or, with --all, for every target."""
+    orch_home, hub = _environment("fulltest", require_hub=True)
+    assert hub is not None
+    if args.all:
+        if args.target is not None or "ORCH_TARGET" in os.environ:
+            raise _UsageError("--all cannot be combined with --target or ORCH_TARGET")
+        registered = config.load_targets(hub / "targets.toml")
+        targets = [registered[name] for name in sorted(registered)]
+    else:
+        name = args.target or os.environ.get("ORCH_TARGET")
+        if not name:
+            raise _UsageError("--target or ORCH_TARGET is required")
+        if args.target is not None:
+            _check_target(name)
+        targets = [_target(hub, name)]
+    settings = config.load_config(orch_home)
+    if settings.notify_topic:
+        secrets.append(settings.notify_topic)
+    reports: list[dict[str, object]] = []
+    failed = False
+    with closing(store.connect(config.state_db_path(orch_home))) as conn:
+        for target in targets:
+            report = fulltest.run_fulltest(
+                conn,
+                target,
+                config.target_paths(orch_home, target.name),
+                timeout_sec=settings.gate_timeout_min * 60,
+            )
+            reports.append(asdict(report))
+            if report.outcome not in {
+                fulltest.FulltestOutcome.PASSED,
+                fulltest.FulltestOutcome.BUSY,
+            }:
+                failed = True
+                _send_notification(
+                    "fulltest_failed",
+                    settings=settings,
+                    orch_home=orch_home,
+                    home=Path.home(),
+                    secrets=secrets,
+                    target=target.name,
+                )
+    if failed:
+        return 20, {
+            "ok": False,
+            "error": "fulltest_failed",
+            "message": "기본 브랜치 전체 테스트가 통과하지 못한 대상이 있습니다.",
+            "results": reports,
+        }
+    return 0, {"ok": True, "results": reports}
+
+
 def _track(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
@@ -656,6 +715,8 @@ def _execute(
             return 0, show.show_task(conn, task, paths)
     if args.command == "track":
         return _track(args, secrets)
+    if args.command == "fulltest":
+        return _fulltest(args, secrets)
     if args.command == "sandbox":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv:
