@@ -13,6 +13,8 @@ verify = ".venv/bin/python -m pytest tests/test_<module>.py"  # no network, no w
 depends_on = []
 # tests = "none"              # L1 only: dispatch without a test commit
 # review = true               # risk area: adds a review; L3 and L3R always get one
+# milestone = "M17"           # roadmap milestone id; accepted from orch 0.21.0 (schema v7)
+# replaces = "<old-task-id>"  # the discarded task this one replaces, once; from orch 0.21.0
 +++
 
 <!-- Write the body in Korean. Keep identifiers and paths in English. -->
