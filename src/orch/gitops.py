@@ -176,6 +176,11 @@ def create_worktree(repo: Path, worktree: Path, branch: str, start_point: str) -
     _git(repo, "worktree", "add", "-b", branch, str(worktree), start_point)
 
 
+def add_detached_worktree(repo: Path, worktree: Path, commit: str) -> None:
+    """Create a worktree with a detached HEAD at a commit."""
+    raise NotImplementedError
+
+
 def remove_worktree(repo: Path, worktree: Path, *, force: bool = False) -> None:
     """Remove a worktree. Without force, git refuses a dirty one."""
     options = ["--force"] if force else []

@@ -212,6 +212,9 @@ def _parser() -> argparse.ArgumentParser:
     track_accept.add_argument("record")
     track_accept.add_argument("--target")
     track.add_parser("status").add_argument("--target")
+    fulltest_parser = commands.add_parser("fulltest")
+    fulltest_parser.add_argument("--all", action="store_true")
+    fulltest_parser.add_argument("--target")
     return parser
 
 
@@ -456,6 +459,13 @@ def _refresh_todos(
         _refresh_target_plans(conn, orch_home, target, now, secrets)
 
 
+def _fulltest(
+    args: argparse.Namespace, secrets: list[str]
+) -> tuple[int, dict[str, object]]:
+    """Run orch fulltest for one target or, with --all, for every target."""
+    raise NotImplementedError
+
+
 def _track(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
@@ -656,6 +666,8 @@ def _execute(
             return 0, show.show_task(conn, task, paths)
     if args.command == "track":
         return _track(args, secrets)
+    if args.command == "fulltest":
+        return _fulltest(args, secrets)
     if args.command == "sandbox":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv:

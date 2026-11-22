@@ -134,6 +134,7 @@ def test_notify_state_path_sits_in_orch_home(tmp_path: Path) -> None:
         "review_stalled",
         "selfcheck_ready",
         "selfcheck_failed",
+        "fulltest_failed",
         "doctor_disk",
         "doctor_a_1",
     ],
@@ -155,6 +156,9 @@ def test_known_events_are_valid(event: str) -> None:
         "selfcheck",
         "selfcheck_",
         "selfcheck_other",
+        "fulltest",
+        "fulltest_",
+        "fulltest_passed",
     ],
 )
 def test_unknown_events_raise(event: str) -> None:
@@ -186,6 +190,7 @@ def test_unknown_events_raise(event: str) -> None:
             "",
             "claude@2.1.326|selfcheck_failed|",
         ),
+        ("fulltest_failed", "orchestrator", "", "orchestrator|fulltest_failed|"),
     ],
 )
 def test_dedup_key_per_event(event: str, target: str, task_id: str, key: str) -> None:

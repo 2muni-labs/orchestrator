@@ -15,6 +15,7 @@ from orch.gitops import (
     LeaseRejectedError,
     MergeResult,
     RebaseResult,
+    add_detached_worktree,
     changed_paths,
     commit,
     commits_since,
@@ -226,6 +227,40 @@ def test_prune_forgets_a_worktree_that_is_gone(
     delete_branch(repo, BRANCH)
 
 
+def test_add_detached_worktree_checks_out_the_commit_without_a_branch(
+    repo: Path, tmp_path: Path
+) -> None:
+    tip = git(repo, "rev-parse", "origin/main")
+    branches = git(repo, "branch", "--list")
+    path = tmp_path / "detached"
+    add_detached_worktree(repo, path, tip)
+    assert git(path, "rev-parse", "HEAD") == tip
+    assert git(path, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert git(repo, "branch", "--list") == branches
+    assert str(path) in git(repo, "worktree", "list")
+    remove_worktree(repo, path, force=True)
+    prune_worktrees(repo)
+    assert not path.exists()
+    assert git(repo, "branch", "--list") == branches
+
+
+def test_add_detached_worktree_accepts_a_remote_tracking_name(
+    repo: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "detached"
+    add_detached_worktree(repo, path, "origin/main")
+    assert git(path, "rev-parse", "HEAD") == git(repo, "rev-parse", "origin/main")
+    assert git(path, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+def test_add_detached_worktree_of_an_unknown_commit_raises(
+    repo: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(GitError):
+        add_detached_worktree(repo, tmp_path / "detached", "0" * 40)
+    assert not (tmp_path / "detached").exists()
+
+
 # Task branch rule
 
 
@@ -265,6 +300,9 @@ def test_values_that_look_like_options_are_refused(
         rebase(repo, value)
     with pytest.raises(GitError):
         create_worktree(repo, tmp_path / "wt4", BRANCH, value)
+    with pytest.raises(GitError):
+        add_detached_worktree(repo, tmp_path / "wt5", value)
+    assert not (tmp_path / "wt5").exists()
 
 
 # Commit
