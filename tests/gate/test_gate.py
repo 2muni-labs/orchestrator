@@ -16,6 +16,7 @@ from orch.gate import (
     GateReport,
     GateStatus,
     ScopeViolations,
+    SuiteRun,
     check_scope,
     gate_task,
     glob_matches,
@@ -455,6 +456,7 @@ def test_all_gates_pass(worktree: Path, test_sha: str, log_path: Path) -> None:
             "G3": GateStatus.PASSED,
         },
         log_path=str(log_path),
+        suite=SuiteRun(full=True, reasons=("no_plan",)),
     )
 
 

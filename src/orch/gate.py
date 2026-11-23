@@ -57,6 +57,26 @@ class ScopeViolations:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class RunPlan:
+    """The test commands G2 runs: a full run or the selected groups."""
+
+    full: bool
+    groups: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    commands: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SuiteRun:
+    """What one G2 run ran and which tests failed."""
+
+    full: bool
+    groups: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    failed_tests: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GateReport:
     """The outcome of running the gates."""
 
@@ -66,6 +86,7 @@ class GateReport:
     detail: str | None = None
     log_path: str | None = None
     safety_paths_changed: tuple[str, ...] = ()
+    suite: SuiteRun | None = None
 
 
 def glob_matches(path: str, glob: str) -> bool:
@@ -205,15 +226,30 @@ def _command_failure(command: str, code: int | None) -> str | None:
     return None
 
 
+def plan_tests(
+    target: Target, grade: Grade, worktree: Path, changed: Iterable[str]
+) -> RunPlan:
+    """Choose a full run or the selected groups' commands for G2."""
+    raise NotImplementedError
+
+
+def failed_tests(text: str) -> tuple[str, ...]:
+    """Return the test ids of pytest's FAILED and ERROR summary lines."""
+    raise NotImplementedError
+
+
 def run_tests(
     spec: TaskSpec,
     target: Target,
     worktree: Path,
     log_path: Path,
     *,
+    plan: RunPlan | None = None,
     timeout_sec: int | None = None,
 ) -> str | None:
     """Run the G2 commands and return a failure summary, or None if they pass."""
+    if plan is not None:
+        raise NotImplementedError
     before = gitops.snapshot_worktree(worktree)
     failure = None
     for command, allow_empty in (
@@ -244,9 +280,12 @@ def run_gates(
     since: str,
     main_ref: str,
     log_path: Path,
+    plan: RunPlan | None = None,
     timeout_sec: int | None = None,
 ) -> GateReport:
     """Run G1, G2 and G3, stopping at a failure, then check the scope again."""
+    if plan is not None:
+        raise NotImplementedError
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("", encoding="utf-8")
     gates = dict.fromkeys(("G1", "G2", "G3"), GateStatus.NOT_RUN)

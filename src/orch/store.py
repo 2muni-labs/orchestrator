@@ -5,6 +5,7 @@ import sqlite3
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -691,3 +692,50 @@ def list_doctor_checks(conn: sqlite3.Connection) -> tuple[DoctorCheck, ...]:
         )
         for target, item, level, detail, at in rows
     )
+
+
+# Test selections (technical design 4.14)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SuiteRecord:
+    """One row of the suite_runs table."""
+
+    task_id: str
+    attempt: int
+    gate: Gate
+    full: bool
+    groups: tuple[str, ...]
+    reasons: tuple[str, ...]
+    failed_tests: tuple[str, ...]
+    at: str
+
+
+def record_suite_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    attempt: int,
+    gate: Gate,
+    *,
+    full: bool,
+    groups: Iterable[str],
+    reasons: Iterable[str],
+    failed_tests: Iterable[str],
+    at: str | None = None,
+) -> None:
+    """Record a G2 or G2_PRE_PR selection, replacing an earlier one for the key."""
+    raise NotImplementedError
+
+
+def suite_run(
+    conn: sqlite3.Connection, task_id: str, attempt: int, gate: Gate
+) -> SuiteRecord | None:
+    """Return the recorded selection of one gate, or None."""
+    raise NotImplementedError
+
+
+def clear_suite_runs(
+    conn: sqlite3.Connection, task_id: str, attempt: int, gates: Iterable[Gate]
+) -> None:
+    """Remove the named gates' selections for one attempt of one task."""
+    raise NotImplementedError
