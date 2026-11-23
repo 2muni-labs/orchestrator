@@ -100,7 +100,7 @@ class Limits:
     """Concurrent run limits."""
 
     total: int = 3
-    lane_b: int = 2
+    lane_b: int = 3
     lane_a: int = 2
 
 
@@ -547,11 +547,11 @@ def load_config(home: Path) -> Config:
     if backend != "tmux":
         raise ConfigError("Unsupported terminal backend")
     limits_data = _table(data.get("limits", {}), {"total", "lane_b", "lane_a"})
+    total = _positive_integer(limits_data.get("total", 3))
     limits = Limits(
-        **{
-            key: _positive_integer(limits_data.get(key, default))
-            for key, default in (("total", 3), ("lane_b", 2), ("lane_a", 2))
-        }
+        total=total,
+        lane_b=_positive_integer(limits_data.get("lane_b", min(3, total))),
+        lane_a=_positive_integer(limits_data.get("lane_a", 2)),
     )
     if limits.lane_b > limits.total:
         raise ConfigError("lane_b exceeds total")

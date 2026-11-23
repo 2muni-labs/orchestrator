@@ -475,7 +475,7 @@ def test_missing_config_means_design_defaults(tmp_path: Path) -> None:
     assert config.terminal_backend == "tmux"
     assert config.retention_days == 30
     assert config.reservation_ttl_min == 10
-    assert config.limits == Limits(total=3, lane_b=2, lane_a=2)
+    assert config.limits == Limits(total=3, lane_b=3, lane_a=2)
     assert config.notify_method == "none"
     assert config.notify_topic is None
     assert config.codex_path is None
@@ -539,6 +539,18 @@ codex = ["limit one", "limit two"]
 def test_partial_limits_keep_other_defaults(tmp_path: Path) -> None:
     write(config_path(tmp_path), "[limits]\nlane_b = 1\n")
     assert load_config(tmp_path).limits == Limits(total=3, lane_b=1, lane_a=2)
+
+
+def test_the_limits_dataclass_defaults_lane_b_to_three() -> None:
+    assert Limits() == Limits(total=3, lane_b=3, lane_a=2)
+
+
+@pytest.mark.parametrize(("total", "lane_b"), [(1, 1), (2, 2), (3, 3), (5, 3)])
+def test_an_omitted_lane_b_is_three_or_the_total_if_lower(
+    tmp_path: Path, total: int, lane_b: int
+) -> None:
+    write(config_path(tmp_path), f"[limits]\ntotal = {total}\n")
+    assert load_config(tmp_path).limits == Limits(total=total, lane_b=lane_b, lane_a=2)
 
 
 def test_notify_topic_stays_out_of_repr(tmp_path: Path) -> None:
@@ -633,6 +645,7 @@ def test_config_is_frozen() -> None:
         "[limits]\ntotal = true\n",
         "[limits]\ntotal = 1.5\n",
         "[limits]\ntotal = 1\nlane_b = 2\n",
+        "[limits]\ntotal = 2\nlane_b = 3\n",
         "[limits]\nlane_a = 0\n",
         '[notify]\nmethod = "mail"\n',
         '[notify]\nmethod = "ntfy"\n',
