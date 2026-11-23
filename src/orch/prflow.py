@@ -63,6 +63,19 @@ def user_check(
     )
 
 
+def _tests_section(conn: sqlite3.Connection, task_id: str, attempt: int) -> str:
+    """Render the latest applicable selection for this attempt's PR body."""
+    record = store.suite_run(conn, task_id, attempt, Gate.G2_PRE_PR)
+    if record is None:
+        record = store.suite_run(conn, task_id, attempt, Gate.G2)
+    if record is None:
+        return ""
+    run = "full run" if record.full else f"selected run ({', '.join(record.groups)})"
+    lines = ["## Tests", "", f"- {record.gate}: {run}"]
+    lines.extend(f"  - {reason}" for reason in record.reasons)
+    return "\n\n" + "\n".join(lines)
+
+
 def open_pull_request(
     conn: sqlite3.Connection,
     spec: TaskSpec,
@@ -149,8 +162,28 @@ def open_pull_request(
     skipped = task.gated_sha is not None and head == task.gated_sha
     detail = None
     if not skipped:
+        changed = gitops.task_changed_paths(worktree, base, main_ref)
+        plan = gate.plan_tests(target, task.grade, worktree, changed)
+        offset = log_path.stat().st_size if log_path.exists() else 0
         detail = gate.run_tests(
-            spec, target, worktree, log_path, timeout_sec=timeout_sec
+            spec, target, worktree, log_path, plan=plan, timeout_sec=timeout_sec
+        )
+        failures = ()
+        if log_path.exists():
+            with log_path.open("rb") as log:
+                log.seek(offset)
+                failures = gate.failed_tests(
+                    log.read().decode("utf-8", errors="replace")
+                )
+        store.record_suite_run(
+            conn,
+            spec.id,
+            task.attempt,
+            Gate.G2_PRE_PR,
+            full=plan.full,
+            groups=plan.groups,
+            reasons=plan.reasons,
+            failed_tests=failures,
         )
         if gitops.rev_parse(worktree, "HEAD") != head:
             detail = "G2 실행 중 커밋이 생겼습니다"
@@ -211,6 +244,7 @@ def open_pull_request(
                     ),
                 )
             )
+            body += _tests_section(conn, spec.id, task.attempt)
         else:
             body = (
                 resolution
@@ -240,6 +274,7 @@ def open_pull_request(
                 review=review,
             ),
         )
+        body += _tests_section(conn, spec.id, task.attempt)
         url = github.create_pull_request(
             github=target.github,
             head=branch,
@@ -299,6 +334,10 @@ def update_pull_request(
 
     merged = gitops.rev_parse(worktree, "HEAD")
     try:
+        changed = gitops.task_changed_paths(
+            worktree, task.base_sha or task.test_sha, main_ref
+        )
+        plan = gate.plan_tests(target, task.grade, worktree, changed)
         report = gate.run_gates(
             spec,
             target,
@@ -306,6 +345,7 @@ def update_pull_request(
             since=task.test_sha,
             main_ref=main_ref,
             log_path=log_path,
+            plan=plan,
             timeout_sec=timeout_sec,
         )
     except BaseException:

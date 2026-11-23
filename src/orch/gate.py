@@ -230,12 +230,49 @@ def plan_tests(
     target: Target, grade: Grade, worktree: Path, changed: Iterable[str]
 ) -> RunPlan:
     """Choose a full run or the selected groups' commands for G2."""
-    raise NotImplementedError
+    # testselect uses the path matching helpers from this module.
+    from orch import testselect
+
+    def full(reasons: tuple[str, ...]) -> RunPlan:
+        return RunPlan(full=True, reasons=reasons, commands=(target.test_command,))
+
+    if target.test_select is None:
+        return full(("no_test_groups",))
+    if grade in (Grade.L3, Grade.L3R):
+        return full((f"grade:{grade}",))
+    paths = tuple(path for path in changed if path != RESULT_FILE)
+    safety = safety_path_changes(paths, target.safety_paths)
+    if safety:
+        return full(tuple(f"safety_path:{path}" for path in safety))
+    try:
+        selection = testselect.select(worktree, paths, target.test_select)
+    except Exception as exc:
+        return full((f"select_error:{type(exc).__name__}",))
+    if selection.full:
+        return full(selection.reasons)
+    if not selection.groups:
+        return full(("no_groups",))
+    groups = {group.name: group for group in target.test_select.groups}
+    return RunPlan(
+        full=False,
+        groups=selection.groups,
+        reasons=selection.reasons,
+        commands=tuple(groups[name].command for name in selection.groups),
+    )
 
 
 def failed_tests(text: str) -> tuple[str, ...]:
     """Return the test ids of pytest's FAILED and ERROR summary lines."""
-    raise NotImplementedError
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"^(FAILED|ERROR) (\S+)", text, re.MULTILINE):
+        test_id = match[2]
+        if test_id not in seen:
+            seen.add(test_id)
+            found.append(test_id[:300])
+            if len(found) == 50:
+                break
+    return tuple(found)
 
 
 def run_tests(
@@ -248,12 +285,11 @@ def run_tests(
     timeout_sec: int | None = None,
 ) -> str | None:
     """Run the G2 commands and return a failure summary, or None if they pass."""
-    if plan is not None:
-        raise NotImplementedError
     before = gitops.snapshot_worktree(worktree)
     failure = None
+    commands = (target.test_command,) if plan is None else plan.commands
     for command, allow_empty in (
-        (target.test_command, spec.tests == "none"),
+        *((command, spec.tests == "none") for command in commands),
         (spec.verify, False),
     ):
         try:
@@ -284,11 +320,10 @@ def run_gates(
     timeout_sec: int | None = None,
 ) -> GateReport:
     """Run G1, G2 and G3, stopping at a failure, then check the scope again."""
-    if plan is not None:
-        raise NotImplementedError
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("", encoding="utf-8")
     gates = dict.fromkeys(("G1", "G2", "G3"), GateStatus.NOT_RUN)
+    suite = None
 
     def scope_failure() -> str | None:
         violations = check_scope(
@@ -311,6 +346,7 @@ def run_gates(
             failed_gate=name,
             detail=detail,
             log_path=str(log_path),
+            suite=suite,
         )
 
     detail = scope_failure()
@@ -319,7 +355,19 @@ def run_gates(
     gates["G1"] = GateStatus.PASSED
 
     before = gitops.snapshot_worktree(worktree)
-    detail = run_tests(spec, target, worktree, log_path, timeout_sec=timeout_sec)
+    offset = log_path.stat().st_size
+    detail = run_tests(
+        spec, target, worktree, log_path, plan=plan, timeout_sec=timeout_sec
+    )
+    with log_path.open("rb") as log:
+        log.seek(offset)
+        failures = failed_tests(log.read().decode("utf-8", errors="replace"))
+    suite = SuiteRun(
+        full=True if plan is None else plan.full,
+        groups=() if plan is None else plan.groups,
+        reasons=("no_plan",) if plan is None else plan.reasons,
+        failed_tests=failures,
+    )
     if detail is not None:
         return failed("G2", detail)
     gates["G2"] = GateStatus.PASSED
@@ -347,7 +395,7 @@ def run_gates(
     detail = scope_failure()
     if detail is not None:
         return failed("G1", detail)
-    return GateReport(passed=True, gates=gates, log_path=str(log_path))
+    return GateReport(passed=True, gates=gates, log_path=str(log_path), suite=suite)
 
 
 def safety_path_changes(
@@ -403,7 +451,12 @@ def gate_task(
         store.clear_gate_results(
             conn, spec.id, task.attempt, (Gate.G1, Gate.G2, Gate.G3)
         )
+        store.clear_suite_runs(conn, spec.id, task.attempt, (Gate.G2,))
         worktree = Path(task.worktree)
+        changed = gitops.task_changed_paths(
+            worktree, task.base_sha or task.test_sha, main_ref
+        )
+        plan = plan_tests(target, task.grade, worktree, changed)
         report = run_gates(
             spec,
             target,
@@ -411,8 +464,17 @@ def gate_task(
             since=task.test_sha,
             main_ref=main_ref,
             log_path=log_path,
+            plan=plan,
             timeout_sec=timeout_sec,
         )
+        if report.suite is not None:
+            store.record_suite_run(
+                conn,
+                spec.id,
+                task.attempt,
+                Gate.G2,
+                **asdict(report.suite),
+            )
         for name in ("G1", "G2", "G3"):
             status = report.gates[name]
             if status == GateStatus.NOT_RUN:
