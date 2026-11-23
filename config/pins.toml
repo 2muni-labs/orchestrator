@@ -47,10 +47,14 @@ latest_url = "https://registry.npmjs.org/@openai/codex/latest"
 # digest; no sigstore bundle or attestation for macOS), so the publisher signature is
 # the macOS code signature of every Mach-O file in the package.
 codesign_team = "2DC432GLL2"
+# ADR 0028: the allowlist proxy passes CONNECT only to these hosts on 443, exact match
+# after lowercasing and stripping a trailing dot. Add a host only after a denied
+# CONNECT to it is observed in a run log.
+proxy_hosts = ["chatgpt.com", "ab.chatgpt.com"]
 blocking = [
   { id = "FL-M4", what = "every Mach-O file in the installed package passes codesign --verify --strict for codesign_team; the lock checksum equals the release's codex-package_SHA256SUMS line" },
   { id = "S-M2", what = "with the built-in sandbox off, the orch profile around codex denies reads outside the worktree" },
-  { id = "S-M2b", what = "codex follows HTTPS_PROXY and works behind the allowlist proxy with only localhost:<port> open; other hosts fail" },
+  { id = "S-M2b", what = "codex follows the six proxy variables and works behind the allowlist proxy with only localhost:<port> open and the ADR 0028 allowances; other hosts fail" },
   { id = "isolation", what = "--disable hooks --disable plugins leave no hooks or MCP servers" },
 ]
 warn = [
