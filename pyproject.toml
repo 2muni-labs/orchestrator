@@ -14,6 +14,8 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Run on one worker per CPU (pytest-xdist). Pass -n0 to run in one process.
+addopts = "-n auto"
 # Test modules import helpers and other test modules by bare name across groups.
 pythonpath = [
     "tests",
@@ -55,5 +57,6 @@ select = ["E", "F", "I", "UP", "B"]
 dev = [
     "jsonschema>=4",
     "pytest>=9.2.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.17.3",
 ]
