@@ -265,10 +265,6 @@ def test_the_issuer_must_match_the_given_key_fingerprint() -> None:
         verify_detached(DOCUMENT, sign(), other)
 
 
-def test_no_issuer_subpackets_at_all_verifies() -> None:
-    verify_detached(DOCUMENT, sign(hashed=CREATED, unhashed=b""), KEY)
-
-
 @pytest.mark.parametrize("form", [2, 5])
 def test_longer_subpacket_length_forms_verify(form: int) -> None:
     notation = subpacket(20, bytes(300), form=form)

@@ -102,6 +102,9 @@ outside the sandbox, before that code merges.
 ## Tests in the hub
 
 - Write `verify` as `.venv/bin/python -m pytest ...`.
+- pytest runs on one worker per CPU (`addopts = "-n auto"`, pytest-xdist). A test
+  must not depend on the order of tests or on state another test leaves behind. Pass
+  `-n0` to run in one process, for example when debugging one test.
 - Tests live in one directory per test group, `tests/<group>/`, as in the table of
   `기술 설계.md` 4.14; `tests/integration/` is the integration group. Put a new test
   file in the group of the module it tests. Shared helpers and fakes stay directly
