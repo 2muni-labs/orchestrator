@@ -371,9 +371,10 @@ def test_safety_paths_are_loaded(tmp_path: Path) -> None:
 def test_safety_paths_is_optional_and_empty_by_default(tmp_path: Path) -> None:
     targets = load_targets(write(tmp_path / "targets.toml", VALID_TARGET))
     assert targets["sample-app"].safety_paths == ()
-    assert [f.name for f in dataclasses.fields(Target)][-2:] == [
+    assert [f.name for f in dataclasses.fields(Target)][-3:] == [
         "shared_paths",
         "safety_paths",
+        "test_select",
     ]
 
 
