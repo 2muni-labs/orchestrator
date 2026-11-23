@@ -312,11 +312,74 @@ def _target_path_list(value: object, *, field: str, label: str) -> tuple[str, ..
     return tuple(value)
 
 
+def _select_path_list(
+    value: object, *, field: str, allow_glob: bool = True
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{field} must be a list")
+    for path in value:
+        if (
+            not _nonempty_string(path)
+            or path.startswith("/")
+            or ".." in path.split("/")
+            or "\n" in path
+            or "\r" in path
+            or "\\" in path
+            or (not allow_glob and ("*" in path or "?" in path))
+        ):
+            raise ConfigError(f"Invalid {field} path")
+    return tuple(value)
+
+
 def _select_config(entry: dict[str, object]) -> SelectConfig | None:
     """Validate the test_select and test_groups tables of a target entry."""
-    if "test_select" not in entry and "test_groups" not in entry:
+    if "test_groups" not in entry:
+        if "test_select" in entry:
+            raise ConfigError("test_select requires test_groups")
         return None
-    raise NotImplementedError
+    group_entries = entry["test_groups"]
+    if not isinstance(group_entries, dict):
+        raise ConfigError("test_groups must be a table")
+    for name in group_entries:
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            raise ConfigError("Invalid test group name")
+    groups = []
+    for name, value in sorted(group_entries.items()):
+        group = _table(value, {"sources", "tests", "command", "also"})
+        tests = _select_path_list(group.get("tests", []), field="tests")
+        command = group.get("command")
+        if not tests or not _nonempty_string(command):
+            raise ConfigError("Test groups require tests and a command")
+        also = group.get("also", [])
+        if not isinstance(also, list) or any(
+            not isinstance(other, str) or other not in group_entries or other == name
+            for other in also
+        ):
+            raise ConfigError("Invalid test group also list")
+        groups.append(
+            SelectGroup(
+                name=name,
+                sources=_select_path_list(group.get("sources", []), field="sources"),
+                tests=tests,
+                command=command,
+                also=tuple(also),
+            )
+        )
+    settings = _table(
+        entry.get("test_select", {}), {"import_roots", "full_paths", "ignore_paths"}
+    )
+    return SelectConfig(
+        groups=tuple(groups),
+        import_roots=_select_path_list(
+            settings.get("import_roots", []), field="import_roots", allow_glob=False
+        ),
+        full_paths=_select_path_list(
+            settings.get("full_paths", []), field="full_paths"
+        ),
+        ignore_paths=_select_path_list(
+            settings.get("ignore_paths", []), field="ignore_paths"
+        ),
+    )
 
 
 def _target_from_entry(name: str, entry: object) -> Target:
