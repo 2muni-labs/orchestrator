@@ -103,6 +103,16 @@ EXPECTED_COLUMNS = {
     },
     "locks": {"target", "path_glob", "task_id"},
     "gate_results": {"task_id", "attempt", "gate", "passed", "detail", "at"},
+    "suite_runs": {
+        "task_id",
+        "attempt",
+        "gate",
+        "full",
+        "groups",
+        "reasons",
+        "failed_tests",
+        "at",
+    },
     "events": {"id", "task_id", "from_state", "to_state", "actor", "note", "at"},
     "tracking_targets": {"target", "repository", "imported_at"},
     "tracking_projects": {"target", "key", "title", "url"},
@@ -1520,7 +1530,7 @@ def test_the_v6_migration_creates_only_the_tracking_tables() -> None:
 
 
 def test_the_v7_migration_is_the_two_task_columns_only() -> None:
-    assert len(store.MIGRATIONS) == 7
+    assert len(store.MIGRATIONS) >= 7
     assert store.MIGRATIONS[6] == (
         "ALTER TABLE tasks ADD COLUMN milestone TEXT",
         "ALTER TABLE tasks ADD COLUMN replaces TEXT",
@@ -1544,7 +1554,7 @@ def test_a_v6_database_gains_milestone_and_replaces_and_keeps_its_data(
     old.execute("INSERT INTO tracking_targets VALUES ('t', 'o/r', 'at')")
     old.close()
     conn = connect(db_path)
-    assert user_version(conn) == 7
+    assert user_version(conn) == len(store.MIGRATIONS)
     loaded = get_task(conn, "kept")
     assert loaded is not None
     assert loaded.state is TaskState.CLOSED

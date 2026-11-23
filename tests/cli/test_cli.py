@@ -1528,6 +1528,7 @@ def test_the_token_is_not_taken_from_the_environment(
                 "detail": None,
                 "log_path": "log",
                 "safety_paths_changed": [],
+                "suite": None,
             },
         ),
         (
@@ -1549,6 +1550,7 @@ def test_the_token_is_not_taken_from_the_environment(
                 "detail": "scope",
                 "log_path": "log",
                 "safety_paths_changed": [],
+                "suite": None,
             },
         ),
         (UpdateReport(state=TaskState.CONFLICT, conflicts=("a.py",)), 20, None),

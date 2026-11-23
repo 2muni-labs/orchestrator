@@ -5,6 +5,7 @@ import sqlite3
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -164,6 +165,13 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     (
         "ALTER TABLE tasks ADD COLUMN milestone TEXT",
         "ALTER TABLE tasks ADD COLUMN replaces TEXT",
+    ),
+    (
+        """CREATE TABLE suite_runs (
+            task_id TEXT, attempt INTEGER, gate TEXT,
+            full INTEGER, groups TEXT, reasons TEXT, failed_tests TEXT, at TEXT,
+            PRIMARY KEY (task_id, attempt, gate)
+        )""",
     ),
 )
 
@@ -691,3 +699,85 @@ def list_doctor_checks(conn: sqlite3.Connection) -> tuple[DoctorCheck, ...]:
         )
         for target, item, level, detail, at in rows
     )
+
+
+# Test selections (technical design 4.14)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SuiteRecord:
+    """One row of the suite_runs table."""
+
+    task_id: str
+    attempt: int
+    gate: Gate
+    full: bool
+    groups: tuple[str, ...]
+    reasons: tuple[str, ...]
+    failed_tests: tuple[str, ...]
+    at: str
+
+
+def record_suite_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    attempt: int,
+    gate: Gate,
+    *,
+    full: bool,
+    groups: Iterable[str],
+    reasons: Iterable[str],
+    failed_tests: Iterable[str],
+    at: str | None = None,
+) -> None:
+    """Record a G2 or G2_PRE_PR selection, replacing an earlier one for the key."""
+    with transaction(conn):
+        conn.execute(
+            """INSERT OR REPLACE INTO suite_runs
+            (task_id, attempt, gate, full, groups, reasons, failed_tests, at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                attempt,
+                gate.value,
+                int(full),
+                json.dumps(list(groups)),
+                json.dumps(list(reasons)),
+                json.dumps(list(failed_tests)),
+                datetime.now(UTC).isoformat() if at is None else at,
+            ),
+        )
+
+
+def suite_run(
+    conn: sqlite3.Connection, task_id: str, attempt: int, gate: Gate
+) -> SuiteRecord | None:
+    """Return the recorded selection of one gate, or None."""
+    row = conn.execute(
+        """SELECT task_id, attempt, gate, full, groups, reasons, failed_tests, at
+        FROM suite_runs WHERE task_id = ? AND attempt = ? AND gate = ?""",
+        (task_id, attempt, gate.value),
+    ).fetchone()
+    if row is None:
+        return None
+    return SuiteRecord(
+        task_id=row[0],
+        attempt=row[1],
+        gate=Gate(row[2]),
+        full=bool(row[3]),
+        groups=tuple(json.loads(row[4])),
+        reasons=tuple(json.loads(row[5])),
+        failed_tests=tuple(json.loads(row[6])),
+        at=row[7],
+    )
+
+
+def clear_suite_runs(
+    conn: sqlite3.Connection, task_id: str, attempt: int, gates: Iterable[Gate]
+) -> None:
+    """Remove the named gates' selections for one attempt of one task."""
+    with transaction(conn):
+        conn.executemany(
+            "DELETE FROM suite_runs WHERE task_id = ? AND attempt = ? AND gate = ?",
+            ((task_id, attempt, gate.value) for gate in gates),
+        )
