@@ -5,5 +5,66 @@ default_branch = "main"
 setup_command = "uv sync --frozen"
 test_command = ".venv/bin/python -m pytest"
 lint_command = ".venv/bin/python -m ruff check . && .venv/bin/python -m ruff format --check ."
-safety_paths = ["CLAUDE.md", "AGENTS.md", "targets.toml", ".claude/**", "scripts/**", "src/orch/redact.py", "src/orch/credentials.py", "src/orch/github.py", "src/orch/tracksync.py", "src/orch/gitops.py", "src/orch/gate.py", "src/orch/sandbox.py", "src/orch/review.py", "src/orch/notify.py", "src/orch/lanes/base.py", "src/orch/lanes/codex.py", "src/orch/lanes/claude.py", "src/orch/launcher.py", "src/orch/hooks.py", "src/orch/guard.py", "src/orch/selfcheck.py", "src/orch/selfcheck_codex.py", "src/orch/signature.py", "src/orch/doctor.py", "src/orch/service.py", "src/orch/gc.py", "config/**", ".github/workflows/**"]
+safety_paths = ["CLAUDE.md", "AGENTS.md", "targets.toml", ".claude/**", "scripts/**", "src/orch/redact.py", "src/orch/credentials.py", "src/orch/github.py", "src/orch/tracksync.py", "src/orch/gitops.py", "src/orch/gate.py", "src/orch/testselect.py", "src/orch/fulltest.py", "src/orch/sandbox.py", "src/orch/review.py", "src/orch/notify.py", "src/orch/lanes/base.py", "src/orch/lanes/codex.py", "src/orch/lanes/claude.py", "src/orch/launcher.py", "src/orch/hooks.py", "src/orch/guard.py", "src/orch/selfcheck.py", "src/orch/selfcheck_codex.py", "src/orch/signature.py", "src/orch/doctor.py", "src/orch/service.py", "src/orch/gc.py", "config/**", ".github/workflows/**"]
 shared_paths = ["pyproject.toml", "uv.lock", ".gitignore", "AGENTS.md", "CLAUDE.md", "targets.toml", ".claude/**", ".github/**", "docs/**", "schemas/**", "scripts/**", "templates/**", "config/**"]
+
+# Test groups (technical design 4.14). Each group runs tests/<group>/.
+[targets."orchestrator".test_select]
+import_roots = ["src", "tests/core", "tests/schedule", "tests/execute", "tests/gate", "tests/review_pr", "tests/ops", "tests/session", "tests/cli", "tests/agents", "tests/track", "tests/integration"]
+full_paths = ["tests/*.py", "tests/fake_agents/**", "tests/fake_gh/**", "tests/fake_sandbox/**", "tests/data/**", "pyproject.toml", "uv.lock", "targets.toml", "config/**", "schemas/**"]
+ignore_paths = ["docs/**", "templates/**", "README.md", ".gitignore"]
+
+[targets."orchestrator".test_groups.core]
+sources = ["src/orch/models.py", "src/orch/store.py", "src/orch/taskfile.py", "src/orch/config.py", "src/orch/redact.py", "src/orch/results.py"]
+tests = ["tests/core/**"]
+command = ".venv/bin/python -m pytest tests/core"
+
+[targets."orchestrator".test_groups.schedule]
+sources = ["src/orch/scheduler.py", "src/orch/lifecycle.py"]
+tests = ["tests/schedule/**"]
+command = ".venv/bin/python -m pytest tests/schedule"
+
+[targets."orchestrator".test_groups.execute]
+sources = ["src/orch/runner.py", "src/orch/lanes/**", "src/orch/waiter.py"]
+tests = ["tests/execute/**"]
+command = ".venv/bin/python -m pytest tests/execute"
+
+[targets."orchestrator".test_groups.gate]
+sources = ["src/orch/gate.py", "src/orch/sandbox.py", "src/orch/gitops.py", "src/orch/testselect.py"]
+tests = ["tests/gate/**"]
+command = ".venv/bin/python -m pytest tests/gate"
+
+[targets."orchestrator".test_groups.review_pr]
+sources = ["src/orch/review.py", "src/orch/prflow.py", "src/orch/github.py", "src/orch/credentials.py"]
+tests = ["tests/review_pr/**"]
+command = ".venv/bin/python -m pytest tests/review_pr"
+
+[targets."orchestrator".test_groups.ops]
+sources = ["src/orch/doctor.py", "src/orch/gc.py", "src/orch/service.py", "src/orch/notify.py", "src/orch/fulltest.py", "scripts/usage_baseline.py"]
+tests = ["tests/ops/**"]
+command = ".venv/bin/python -m pytest tests/ops"
+
+[targets."orchestrator".test_groups.session]
+sources = ["src/orch/hooks.py", "src/orch/guard.py", "src/orch/launcher.py", "src/orch/terminal/**", "src/orch/watch.py", "src/orch/render.py", "scripts/guard_regress.py"]
+tests = ["tests/session/**"]
+command = ".venv/bin/python -m pytest tests/session"
+
+[targets."orchestrator".test_groups.cli]
+sources = ["src/orch/cli.py", "src/orch/events.py", "src/orch/show.py"]
+tests = ["tests/cli/**"]
+command = ".venv/bin/python -m pytest tests/cli"
+
+[targets."orchestrator".test_groups.agents]
+sources = ["src/orch/selfcheck.py", "src/orch/selfcheck_codex.py", "src/orch/signature.py"]
+tests = ["tests/agents/**"]
+command = ".venv/bin/python -m pytest tests/agents"
+
+[targets."orchestrator".test_groups.track]
+sources = ["src/orch/tracking.py", "src/orch/tracksync.py", "src/orch/plans.py"]
+tests = ["tests/track/**"]
+command = ".venv/bin/python -m pytest tests/track"
+
+[targets."orchestrator".test_groups.integration]
+sources = ["src/orch/**"]
+tests = ["tests/integration/**"]
+command = ".venv/bin/python -m pytest tests/integration"

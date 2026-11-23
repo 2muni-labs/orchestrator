@@ -106,7 +106,9 @@ outside the sandbox, before that code merges.
   `기술 설계.md` 4.14; `tests/integration/` is the integration group. Put a new test
   file in the group of the module it tests. Shared helpers and fakes stay directly
   under `tests/`. A new group directory also goes into `pythonpath` in
-  `pyproject.toml`, because test modules import each other by bare name.
+  `pyproject.toml`, because test modules import each other by bare name, and into
+  `targets.toml` as a test group and an `import_roots` entry, so that G2 can select
+  it. A new module goes into its group's `sources`.
 - The `orch` fixture in `tests/cli/test_cli.py` writes back what it reads from
   `capsys` (`sys.stderr.write(captured.err)`), so a test can still assert on the
   capture (m-notify-cli).
