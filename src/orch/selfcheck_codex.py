@@ -1,4 +1,4 @@
-"""Bootstrap Codex in the orch mise and report Codex candidates (ADR 0019, FL-M7)."""
+"""Prepare, check and switch Codex in the orch mise (ADR 0019, FL-M7)."""
 
 import fcntl
 import hashlib
@@ -1103,13 +1103,249 @@ def apply_codex(
     now: datetime,
     machine: str | None = None,
 ) -> SwitchReport:
-    raise NotImplementedError
+    return _switch_codex(hub=hub, orch_home=orch_home, now=now, machine=machine)
 
 
 def rollback_codex(
     *, orch_home: Path, home: Path, now: datetime, machine: str | None = None
 ) -> SwitchReport:
-    raise NotImplementedError
+    return _switch_codex(hub=None, orch_home=orch_home, now=now, machine=machine)
+
+
+def _switch_codex(
+    *, hub: Path | None, orch_home: Path, now: datetime, machine: str | None
+) -> SwitchReport:
+    switch = _CodexSwitch(hub, orch_home, now, machine)
+    try:
+        orch_home.mkdir(parents=True, exist_ok=True)
+        with (orch_home / "agents.json.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return switch.report("busy")
+            try:
+                return switch.execute()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        return switch.report("error", "io")
+    except Exception:
+        return switch.report("error", "internal")
+
+
+@dataclass
+class _CodexSwitch:
+    hub: Path | None
+    orch_home: Path
+    now: datetime
+    machine: str | None
+    current: str | None = None
+    previous: str | None = None
+
+    def report(
+        self,
+        status: str,
+        reason: str | None = None,
+        *,
+        hold: str | None = None,
+        removed: tuple[str, ...] = (),
+    ) -> SwitchReport:
+        return SwitchReport(status, reason, self.current, self.previous, hold, removed)
+
+    def execute(self) -> SwitchReport:
+        state_path = agents_state_path(self.orch_home)
+        try:
+            state = load_agents_state(state_path)
+        except SelfcheckError:
+            return self.report("error", "state")
+        codex = state["agents"].get("codex", {})
+        current = codex.get("current")
+        previous = codex.get("previous")
+        self.current = current["version"] if current is not None else None
+        self.previous = previous["version"] if previous is not None else None
+        pins = None
+        if self.hub is not None:
+            try:
+                pins = load_codex_pins(self.hub)
+            except SelfcheckError:
+                return self.report("error", "pins")
+        try:
+            machine = platform.machine() if self.machine is None else self.machine
+            target_platform = codex_platform(machine)
+        except SelfcheckError:
+            return self.report("error", "platform")
+        if current is None:
+            return self.report("refused", "no_current")
+        if pins is not None:
+            target = codex.get("candidate")
+            if target is None or target["status"] != "ready":
+                return self.report("refused", "no_ready_candidate")
+            if target["pins_sha256"] != pins.sha256:
+                return self.report("refused", "pins_changed")
+            if parse_version(target["version"]) <= parse_version(current["version"]):
+                return self.report("refused", "not_newer")
+        else:
+            target = previous
+            if target is None:
+                return self.report("refused", "no_previous")
+        layout = codex_layout(self.orch_home)
+        if (
+            not layout.link.is_symlink()
+            or layout.link.resolve() != Path(current["path"]).resolve()
+        ):
+            return self.report("refused", "link")
+        if not isinstance(target["path"], str):
+            return self.report("refused", "path")
+        resolved = Path(target["path"]).resolve()
+        if (
+            resolved.name != "codex"
+            or resolved.parent.name != "bin"
+            or resolved.parent.parent.name != target["version"]
+            or resolved.parent.parent.parent != layout.installs.resolve()
+        ):
+            return self.report("refused", "path")
+        if not resolved.is_file() or sha256_file(resolved) != target["sha256"]:
+            return self.report("refused", "binary_changed")
+        target_dir = (
+            layout.candidate if pins is not None else layout.root / PREVIOUS_DIR
+        )
+        if (
+            not _valid_mise_files(layout.root, current["version"], target_platform)
+            or (pins is None and (target_dir.is_symlink() or not target_dir.is_dir()))
+            or not _valid_mise_files(target_dir, target["version"], target_platform)
+        ):
+            return self.report("refused", "config")
+        updated = dict(codex)
+        updated["previous"] = current
+        updated["current"] = {
+            "version": target["version"],
+            "sha256": target["sha256"],
+            "path": str(resolved) if pins is not None else target["path"],
+            "at": self.now.isoformat(),
+            "source": "apply" if pins is not None else "rollback",
+        }
+        if pins is not None:
+            updated["candidate"] = None
+        before = _link_state(layout.link)
+        with ExitStack() as undo:
+            try:
+                backup = _switch_mise_files(layout, undo, apply=pins is not None)
+            except OSError:
+                return self.report("error", "config_write")
+            undo.callback(_best_effort, _restore_link, layout.link, before)
+            try:
+                _switch_link(layout.link, str(resolved))
+            except OSError:
+                return self.report("error", "link_write")
+            state["agents"]["codex"] = updated
+            try:
+                save_agents_state(state_path, state)
+            except OSError:
+                return self.report("error", "state_write")
+            undo.pop_all()
+        if backup is not None:
+            _best_effort(_remove_mise_backup, backup)
+        self.current = target["version"]
+        self.previous = current["version"]
+        removed = _prune_codex(layout, updated, keep_candidate=pins is None)
+        return self.report(
+            "applied" if pins is not None else "rolled_back",
+            hold=f"codex@{current['version']}" if pins is None else None,
+            removed=removed,
+        )
+
+
+def _valid_mise_files(
+    directory: Path, version: str, target_platform: CodexPlatform
+) -> bool:
+    try:
+        if any((directory / name).is_symlink() for name in MISE_FILES):
+            return False
+        config = (directory / "config.toml").read_text(encoding="utf-8")
+        if config != config_text(version):
+            return False
+        return (
+            _lock_checksum(directory / "mise.lock", version, target_platform)
+            is not None
+        )
+    except OSError, ValueError:
+        return False
+
+
+def _best_effort(action: Callable[..., object], *args: object) -> None:
+    try:
+        action(*args)
+    except Exception:
+        pass
+
+
+def _move_mise_file(source: Path, target: Path, undo: ExitStack) -> None:
+    os.replace(source, target)
+    undo.callback(_best_effort, os.replace, target, source)
+
+
+def _switch_mise_files(
+    layout: CodexLayout, undo: ExitStack, *, apply: bool
+) -> Path | None:
+    previous = layout.root / PREVIOUS_DIR
+    backup = None
+    if apply:
+        if previous.exists() or previous.is_symlink():
+            backup = layout.root / f".previous-{secrets.token_hex(4)}"
+            _move_mise_file(previous, backup, undo)
+        previous.mkdir(mode=0o700)
+        undo.callback(_best_effort, previous.rmdir)
+        for name in MISE_FILES:
+            _move_mise_file(layout.root / name, previous / name, undo)
+        for name in MISE_FILES:
+            _move_mise_file(layout.candidate / name, layout.root / name, undo)
+    else:
+        for name in MISE_FILES:
+            temporary = layout.root / f".{name}.swap-{secrets.token_hex(4)}"
+            _move_mise_file(layout.root / name, temporary, undo)
+            _move_mise_file(previous / name, layout.root / name, undo)
+            _move_mise_file(temporary, previous / name, undo)
+    return backup
+
+
+def _remove_mise_backup(backup: Path) -> None:
+    if backup.is_symlink() or not backup.is_dir():
+        backup.unlink()
+    else:
+        shutil.rmtree(backup)
+
+
+def _prune_codex(
+    layout: CodexLayout, codex: Mapping[str, object], *, keep_candidate: bool
+) -> tuple[str, ...]:
+    protected = {
+        layout.installs / codex[name]["version"] for name in ("current", "previous")
+    }
+    candidate = codex.get("candidate")
+    if (
+        keep_candidate
+        and isinstance(candidate, dict)
+        and candidate.get("status") == "ready"
+    ):
+        protected.add(layout.installs / candidate["version"])
+    try:
+        protected.add(layout.link.resolve())
+        entries = list(layout.installs.iterdir())
+    except OSError:
+        return ()
+    removed = []
+    for path in entries:
+        try:
+            if re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+", path.name
+            ) is None or not stat.S_ISDIR(path.lstat().st_mode):
+                continue
+            remove_install(layout, path.name, protected)
+            if not path.exists():
+                removed.append(path.name)
+        except OSError:
+            pass
+    return tuple(sorted(removed))
 
 
 def check_current_codex(

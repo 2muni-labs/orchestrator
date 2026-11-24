@@ -762,12 +762,6 @@ def _execute(
         ),
     )
     home = Path.home()
-    if args.command == "selfcheck" and "codex" in (args.apply, args.rollback):
-        return 64, {
-            "ok": False,
-            "error": "refused",
-            "message": "Codex는 아직 selfcheck 전환 대상이 아닙니다.",
-        }
     if args.command == "service":
         if args.service_command == "uninstall":
             report = service.uninstall(home=home, uid=os.getuid())
@@ -1050,11 +1044,22 @@ def _command(
         assert hub is not None
         now = datetime.now(UTC)
         if args.apply is not None or args.rollback is not None:
-            switch = (
-                selfcheck.apply_claude(hub=hub, orch_home=orch_home, home=home, now=now)
-                if args.apply is not None
-                else selfcheck.rollback_claude(orch_home=orch_home, home=home, now=now)
-            )
+            if args.apply == "codex":
+                switch = selfcheck_codex.apply_codex(
+                    hub=hub, orch_home=orch_home, home=home, now=now
+                )
+            elif args.rollback == "codex":
+                switch = selfcheck_codex.rollback_codex(
+                    orch_home=orch_home, home=home, now=now
+                )
+            elif args.apply is not None:
+                switch = selfcheck.apply_claude(
+                    hub=hub, orch_home=orch_home, home=home, now=now
+                )
+            else:
+                switch = selfcheck.rollback_claude(
+                    orch_home=orch_home, home=home, now=now
+                )
             if switch.status not in {"applied", "rolled_back"}:
                 if switch.status == "refused":
                     code, error, message = (
