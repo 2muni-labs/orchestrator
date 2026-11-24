@@ -6,20 +6,25 @@ import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import stat
 import subprocess
+import tempfile
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
-from orch import notify
+from orch import notify, proxy, sandbox
 from orch.config import Config
 from orch.lanes.codex import ISOLATION_ARGS
 from orch.selfcheck import (
     CODESIGN,
+    GIT,
     SESSION_PATH,
     CheckResult,
     Command,
@@ -67,7 +72,10 @@ MACHO_MAGICS = frozenset(
         b"\xca\xfe\xba\xbf",
     }
 )
-CODEX_AUTOMATED_IDS = frozenset({"FL-M4", "isolation"})
+CODEX_AUTOMATED_IDS = frozenset({"FL-M4", "S-M2", "S-M2b", "isolation"})
+SANDBOX_TIMEOUT_SEC = 300
+SANDBOX_PROBE_HOST = "example.com"
+SANDBOX_PROBE_FILE = "probe.txt"
 
 Mise = Callable[
     [Sequence[str], Path, Mapping[str, str], float], subprocess.CompletedProcess[str]
@@ -444,6 +452,200 @@ def check_isolation(ctx: IsolationContext) -> CheckResult:
         return CheckResult("isolation", "fail", "isolation:error")
 
 
+# The S-M2 and S-M2b checks (ADR 0028): one run under the profile behind the proxy
+
+
+class ProbeProxy(Protocol):
+    def start(self) -> int: ...
+    def alive(self) -> bool: ...
+    def stop(self) -> None: ...
+    def events(self) -> tuple[proxy.ProxyEvent, ...]: ...
+
+
+ProxyFactory = Callable[[frozenset[str], Path], ProbeProxy]
+
+
+def default_proxy(hosts: frozenset[str], log_path: Path) -> ProbeProxy:
+    return proxy.AllowlistProxy(hosts, log_path)
+
+
+@dataclass(frozen=True)
+class SandboxContext:
+    binary: Path
+    workdir: Path
+    project: Path
+    home: Path
+    hosts: frozenset[str]
+    run: Run
+    env: Mapping[str, str]
+    canary_name: str
+    canary_token: str
+    write_token: str
+    proxy_factory: ProxyFactory
+
+
+def sandbox_probe_argv(binary: Path, project: Path) -> list[str]:
+    return [
+        str(binary),
+        "exec",
+        "--json",
+        *ISOLATION_ARGS,
+        "-C",
+        str(project),
+        "-m",
+        ISOLATION_MODEL,
+        "-c",
+        "model_reasoning_effort=low",
+        "--sandbox",
+        "danger-full-access",
+        "-",
+    ]
+
+
+def sandbox_probe_prompt(canary: Path, write_token: str) -> str:
+    return (
+        "Run each of these four shell commands exactly once, one at a time, in this "
+        "order, even if one fails. Then reply with the single word done.\n"
+        f"1. cat {canary}\n"
+        f"2. echo {write_token} > probe.txt\n"
+        "3. curl -sS -m 10 -o /dev/null https://example.com\n"
+        "4. curl --noproxy '*' -sS -m 10 -o /dev/null https://example.com\n"
+    )
+
+
+def check_sandbox(ctx: SandboxContext) -> tuple[CheckResult, CheckResult]:
+    try:
+        with ExitStack() as cleanup:
+            secrets_dir = ctx.home / ".orch" / "secrets"
+            canary = secrets_dir / f"selfcheck-{ctx.canary_name}.canary"
+            try:
+                if secrets_dir.is_symlink() or not secrets_dir.is_dir():
+                    return _sandbox_failure("probe:canary")
+                fd = os.open(canary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                cleanup.callback(canary.unlink, missing_ok=True)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(ctx.canary_token + "\n")
+            except OSError:
+                return _sandbox_failure("probe:canary")
+
+            with ExitStack() as proxy_cleanup:
+                try:
+                    tmpdir = ctx.workdir / "tmp"
+                    tmpdir.mkdir(parents=True, exist_ok=True)
+                    px = ctx.proxy_factory(ctx.hosts, ctx.workdir / "proxy.log")
+                    port = px.start()
+                    proxy_cleanup.callback(px.stop)
+                except Exception:
+                    return _sandbox_failure("probe:proxy")
+                try:
+                    argv = sandbox.wrap_codex(
+                        sandbox_probe_argv(ctx.binary, ctx.project),
+                        executable=sandbox.SANDBOX_EXEC,
+                        worktree=ctx.project,
+                        tmpdir=tmpdir,
+                        home=ctx.home,
+                        codex_home=ctx.home / ".codex",
+                        port=port,
+                    )
+                    env = {**ctx.env, "TMPDIR": str(tmpdir), **proxy.proxy_env(port)}
+                    result = ctx.run(
+                        argv,
+                        ctx.project,
+                        env,
+                        SANDBOX_TIMEOUT_SEC,
+                        sandbox_probe_prompt(canary, ctx.write_token),
+                    )
+                except OSError, subprocess.TimeoutExpired, ValueError:
+                    return _sandbox_failure("probe:run")
+                finally:
+                    alive = px.alive()
+            if result.returncode != 0:
+                return _sandbox_failure("probe:exit")
+            return _sandbox_results(ctx, canary, result, alive, px.events())
+    except Exception:
+        return _sandbox_failure("probe:error")
+
+
+def _sandbox_failure(detail: str) -> tuple[CheckResult, CheckResult]:
+    return (
+        CheckResult("S-M2", "fail", detail),
+        CheckResult("S-M2b", "fail", detail),
+    )
+
+
+def _sandbox_results(
+    ctx: SandboxContext,
+    canary: Path,
+    result: subprocess.CompletedProcess[str],
+    alive: bool,
+    events: tuple[proxy.ProxyEvent, ...],
+) -> tuple[CheckResult, CheckResult]:
+    commands: dict[str, dict[str, object]] = {}
+    for line in result.stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("type") != "item.completed":
+            continue
+        item = record.get("item")
+        if not isinstance(item, dict) or item.get("type") != "command_execution":
+            continue
+        command = item.get("command")
+        if not isinstance(command, str):
+            continue
+        if str(canary) in command:
+            commands.setdefault("cat", item)
+        if ctx.write_token in command:
+            commands.setdefault("write", item)
+        if f"https://{SANDBOX_PROBE_HOST}" in command:
+            commands.setdefault("direct" if "--noproxy" in command else "proxied", item)
+
+    def blocked(name: str) -> bool:
+        code = commands[name].get("exit_code")
+        return isinstance(code, int) and not isinstance(code, bool) and code != 0
+
+    probe_file = ctx.project / SANDBOX_PROBE_FILE
+    if "cat" not in commands:
+        file_detail = "s_m2:not_run"
+    elif (
+        ctx.canary_token in result.stdout
+        or ctx.canary_token in result.stderr
+        or not blocked("cat")
+    ):
+        file_detail = "s_m2:read"
+    elif (
+        "write" not in commands
+        or not probe_file.is_file()
+        or probe_file.read_text(encoding="utf-8").strip() != ctx.write_token
+    ):
+        file_detail = "s_m2:write"
+    else:
+        file_detail = ""
+
+    allowed = tuple(event for event in events if event.allowed)
+    if not alive:
+        network_detail = "s_m2b:proxy_stopped"
+    elif any(event.host not in ctx.hosts for event in allowed):
+        network_detail = "s_m2b:host"
+    elif not allowed:
+        network_detail = "s_m2b:proxy_unused"
+    elif "proxied" not in commands or "direct" not in commands:
+        network_detail = "s_m2b:not_run"
+    elif not blocked("proxied") or not any(
+        not event.allowed and event.host == SANDBOX_PROBE_HOST for event in events
+    ):
+        network_detail = "s_m2b:proxied"
+    elif not blocked("direct"):
+        network_detail = "s_m2b:direct"
+    else:
+        network_detail = ""
+    return (
+        CheckResult("S-M2", "fail" if file_detail else "pass", file_detail),
+        CheckResult("S-M2b", "fail" if network_detail else "pass", network_detail),
+    )
+
+
 # Run
 
 
@@ -486,6 +688,8 @@ def run_codex(
     send: Notify = notify.send,
     machine: str | None = None,
     environ: Mapping[str, str] | None = None,
+    session: Run = run_with_input,
+    proxy_factory: ProxyFactory = default_proxy,
 ) -> CodexReport:
     run: _CodexRun | None = None
     try:
@@ -501,6 +705,8 @@ def run_codex(
             send,
             platform.machine() if machine is None else machine,
             os.environ if environ is None else environ,
+            session,
+            proxy_factory,
         )
         orch_home.mkdir(parents=True, exist_ok=True)
         with (orch_home / "agents.json.lock").open("a") as lock:
@@ -540,6 +746,8 @@ class _CodexRun:
     send: Notify
     machine: str
     environ: Mapping[str, str]
+    session: Run
+    proxy_factory: ProxyFactory
     current: str | None = None
     latest: str | None = None
     candidate: str | None = None
@@ -628,33 +836,69 @@ class _CodexRun:
         if not candidates:
             return self.report("up_to_date", "no_candidate")
         self.candidate = max(candidates, key=parse_version)
-        if all(item in CODEX_AUTOMATED_IDS for item in pins.blocking):
-            return self.report("error", "unsupported")
-        self.checks = tuple(
-            CheckResult(
-                item, "skipped" if item in CODEX_AUTOMATED_IDS else "missing", ""
-            )
-            for item in pins.blocking
-        )
         self.warnings = pins.warn
-        previous_candidate = codex.get("candidate")
-        if (
-            isinstance(previous_candidate, dict)
-            and previous_candidate["version"] == self.candidate
-            and previous_candidate["status"] == "not_automated"
-            and previous_candidate["pins_sha256"] == pins.sha256
-        ):
+        old_candidate = codex.get("candidate")
+        automated = all(item in CODEX_AUTOMATED_IDS for item in pins.blocking)
+        if self.reuse(old_candidate, pins, automated=automated):
+            return self.report(old_candidate["status"], reused=True)
+
+        layout = codex_layout(self.orch_home)
+        protected = set()
+        if layout.link.is_symlink():
+            protected.add(layout.link.resolve())
+        for name in ("current", "previous"):
+            entry = codex.get(name)
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                protected.add(Path(entry["path"]).resolve())
+        prepared: Prepared | str | None = None
+        if not automated:
             self.checks = tuple(
-                CheckResult(item["id"], item["result"], item["detail"])
-                for item in previous_candidate["checks"]
+                CheckResult(
+                    item, "skipped" if item in CODEX_AUTOMATED_IDS else "missing", ""
+                )
+                for item in pins.blocking
             )
-            self.warnings = tuple(previous_candidate["warnings"])
-            return self.report("not_automated", reused=True)
+            status = "not_automated"
+        else:
+            self.checks = tuple(
+                CheckResult(item, "skipped", "") for item in pins.blocking
+            )
+            prepared = prepare_version(
+                self.candidate,
+                layout=layout,
+                pins=pins,
+                platform=platform,
+                mise_path=self.settings.mise_path,
+                home=self.home,
+                environ=self.environ,
+                mise=self.mise,
+                fetch=self.fetch,
+                command=self.command,
+            )
+            if isinstance(prepared, str):
+                self.set_check(CheckResult("FL-M4", "fail", prepared))
+            else:
+                self.set_check(CheckResult("FL-M4", "pass", ""))
+                self.check_candidate(prepared)
+            status = (
+                "ready"
+                if all(check.result == "pass" for check in self.checks)
+                else "failed"
+            )
+        if status == "failed":
+            remove_install(layout, self.candidate, protected)
+        elif (
+            status == "ready"
+            and isinstance(old_candidate, dict)
+            and old_candidate.get("status") == "ready"
+            and old_candidate.get("version") != self.candidate
+        ):
+            remove_install(layout, old_candidate["version"], protected)
         codex["candidate"] = {
             "version": self.candidate,
-            "status": "not_automated",
-            "sha256": None,
-            "path": None,
+            "status": status,
+            "sha256": prepared.sha256 if status == "ready" else None,
+            "path": str(prepared.binary) if status == "ready" else None,
             "pins_sha256": pins.sha256,
             "checks": [asdict(check) for check in self.checks],
             "warnings": list(self.warnings),
@@ -663,7 +907,7 @@ class _CodexRun:
         self.save(state)
         try:
             notified = self.send(
-                "selfcheck_failed",
+                "selfcheck_ready" if status == "ready" else "selfcheck_failed",
                 settings=self.settings,
                 orch_home=self.orch_home,
                 home=self.home,
@@ -672,7 +916,100 @@ class _CodexRun:
             ).value
         except Exception:
             notified = "failed"
-        return self.report("not_automated", notified=notified)
+        return self.report(status, notified=notified)
+
+    def reuse(self, candidate: object, pins: CodexPins, *, automated: bool) -> bool:
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("version") != self.candidate
+            or candidate.get("pins_sha256") != pins.sha256
+        ):
+            return False
+        status = candidate.get("status")
+        if not automated:
+            if status != "not_automated":
+                return False
+        elif status == "ready":
+            if not isinstance(candidate.get("path"), str):
+                return False
+            path = Path(candidate["path"])
+            try:
+                if not path.is_file() or sha256_file(path) != candidate.get("sha256"):
+                    return False
+            except OSError:
+                return False
+        elif status != "failed":
+            return False
+        self.checks = tuple(CheckResult(**check) for check in candidate["checks"])
+        self.warnings = tuple(candidate["warnings"])
+        return True
+
+    def set_check(self, result: CheckResult) -> None:
+        self.checks = tuple(
+            result if check.id == result.id else check for check in self.checks
+        )
+
+    def check_candidate(self, prepared: Prepared) -> None:
+        with tempfile.TemporaryDirectory(prefix="orch-selfcheck-") as directory:
+            workdir = Path(directory)
+            project = workdir / "project"
+            project.mkdir()
+            try:
+                subprocess.run(
+                    [GIT, "init", "-q", str(project)], check=True, capture_output=True
+                )
+            except subprocess.CalledProcessError, OSError:
+                for check in self.checks:
+                    if check.result == "skipped":
+                        self.set_check(CheckResult(check.id, "fail", "setup:git"))
+                        break
+                return
+            sandbox_checked = False
+            for check in self.checks:
+                if check.result != "skipped":
+                    continue
+                if check.id in ("S-M2", "S-M2b"):
+                    if sandbox_checked:
+                        continue
+                    try:
+                        hosts = proxy.load_proxy_hosts(self.hub)
+                    except proxy.ProxyError:
+                        results = _sandbox_failure("probe:hosts")
+                    else:
+                        results = check_sandbox(
+                            SandboxContext(
+                                binary=prepared.binary,
+                                workdir=workdir,
+                                project=project,
+                                home=self.home,
+                                hosts=hosts,
+                                run=self.session,
+                                env=codex_env(self.home, self.environ),
+                                canary_name=secrets.token_hex(8),
+                                canary_token=secrets.token_hex(16),
+                                write_token=secrets.token_hex(8),
+                                proxy_factory=self.proxy_factory,
+                            )
+                        )
+                    sandbox_checked = True
+                elif check.id == "isolation":
+                    results = (
+                        check_isolation(
+                            IsolationContext(
+                                prepared.binary,
+                                workdir,
+                                project,
+                                self.session,
+                                codex_env(self.home, self.environ),
+                            )
+                        ),
+                    )
+                else:
+                    continue
+                for result in results:
+                    self.set_check(result)
+                if any(result.result == "fail" for result in results):
+                    break
 
     def bootstrap(
         self,
