@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from orch import lanes
+from orch import lanes, proxy, sandbox
 from orch.config import Config, Target
 from orch.lanes import base, claude, codex
 from orch.lanes.base import HubRules, LaneCommand, LaneError
@@ -19,7 +19,12 @@ THREAD = "01a1a500-74e7-78d2-b6b3-56a6d2a73346"
 LIMIT_MESSAGE = "You’ve hit your usage limit. Upgrade to Pro or try again later."
 PATTERNS = ("usage limit", "rate limit", "hit your .*limit", "quota")
 REPO = Path(__file__).resolve().parents[2]
-HUB_ENV = {"PATH": "/usr/bin", "ORCH_HUB": str(REPO)}
+HUB_ENV = {"PATH": "/usr/bin", "HOME": "/h", "ORCH_HUB": str(REPO)}
+PORT = 41000
+RUN_TMPDIR = Path("/", "t", "orch-codex-run")
+SANDBOX = codex.CodexSandbox(port=PORT, tmpdir=RUN_TMPDIR)
+PROXY_VALUE = "http://127.0.0.1:41000"
+PROXY_ENV = {name: PROXY_VALUE for name in proxy.PROXY_VARS}
 
 
 def make_spec(lane: Lane = Lane.B, **overrides: object) -> TaskSpec:
@@ -65,7 +70,12 @@ def agents(tmp_path: Path) -> Config:
     )
 
 
-def build(spec: TaskSpec, config: Config, environ: dict[str, str] | None = None):
+def build(
+    spec: TaskSpec,
+    config: Config,
+    environ: dict[str, str] | None = None,
+    codex_sandbox: codex.CodexSandbox | None = SANDBOX,
+):
     return lanes.build_command(
         spec=spec,
         spec_text=SPEC_TEXT,
@@ -74,18 +84,13 @@ def build(spec: TaskSpec, config: Config, environ: dict[str, str] | None = None)
         config=config,
         environ=environ if environ is not None else HUB_ENV,
         log_label=LOG_LABEL,
+        codex_sandbox=codex_sandbox,
     )
 
 
-# Lane B command
-
-
-def test_lane_b_command_is_exact(agents: Config) -> None:
-    command = build(make_spec(), agents)
-    assert isinstance(command, LaneCommand)
-    assert command.provider == "codex"
-    assert command.argv == (
-        str(agents.codex_path),
+def inner_codex_argv(config: Config, effort: str = "high") -> list[str]:
+    return [
+        str(config.codex_path),
         "exec",
         "--json",
         "--disable",
@@ -97,12 +102,142 @@ def test_lane_b_command_is_exact(agents: Config) -> None:
         "-m",
         "gpt-6.1-sol",
         "-c",
-        "model_reasoning_effort=high",
+        f"model_reasoning_effort={effort}",
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
         "-",
+    ]
+
+
+# Lane B command
+
+
+def test_lane_b_command_is_exact(agents: Config) -> None:
+    command = build(make_spec(), agents)
+    assert isinstance(command, LaneCommand)
+    assert command.provider == "codex"
+    assert command.argv == tuple(
+        sandbox.wrap_codex(
+            inner_codex_argv(agents),
+            executable=sandbox.SANDBOX_EXEC,
+            worktree=Path("/", "w", "feat-x"),
+            tmpdir=RUN_TMPDIR,
+            home=Path("/h"),
+            codex_home=Path("/h/.codex"),
+            port=PORT,
+        )
     )
     assert command.cwd == Path("/", "w", "feat-x")
+
+
+def test_lane_b_runs_codex_without_its_own_sandbox_under_the_profile(
+    agents: Config,
+) -> None:
+    argv = build(make_spec(), agents).argv
+    assert argv[:2] == (sandbox.SANDBOX_EXEC, "-p")
+    assert argv[2] == sandbox.codex_profile(port=PORT, codex_home=Path("/h/.codex"))
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
+    assert "workspace-write" not in argv
+    assert "read-only" not in argv
+    assert "-o" not in argv
+
+
+def test_lane_b_needs_the_proxy_sandbox(agents: Config) -> None:
+    with pytest.raises(LaneError):
+        build(make_spec(), agents, codex_sandbox=None)
+
+
+def test_lane_c_ignores_the_proxy_sandbox(agents: Config) -> None:
+    assert build(make_spec(Lane.C), agents) == build(
+        make_spec(Lane.C), agents, codex_sandbox=None
+    )
+
+
+def test_lane_b_sets_the_run_tmpdir_and_the_six_proxy_variables(
+    agents: Config,
+) -> None:
+    environ = {**HUB_ENV, "TMPDIR": "/var/old", "HTTPS_PROXY": "http://evil:1"}
+    env = build(make_spec(), agents, environ).env
+    assert env == {
+        "PATH": "/usr/bin",
+        "HOME": "/h",
+        "TMPDIR": str(RUN_TMPDIR),
+        **PROXY_ENV,
+    }
+
+
+def test_lane_b_uses_the_fake_sandbox_exec_in_fake_mode(
+    agents: Config, tmp_path: Path
+) -> None:
+    environ = {
+        **HUB_ENV,
+        "ORCH_FAKE_AGENTS": "1",
+        "ORCH_FAKE_SANDBOX_EXEC": "/fake/sandbox-exec",
+        "ORCH_HUB": str(REPO),
+    }
+    argv = build(make_spec(), agents, environ).argv
+    assert argv[0] == "/fake/sandbox-exec"
+    assert str(REPO / "tests" / "fake_agents" / "codex") in argv
+
+
+def test_lane_b_refuses_a_port_the_profile_refuses(agents: Config) -> None:
+    bad = codex.CodexSandbox(port=0, tmpdir=RUN_TMPDIR)
+    with pytest.raises(LaneError):
+        build(make_spec(), agents, codex_sandbox=bad)
+
+
+def test_lane_b_passes_the_home_codex_directory_to_the_profile(
+    agents: Config,
+) -> None:
+    environ = {**HUB_ENV, "CODEX_HOME": "/h/.codex"}
+    argv = build(make_spec(), agents, environ).argv
+    assert argv[2] == sandbox.codex_profile(port=PORT, codex_home=Path("/h/.codex"))
+
+
+@pytest.mark.parametrize("codex_home", ["/h/codex", "/other/.codex", "/h"])
+def test_lane_b_refuses_another_codex_home(agents: Config, codex_home: str) -> None:
+    with pytest.raises(LaneError):
+        build(make_spec(), agents, {**HUB_ENV, "CODEX_HOME": codex_home})
+
+
+@pytest.mark.parametrize("home", [None, "", "h", "./h"])
+def test_lane_b_needs_an_absolute_home(agents: Config, home: str | None) -> None:
+    environ = {"PATH": "/usr/bin", "ORCH_HUB": str(REPO)}
+    if home is not None:
+        environ["HOME"] = home
+    with pytest.raises(LaneError):
+        build(make_spec(), agents, environ)
+
+
+# codex_home
+
+
+def test_codex_home_is_home_dot_codex() -> None:
+    assert codex.codex_home({"HOME": "/h"}) == Path("/h/.codex")
+
+
+def test_codex_home_accepts_the_same_directory_by_another_name(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(home / ".codex")
+    environ = {"HOME": str(home), "CODEX_HOME": str(link)}
+    assert codex.codex_home(environ) == home / ".codex"
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {},
+        {"HOME": ""},
+        {"HOME": "rel"},
+        {"HOME": "/h", "CODEX_HOME": "/h/codex"},
+        {"HOME": "/h", "CODEX_HOME": "/x/.codex"},
+    ],
+)
+def test_codex_home_refuses(environ: dict[str, str]) -> None:
+    with pytest.raises(LaneError):
+        codex.codex_home(environ)
 
 
 def test_lane_b_never_adds_writable_directories(agents: Config) -> None:
@@ -190,6 +325,7 @@ def test_lane_d_has_no_limit_check(agents: Config, tmp_path: Path) -> None:
 def test_tokens_and_unrelated_variables_do_not_reach_the_agent(
     agents: Config, lane: Lane
 ) -> None:
+    extra = {"TMPDIR": str(RUN_TMPDIR), **PROXY_ENV} if lane is Lane.B else {}
     environ = {
         "PATH": "/usr/bin",
         "HOME": "/h",
@@ -204,7 +340,7 @@ def test_tokens_and_unrelated_variables_do_not_reach_the_agent(
     }
     env = build(make_spec(lane), agents, environ).env
     assert "secret" not in env.values()
-    assert env == {"PATH": "/usr/bin", "HOME": "/h"}
+    assert env == {"PATH": "/usr/bin", "HOME": "/h", **extra}
 
 
 def test_child_env_keeps_what_the_clis_need() -> None:
@@ -290,7 +426,7 @@ def test_prompt_keeps_the_hub_files_byte_for_byte(
     rules = "  Rule one.\n\nRule two, no final newline"
     schema = '\n{"type": "object"}\n\n'
     hub = write_hub(tmp_path / "hub", rules, schema)
-    environ = {"PATH": "/usr/bin", "ORCH_HUB": str(hub)}
+    environ = {"PATH": "/usr/bin", "HOME": "/h", "ORCH_HUB": str(hub)}
     prompt = build(make_spec(lane), agents, environ).stdin_text
     assert prompt == expected_prompt(rules, schema)
 
@@ -372,7 +508,7 @@ def test_load_hub_rules_refuses_a_directory_or_bad_bytes(
 def test_lanes_refuse_to_build_without_the_hub_files(
     agents: Config, lane: Lane, hub: str | None, tmp_path: Path
 ) -> None:
-    environ = {"PATH": "/usr/bin"}
+    environ = {"PATH": "/usr/bin", "HOME": "/h"}
     if hub == "relative":
         environ["ORCH_HUB"] = "hub"
     elif hub == "missing":
@@ -849,3 +985,124 @@ def test_both_codex_commands_carry_the_isolation_arguments(agents: Config) -> No
     for argv in (build(make_spec(), agents).argv, build_review(agents).argv):
         start = argv.index("--json") + 1
         assert argv[start : start + 4] == codex.ISOLATION_ARGS
+
+
+# Command events (ADR 0016, ADR 0028)
+
+
+def event(kind: str, item_type: str = "command_execution", **item: object) -> str:
+    return json.dumps({"type": kind, "item": {"type": item_type, **item}})
+
+
+def test_command_events_count_completed_command_items() -> None:
+    log = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": THREAD}),
+            event("item.started", status="in_progress"),
+            event("item.completed", status="completed", exit_code=0),
+            event("item.started", status="in_progress"),
+            event("item.completed", status="failed", exit_code=1),
+            event("item.completed", "agent_message", text="done"),
+            "not json",
+            "[1, 2]",
+            json.dumps({"type": "item.completed", "item": "command_execution"}),
+            json.dumps({"type": "item.completed"}),
+            json.dumps({"type": "turn.completed"}),
+        ]
+    )
+    assert codex.command_events(log) == 2
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "",
+        "plain text only\n",
+        json.dumps({"type": "item.started", "item": {"type": "command_execution"}}),
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message"}}),
+    ],
+)
+def test_command_events_are_zero_without_a_completed_command(log: str) -> None:
+    assert codex.command_events(log) == 0
+
+
+# Fake proxy listener
+
+
+def test_no_fake_listener_outside_fake_mode() -> None:
+    assert codex.fake_proxy_listener({}) is None
+    assert codex.fake_proxy_listener({"ORCH_FAKE_AGENTS": "0"}) is None
+    assert codex.fake_proxy_listener({"ORCH_FAKE_PROXY": "deny"}) is None
+
+
+def fake_proxy(tmp_path: Path, mode: str | None) -> proxy.AllowlistProxy:
+    environ = {"ORCH_FAKE_AGENTS": "1"}
+    if mode is not None:
+        environ[codex.FAKE_PROXY_ENV] = mode
+    factory = codex.fake_proxy_listener(environ)
+    assert factory is not None
+    return proxy.AllowlistProxy(
+        ["chatgpt.com"], tmp_path / "proxy.log", listener_factory=factory
+    )
+
+
+def wait_for(cond, timeout: float = 3.0) -> bool:  # type: ignore[no-untyped-def]
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
+
+
+@pytest.mark.parametrize("mode", [None, ""])
+def test_the_default_fake_listener_keeps_the_proxy_alive(
+    tmp_path: Path, mode: str | None
+) -> None:
+    import time
+
+    px = fake_proxy(tmp_path, mode)
+    try:
+        assert px.start() == codex.FAKE_PROXY_PORT
+        time.sleep(0.5)
+        assert px.alive() is True
+        assert px.events() == ()
+    finally:
+        px.stop()
+    assert px.alive() is False
+
+
+@pytest.mark.parametrize("mode", ["fail", "unknown"])
+def test_the_failing_fake_listener_stops_the_start(tmp_path: Path, mode: str) -> None:
+    px = fake_proxy(tmp_path, mode)
+    with pytest.raises(proxy.ProxyError):
+        px.start()
+    px.stop()
+
+
+def test_the_dying_fake_listener_ends_the_proxy(tmp_path: Path) -> None:
+    px = fake_proxy(tmp_path, "die")
+    try:
+        px.start()
+        assert wait_for(lambda: not px.alive())
+    finally:
+        px.stop()
+
+
+def test_the_denying_fake_listener_makes_one_denial(tmp_path: Path) -> None:
+    px = fake_proxy(tmp_path, "deny")
+    try:
+        px.start()
+        assert wait_for(lambda: len(px.denials()) == 1)
+        denial = px.denials()[0]
+        assert (denial.host, denial.port, denial.reason) == (
+            "denied.invalid",
+            443,
+            "host",
+        )
+        assert px.alive() is True
+    finally:
+        px.stop()
+    assert codex.FAKE_DENIED_REQUEST == b"CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n"

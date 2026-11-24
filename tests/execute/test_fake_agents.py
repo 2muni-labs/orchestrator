@@ -18,12 +18,17 @@ OUTSIDE = "outside/fake_change.py"
 TEST_FILE = "tests/test_fake_change.py"
 
 
-def start(cli: str, scenario: str, worktree: Path) -> subprocess.Popen[str]:
+def start(
+    cli: str, scenario: str, worktree: Path, *, commands: bool = False
+) -> subprocess.Popen[str]:
     env = {
         **os.environ,
         "ORCH_FAKE_SCENARIO": scenario,
         "ORCH_FAKE_PYTHON": sys.executable,
     }
+    env.pop("ORCH_FAKE_NO_COMMANDS", None)
+    if not commands:
+        env["ORCH_FAKE_NO_COMMANDS"] = "1"
     return subprocess.Popen(
         [str(AGENTS / cli), "exec", "-C", str(worktree), "-m", "x", "-"],
         stdin=subprocess.PIPE,
@@ -35,8 +40,10 @@ def start(cli: str, scenario: str, worktree: Path) -> subprocess.Popen[str]:
     )
 
 
-def run(cli: str, scenario: str, worktree: Path) -> tuple[int, str]:
-    proc = start(cli, scenario, worktree)
+def run(
+    cli: str, scenario: str, worktree: Path, *, commands: bool = False
+) -> tuple[int, str]:
+    proc = start(cli, scenario, worktree, commands=commands)
     output, _ = proc.communicate(SPEC, timeout=30)
     return proc.returncode, output
 
@@ -150,3 +157,67 @@ def test_current_directory_is_the_default_worktree(tmp_path: Path) -> None:
     )
     assert done.returncode == 0
     assert (tmp_path / CHANGED).is_file()
+
+
+# Command events (m-codex-lane-sandbox)
+
+
+def test_fake_codex_reports_one_finished_command_first(tmp_path: Path) -> None:
+    code, output = run("codex", "success", tmp_path, commands=True)
+    assert code == 0
+    first, *rest = output.splitlines()
+    event = json.loads(first)
+    assert event["type"] == "item.completed"
+    assert event["item"]["type"] == "command_execution"
+    assert event["item"]["status"] == "completed"
+    assert not any("command_execution" in line for line in rest)
+
+
+def test_fake_codex_reports_no_command_when_told(tmp_path: Path) -> None:
+    code, output = run("codex", "success", tmp_path)
+    assert code == 0
+    assert "command_execution" not in output
+
+
+def test_fake_claude_reports_no_command_event(tmp_path: Path) -> None:
+    code, output = run("claude", "success", tmp_path, commands=True)
+    assert code == 0
+    assert "command_execution" not in output
+
+
+def test_env_values_records_the_proxy_variables_and_tmpdir(tmp_path: Path) -> None:
+    env_file = tmp_path / "env.json"
+    tmpdir = tmp_path / "t"
+    tmpdir.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    proc = subprocess.run(
+        [str(AGENTS / "codex"), "exec", "-C", str(worktree), "-"],
+        input=SPEC,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "ORCH_FAKE_SCENARIO": "env_values",
+            "ORCH_FAKE_PYTHON": sys.executable,
+            "ORCH_FAKE_ENV_FILE": str(env_file),
+            "TMPDIR": str(tmpdir),
+            "HTTPS_PROXY": "http://127.0.0.1:1",
+        },
+        timeout=30,
+    )
+    assert proc.returncode == 0
+    values = json.loads(env_file.read_text(encoding="utf-8"))
+    assert values["HTTPS_PROXY"] == "http://127.0.0.1:1"
+    assert values["TMPDIR"] == str(tmpdir)
+    assert values["tmpdir_is_dir"] is True
+    assert set(values) == {
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "TMPDIR",
+        "tmpdir_is_dir",
+    }

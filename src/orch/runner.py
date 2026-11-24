@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -12,14 +13,16 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orch import gate, lanes, results, store
+from orch import gate, lanes, proxy, results, store
 from orch.config import Config, Target, TargetPaths
-from orch.models import FailureReason, Outcome, Run, TaskState
+from orch.lanes import base, codex
+from orch.models import FailureReason, Lane, Outcome, Run, TaskState
 from orch.results import TaskResult
 from orch.taskfile import TaskFileError, parse_task
 
 TERM_GRACE_SEC = 10
 KILL_SUMMARY = "orch kill로 중단했습니다."
+PROXY_POLL_SEC = 0.5
 
 
 class RunError(Exception):
@@ -256,16 +259,26 @@ def run_task(
         spec = parse_task(spec_text)
         if spec.id != task_id:
             raise RunError("Task spec id does not match the task")
-        command = lanes.build_command(
-            spec=spec,
-            spec_text=spec_text,
-            worktree=worktree,
-            target=target,
-            config=config,
-            environ=environ,
-            log_label=label,
-        )
-    except (OSError, UnicodeError, TaskFileError, lanes.LaneError) as exc:
+        if spec.lane is Lane.B:
+            base.load_hub_rules(environ)
+            proxy.load_proxy_hosts(Path(environ["ORCH_HUB"]))
+        else:
+            command = lanes.build_command(
+                spec=spec,
+                spec_text=spec_text,
+                worktree=worktree,
+                target=target,
+                config=config,
+                environ=environ,
+                log_label=label,
+            )
+    except (
+        OSError,
+        UnicodeError,
+        TaskFileError,
+        lanes.LaneError,
+        proxy.ProxyError,
+    ) as exc:
         raise RunError("Cannot read or start the task spec") from exc
 
     def substitute(
@@ -309,12 +322,64 @@ def run_task(
             ),
         )
     process = None
+    px: proxy.AllowlistProxy | None = None
+    tmpdir: Path | None = None
+    proxy_log = log_path.with_suffix(".proxy.log")
+
+    def finish(result: TaskResult, exit_code: int | None) -> TaskResult:
+        if px is not None:
+            px.stop()
+            if denials := px.denials():
+                note = (
+                    f"프록시가 연결 {len(denials)}건을 거부했습니다: "
+                    f"{log_label(proxy_log, environ)}"
+                )
+                unresolved = (*result.unresolved, note)
+                remaining = max(0, results.SUMMARY_LIMIT - sum(map(len, unresolved)))
+                result = replace(
+                    result, summary=result.summary[:remaining], unresolved=unresolved
+                )
+        return _finish_run(
+            conn, run_id, task_id, destination, result, exit_code, substitute
+        )
+
     try:
         if on_started is not None:
             try:
                 on_started()
             except Exception:
                 pass
+        if spec.lane is Lane.B:
+            try:
+                paths.logs.mkdir(parents=True, exist_ok=True)
+                hosts = proxy.load_proxy_hosts(Path(environ["ORCH_HUB"]))
+                tmpdir = Path(tempfile.mkdtemp(prefix="orch-codex-")).resolve()
+                listener = codex.fake_proxy_listener(environ)
+                if listener is None:
+                    px = proxy.AllowlistProxy(hosts, proxy_log)
+                else:
+                    px = proxy.AllowlistProxy(
+                        hosts, proxy_log, listener_factory=listener
+                    )
+                port = px.start()
+                command = lanes.build_command(
+                    spec=spec,
+                    spec_text=spec_text,
+                    worktree=worktree,
+                    target=target,
+                    config=config,
+                    environ=environ,
+                    log_label=label,
+                    codex_sandbox=codex.CodexSandbox(port=port, tmpdir=tmpdir),
+                )
+            except Exception:
+                return finish(
+                    substitute(
+                        FailureReason.ABORTED,
+                        "프록시를 시작하지 못해 Codex를 실행하지 않았습니다.",
+                    ),
+                    None,
+                )
         try:
             paths.logs.mkdir(parents=True, exist_ok=True)
             source.unlink(missing_ok=True)
@@ -339,24 +404,46 @@ def run_task(
             result = substitute(
                 FailureReason.REPORT_MISSING, "에이전트 실행을 시작하지 못했습니다."
             )
-            return _finish_run(
-                conn, run_id, task_id, destination, result, None, substitute
-            )
+            return finish(result, None)
 
         timed_out = False
+        proxy_stopped = False
         store.set_run_process(
             conn,
             run_id,
             pid=process.pid,
             pid_started_at=process_started_at(process.pid),
         )
-        try:
-            process.wait(timeout=task.timeout_sec)
-        except subprocess.TimeoutExpired:
-            stop_process(process)
-            timed_out = True
+        if px is not None:
+            deadline = time.monotonic() + task.timeout_sec
+            try:
+                while True:
+                    if not px.alive():
+                        stop_process(process)
+                        proxy_stopped = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        stop_process(process)
+                        timed_out = True
+                        break
+                    try:
+                        process.wait(timeout=min(PROXY_POLL_SEC, remaining))
+                    except subprocess.TimeoutExpired:
+                        continue
+                    proxy_stopped = not px.alive()
+                    _send(process.pid, set(), signal.SIGKILL)
+                    break
+            finally:
+                px.stop()
         else:
-            _send(process.pid, set(), signal.SIGKILL)
+            try:
+                process.wait(timeout=task.timeout_sec)
+            except subprocess.TimeoutExpired:
+                stop_process(process)
+                timed_out = True
+            else:
+                _send(process.pid, set(), signal.SIGKILL)
 
         # Collection moves a valid report, so serialize it with kill's finish too.
         with store.transaction(conn):
@@ -366,14 +453,9 @@ def run_task(
             if run.ended_at is not None:
                 if run.kill_requested_at is not None:
                     _reject_report(source, rejected)
-                return _finish_run(
-                    conn,
-                    run_id,
-                    task_id,
-                    destination,
+                return finish(
                     substitute(FailureReason.ABORTED, KILL_SUMMARY),
                     process.returncode,
-                    substitute,
                 )
             try:
                 if run.kill_requested_at is not None:
@@ -383,6 +465,12 @@ def run_task(
                     _reject_report(source, rejected)
                     result = substitute(
                         FailureReason.TIMEOUT, "작업 시간 상한을 초과했습니다."
+                    )
+                elif proxy_stopped:
+                    _reject_report(source, rejected)
+                    result = substitute(
+                        FailureReason.ABORTED,
+                        "프록시가 실행 중에 멈춰 Codex 실행을 중단했습니다.",
                     )
                 elif process.returncode < 0:
                     _reject_report(source, rejected)
@@ -413,6 +501,20 @@ def run_task(
                                 "유효한 결과 보고서를 받지 못했습니다.",
                             )
                     else:
+                        if (
+                            spec.lane is Lane.B
+                            and result.status is Outcome.DONE
+                            and codex.command_events(
+                                log_path.read_text(encoding="utf-8", errors="replace")
+                            )
+                            == 0
+                        ):
+                            result = replace(
+                                result,
+                                status=Outcome.FAILED,
+                                failure_reason=FailureReason.REPORT_MISSING,
+                                summary="명령 실행 이벤트가 없어 완료로 보지 않습니다.",
+                            )
                         if result.status is Outcome.DONE:
                             violations = gate.check_scope(
                                 worktree,
@@ -438,15 +540,7 @@ def run_task(
                 result = substitute(
                     FailureReason.REPORT_MISSING, "실행 결과를 분류하지 못했습니다."
                 )
-            return _finish_run(
-                conn,
-                run_id,
-                task_id,
-                destination,
-                result,
-                process.returncode,
-                substitute,
-            )
+            return finish(result, process.returncode)
     except BaseException as exc:
         try:
             if process is not None:
@@ -461,15 +555,17 @@ def run_task(
             result = substitute(
                 FailureReason.ABORTED, "에이전트 실행이 중단되었습니다."
             )
-            _finish_run(
-                conn,
-                run_id,
-                task_id,
-                destination,
+            finish(
                 result,
                 process.returncode if process is not None else None,
-                substitute,
             )
         except Exception as cleanup_error:
             exc.add_note(f"Failed to record the abort: {cleanup_error}")
         raise
+    finally:
+        try:
+            if px is not None:
+                px.stop()
+        finally:
+            if tmpdir is not None:
+                shutil.rmtree(tmpdir, ignore_errors=True)

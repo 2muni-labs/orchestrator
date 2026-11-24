@@ -37,6 +37,7 @@ from orch.runner import (
     stop_process,
 )
 from orch.store import StateMismatchError, connect, get_task, insert_task, latest_run
+from sandbox_env import FAKE_SANDBOX_EXEC
 
 HUB = Path(__file__).resolve().parents[2]
 MAIN = "origin/main"
@@ -156,9 +157,10 @@ def make_env(home: Path, scenario: str, **extra: str) -> dict[str, str]:
     return {
         "PATH": os.environ["PATH"],
         "HOME": str(home),
-        "CODEX_HOME": str(home / "codex"),
+        "CODEX_HOME": str(home / ".codex"),
         "ORCH_HUB": str(HUB),
         "ORCH_FAKE_AGENTS": "1",
+        "ORCH_FAKE_SANDBOX_EXEC": str(FAKE_SANDBOX_EXEC),
         "ORCH_FAKE_PYTHON": sys.executable,
         "ORCH_FAKE_SCENARIO": scenario,
         **extra,
@@ -480,7 +482,9 @@ def test_no_transaction_is_open_while_the_agent_runs(
     real = subprocess.Popen
 
     def spy(args: object, *rest: object, **options: object) -> object:
-        if isinstance(args, list | tuple) and str(args[0]).endswith("codex"):
+        if isinstance(args, list | tuple) and any(
+            str(arg).endswith("/codex") for arg in args
+        ):
             seen.append(conn.in_transaction)
         return real(args, *rest, **options)
 
@@ -649,16 +653,32 @@ def test_a_failing_classification_does_not_strand_the_task(
     assert run_of(conn).outcome is Outcome.FAILED
 
 
+@pytest.mark.parametrize("lane", [Lane.B, Lane.C])
 def test_an_agent_that_cannot_start_does_not_strand_the_task(
-    conn: sqlite3.Connection, repo: Path, paths: TargetPaths, home: Path, worktree: Path
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    tmp_path: Path,
+    lane: Lane,
 ) -> None:
-    environ = make_env(home, "success")
-    del environ["ORCH_FAKE_AGENTS"]
+    """Lane B starts through sandbox-exec, so a missing sandbox-exec stands in for
+    an agent that cannot start; the real proxy cannot bind inside the gate sandbox."""
+    add_task(conn, repo, paths, tmp_path / "worktrees", lane=lane)
+    if lane is Lane.B:
+        environ = make_env(
+            home, "success", ORCH_FAKE_SANDBOX_EXEC=str(home / "missing-sandbox")
+        )
+        config = make_config()
+    else:
+        environ = make_env(home, "success")
+        del environ["ORCH_FAKE_AGENTS"]
+        config = make_config(claude_path=home / "missing")
     result = run_task(
         conn,
         TASK,
         target=make_target(repo),
-        config=make_config(codex_path=home / "missing"),
+        config=config,
         paths=paths,
         environ=environ,
     )
@@ -1745,3 +1765,314 @@ def test_a_fake_run_sends_the_hub_rules_to_the_agent(
     rules = (HUB / "config" / "subagent.md").read_text(encoding="utf-8")
     schema = (HUB / "schemas" / "result.json").read_text(encoding="utf-8")
     assert captured["prompt"].endswith(rules + "\nResult schema:\n" + schema)
+
+
+# Lane B under the orch profile behind the allowlist proxy (m-codex-lane-sandbox)
+
+PROXY_START_SUMMARY = "프록시를 시작하지 못해 Codex를 실행하지 않았습니다."
+PROXY_STOP_SUMMARY = "프록시가 실행 중에 멈춰 Codex 실행을 중단했습니다."
+NO_COMMANDS_SUMMARY = "명령 실행 이벤트가 없어 완료로 보지 않습니다."
+
+
+def proxy_log_of(paths: TargetPaths, n: int = 1) -> Path:
+    return paths.logs / f"{TASK}.{n}.proxy.log"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"ORCH_FAKE_PROXY": "fail"},
+        {"ORCH_FAKE_PROXY": "unknown-mode"},
+    ],
+)
+def test_a_proxy_that_cannot_start_closes_the_run_without_codex(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+    extra: dict[str, str],
+) -> None:
+    marker = tmp_path / "env.json"
+    result = run(
+        conn,
+        repo,
+        paths,
+        home,
+        "env_values",
+        ORCH_FAKE_ENV_FILE=str(marker),
+        **extra,
+    )
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.ABORTED
+    assert result.summary == PROXY_START_SUMMARY
+    assert not marker.exists()
+    assert not (worktree / CHANGED).exists()
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).outcome is Outcome.FAILED
+    saved = load_result(paths.results / f"{TASK}.json", TASK)
+    assert saved.summary == PROXY_START_SUMMARY
+
+
+def test_a_proxy_that_stops_during_the_run_stops_codex(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    began = time.monotonic()
+    result = run(conn, repo, paths, home, "timeout", ORCH_FAKE_PROXY="die")
+    assert time.monotonic() - began < 30
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.ABORTED
+    assert result.summary == PROXY_STOP_SUMMARY
+    assert task_of(conn).state is TaskState.JUDGING
+    assert run_of(conn).outcome is Outcome.FAILED
+
+
+def test_a_report_left_when_the_proxy_stops_is_rejected(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(conn, repo, paths, home, "report_then_hang", ORCH_FAKE_PROXY="die")
+    assert result.summary == PROXY_STOP_SUMMARY
+    assert not (worktree / ".orch-result.json").exists()
+    assert runner.rejected_path(paths.logs / f"{TASK}.1.log").exists()
+
+
+def test_a_done_report_without_command_events_is_not_done(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(conn, repo, paths, home, "success", ORCH_FAKE_NO_COMMANDS="1")
+    assert result.status is Outcome.FAILED
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert result.summary == NO_COMMANDS_SUMMARY
+    assert result.changed_paths == (CHANGED,)
+    saved = load_result(paths.results / f"{TASK}.json", TASK)
+    assert saved.status is Outcome.FAILED
+    assert saved.failure_reason is FailureReason.REPORT_MISSING
+    assert run_of(conn).outcome is Outcome.FAILED
+
+
+def test_a_done_report_without_commands_skips_the_scope_check(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(conn, repo, paths, home, "out_of_scope", ORCH_FAKE_NO_COMMANDS="1")
+    assert result.failure_reason is FailureReason.REPORT_MISSING
+    assert result.summary == NO_COMMANDS_SUMMARY
+
+
+def test_a_partial_report_without_command_events_stays_partial(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(conn, repo, paths, home, "partial", ORCH_FAKE_NO_COMMANDS="1")
+    assert result.status is Outcome.PARTIAL
+
+
+def test_a_done_report_with_command_events_is_done(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(conn, repo, paths, home, "success")
+    assert result.status is Outcome.DONE
+    assert result.unresolved == ()
+    assert proxy_log_of(paths).exists()
+    assert proxy_log_of(paths).read_text(encoding="utf-8") == ""
+
+
+def test_lane_c_needs_no_command_events_or_proxy(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    add_task(conn, repo, paths, tmp_path / "worktrees", lane=Lane.C)
+    result = run(conn, repo, paths, home, "success", ORCH_FAKE_PROXY="fail")
+    assert result.status is Outcome.DONE
+    assert not proxy_log_of(paths).exists()
+
+
+def test_codex_gets_the_proxy_variables_and_a_run_tmpdir_that_is_removed(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+) -> None:
+    dump = tmp_path / "env.json"
+    result = run(conn, repo, paths, home, "env_values", ORCH_FAKE_ENV_FILE=str(dump))
+    assert result.status is Outcome.DONE
+    values = json.loads(dump.read_text(encoding="utf-8"))
+    for name in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        assert values[name] == "http://127.0.0.1:9"
+    assert values["tmpdir_is_dir"] is True
+    tmpdir = Path(values["TMPDIR"])
+    assert tmpdir.name.startswith("orch-codex-")
+    assert tmpdir == tmpdir.resolve()
+    assert not tmpdir.exists()
+
+
+def test_codex_starts_through_the_sandbox_exec(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[list[str]] = []
+    real = subprocess.Popen
+
+    def spy(args: object, *rest: object, **options: object) -> object:
+        if isinstance(args, list | tuple):
+            seen.append([str(arg) for arg in args])
+        return real(args, *rest, **options)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    run(conn, repo, paths, home, "success")
+    agents = [argv for argv in seen if any(a.endswith("/codex") for a in argv)]
+    assert len(agents) == 1
+    argv = agents[0]
+    assert argv[0] == str(FAKE_SANDBOX_EXEC)
+    assert argv[1] == "-p"
+    assert '(remote ip "localhost:9")' in argv[2]
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
+
+
+def test_a_denied_connection_is_noted_in_the_result(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    environ = make_env(home, "slow_success", ORCH_FAKE_PROXY="deny")
+    result = run_task(
+        conn,
+        TASK,
+        target=make_target(repo),
+        config=make_config(),
+        paths=paths,
+        environ=environ,
+    )
+    assert result.status is Outcome.DONE
+    label = log_label(proxy_log_of(paths), environ)
+    assert result.unresolved == (f"프록시가 연결 1건을 거부했습니다: {label}",)
+    saved = load_result(paths.results / f"{TASK}.json", TASK)
+    assert saved.unresolved == result.unresolved
+    lines = [
+        json.loads(line)
+        for line in proxy_log_of(paths).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(x["proxy"], x["host"], x["reason"]) for x in lines] == [
+        ("deny", "denied.invalid", "host")
+    ]
+
+
+def test_the_denial_note_cuts_the_summary_to_the_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    environ = make_env(home, "slow_long_summary", ORCH_FAKE_PROXY="deny")
+    result = run_task(
+        conn,
+        TASK,
+        target=make_target(repo),
+        config=make_config(),
+        paths=paths,
+        environ=environ,
+    )
+    note = (
+        f"프록시가 연결 1건을 거부했습니다: {log_label(proxy_log_of(paths), environ)}"
+    )
+    assert result.unresolved == (note,)
+    assert result.summary == "가" * (results.SUMMARY_LIMIT - len(note))
+    load_result(paths.results / f"{TASK}.json", TASK)
+
+
+def test_a_denial_is_noted_on_a_failed_run_too(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    result = run(
+        conn,
+        repo,
+        paths,
+        home,
+        "slow_success",
+        ORCH_FAKE_PROXY="deny",
+        ORCH_FAKE_NO_COMMANDS="1",
+    )
+    assert result.summary == NO_COMMANDS_SUMMARY
+    assert len(result.unresolved) == 1
+    assert result.unresolved[0].startswith("프록시가 연결 1건을 거부했습니다: ")
+
+
+def test_the_proxy_poll_interval() -> None:
+    assert runner.PROXY_POLL_SEC == 0.5
+
+
+@pytest.mark.parametrize("hosts", ["missing", "empty", "bad"])
+def test_a_lane_b_run_without_valid_proxy_hosts_does_not_start(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+    hosts: str,
+) -> None:
+    root = tmp_path / "hub-no-hosts"
+    (root / "config").mkdir(parents=True)
+    (root / "schemas").mkdir()
+    (root / "tests").mkdir()
+    (root / "tests" / "fake_agents").symlink_to(HUB / "tests" / "fake_agents")
+    for part in (("config", "subagent.md"), ("schemas", "result.json")):
+        (root / part[0] / part[1]).symlink_to(HUB.joinpath(*part))
+    if hosts == "empty":
+        (root / "config" / "pins.toml").write_text(
+            "[codex]\nproxy_hosts = []\n", encoding="utf-8"
+        )
+    elif hosts == "bad":
+        (root / "config" / "pins.toml").write_text(
+            '[codex]\nproxy_hosts = ["1.2.3.4"]\n', encoding="utf-8"
+        )
+    with pytest.raises(RunError):
+        run(conn, repo, paths, home, "success", ORCH_HUB=str(root))
+    assert task_of(conn).state is TaskState.RESERVED
+    assert latest_run(conn, TASK) is None
