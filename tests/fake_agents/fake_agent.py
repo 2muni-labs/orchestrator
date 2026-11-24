@@ -19,6 +19,25 @@ OUTSIDE_FILE = "outside/fake_change.py"
 TEST_FILE = "tests/test_fake_change.py"
 USAGE_LIMIT_MESSAGE = "You hit your usage limit. Try again later."
 DEFAULT_SLEEP_SEC = 3600
+COMMAND_EVENT = {
+    "type": "item.completed",
+    "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/sh -c true",
+        "aggregated_output": "",
+        "exit_code": 0,
+        "status": "completed",
+    },
+}
+PROXY_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+)
 
 
 def worktree_from_args(args):
@@ -73,12 +92,13 @@ def report(
     outside=(),
     unresolved=(),
     failure_reason=None,
+    summary="가짜 에이전트의 결과입니다.",
 ):
     data = {
         "task_id": task_id,
         "status": status,
         "failure_reason": failure_reason,
-        "summary": "가짜 에이전트의 결과입니다.",
+        "summary": summary,
         "changed_paths": list(changed),
         "out_of_scope_changes": list(outside),
         "verification": {"command": "fake verify", "passed": status == "DONE"},
@@ -107,6 +127,12 @@ def main():
     task_id = task_id_from_spec(stdin_text)
     output = output_from_args(sys.argv[1:])
     review_id = review_task_id(stdin_text)
+
+    # Like codex exec --json, report one finished command unless told not to.
+    if os.environ.get("ORCH_FAKE_AS") == "codex" and (
+        os.environ.get("ORCH_FAKE_NO_COMMANDS") != "1"
+    ):
+        print(json.dumps(COMMAND_EVENT), flush=True)
 
     if scenario == "success":
         touch(worktree, CHANGED_FILE)
@@ -176,6 +202,21 @@ def main():
         with open(os.environ["ORCH_FAKE_ENV_FILE"], "w", encoding="utf-8") as handle:
             json.dump(sorted(os.environ), handle)
         report(worktree, task_id)
+    elif scenario == "env_values":
+        names = PROXY_VARS + ("TMPDIR",)
+        values = {name: os.environ.get(name) for name in names}
+        tmpdir = os.environ.get("TMPDIR")
+        values["tmpdir_is_dir"] = bool(tmpdir) and os.path.isdir(tmpdir)
+        with open(os.environ["ORCH_FAKE_ENV_FILE"], "w", encoding="utf-8") as handle:
+            json.dump(values, handle)
+        report(worktree, task_id)
+    elif scenario == "slow_success":
+        time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
+        touch(worktree, CHANGED_FILE)
+        report(worktree, task_id, changed=[CHANGED_FILE])
+    elif scenario == "slow_long_summary":
+        time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
+        report(worktree, task_id, summary="가" * 700)
     elif scenario == "leftover_child":
         start_child()
         report(worktree, task_id)

@@ -19,17 +19,11 @@ def build_command(
     config: Config,
     environ: Mapping[str, str],
     log_label: str,
+    codex_sandbox: codex.CodexSandbox | None = None,
 ) -> LaneCommand:
     """Build the command of the spec's lane. Lanes other than B and C are refused."""
     if spec.lane is Lane.B:
-        return codex.build_command(
-            spec=spec,
-            spec_text=spec_text,
-            worktree=worktree,
-            config=config,
-            environ=environ,
-            log_label=log_label,
-        )
+        raise NotImplementedError
     if spec.lane is Lane.C:
         return claude.build_command(
             spec=spec,

@@ -144,7 +144,7 @@ class Sandbox:
             "ORCH_FAKE_PYTHON": sys.executable,
             "ORCH_FAKE_GH_DIR": str(self.gh_dir),
             "ORCH_FAKE_SANDBOX_EXEC": str(FAKE_SANDBOX_EXEC),
-            "CODEX_HOME": str(self.home / "codex"),
+            "CODEX_HOME": str(self.home / ".codex"),
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(self.home / ".gitconfig"),
             "GIT_TERMINAL_PROMPT": "0",
@@ -158,7 +158,11 @@ class Sandbox:
         for path in (self.home, self.gh_dir, self.drafts, self.hub / "tests"):
             path.mkdir(parents=True)
         (self.hub / "tests" / "fake_agents").symlink_to(FAKE_AGENTS)
-        for part in (("config", "subagent.md"), ("schemas", "result.json")):
+        for part in (
+            ("config", "subagent.md"),
+            ("config", "pins.toml"),
+            ("schemas", "result.json"),
+        ):
             (self.hub / part[0]).mkdir(exist_ok=True)
             (self.hub / part[0] / part[1]).symlink_to(REPO_ROOT.joinpath(*part))
         (self.home / ".gitconfig").write_text(

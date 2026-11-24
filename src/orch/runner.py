@@ -14,12 +14,13 @@ from pathlib import Path
 
 from orch import gate, lanes, results, store
 from orch.config import Config, Target, TargetPaths
-from orch.models import FailureReason, Outcome, Run, TaskState
+from orch.models import FailureReason, Lane, Outcome, Run, TaskState
 from orch.results import TaskResult
 from orch.taskfile import TaskFileError, parse_task
 
 TERM_GRACE_SEC = 10
 KILL_SUMMARY = "orch kill로 중단했습니다."
+PROXY_POLL_SEC = 0.5
 
 
 class RunError(Exception):
@@ -256,6 +257,8 @@ def run_task(
         spec = parse_task(spec_text)
         if spec.id != task_id:
             raise RunError("Task spec id does not match the task")
+        if spec.lane is Lane.B:
+            raise NotImplementedError
         command = lanes.build_command(
             spec=spec,
             spec_text=spec_text,

@@ -2,7 +2,9 @@
 
 import json
 import re
-from collections.abc import Iterable, Mapping
+import socket
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from orch.config import Config
@@ -10,9 +12,9 @@ from orch.lanes.base import (
     LOG_TAIL_LINES,
     LaneCommand,
     LaneError,
-    build_prompt,
+    build_prompt,  # noqa: F401 (used by the implementation)
     child_env,
-    load_hub_rules,
+    load_hub_rules,  # noqa: F401 (used by the implementation)
     matches_limit,
     resolve_agent,
 )
@@ -22,6 +24,22 @@ from orch.taskfile import TaskSpec
 PROVIDER = "codex"
 # Turn off the user's hooks and plugin MCP servers (measured on codex-cli 0.160.0).
 ISOLATION_ARGS: tuple[str, ...] = ("--disable", "hooks", "--disable", "plugins")
+FAKE_PROXY_ENV = "ORCH_FAKE_PROXY"
+FAKE_PROXY_PORT = 9
+FAKE_DENIED_REQUEST = b"CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexSandbox:
+    """The per-run proxy port and TMPDIR of a sandboxed Codex run."""
+
+    port: int
+    tmpdir: Path
+
+
+def codex_home(environ: Mapping[str, str]) -> Path:
+    """Return HOME/.codex; CODEX_HOME may only name the same directory."""
+    raise NotImplementedError
 
 
 def build_command(
@@ -32,37 +50,22 @@ def build_command(
     config: Config,
     environ: Mapping[str, str],
     log_label: str,
+    run_sandbox: CodexSandbox,
 ) -> LaneCommand:
-    """Build the codex exec command."""
-    if spec.effort is None:
-        raise LaneError("Codex requires an effort")
-    agent = resolve_agent(PROVIDER, config.codex_path, environ)
-    return LaneCommand(
-        provider=PROVIDER,
-        argv=(
-            str(agent),
-            "exec",
-            "--json",
-            *ISOLATION_ARGS,
-            "-C",
-            str(worktree),
-            "-m",
-            spec.model,
-            "-c",
-            f"model_reasoning_effort={spec.effort}",
-            "--sandbox",
-            "workspace-write",
-            "-",
-        ),
-        cwd=worktree,
-        env=child_env(environ),
-        stdin_text=build_prompt(
-            spec_text,
-            task_id=spec.id,
-            log_label=log_label,
-            hub_rules=load_hub_rules(environ),
-        ),
-    )
+    """Build codex exec under the orch Codex profile, behind the proxy."""
+    raise NotImplementedError
+
+
+def command_events(log_text: str) -> int:
+    """Count item.completed events of command_execution items in a log."""
+    raise NotImplementedError
+
+
+def fake_proxy_listener(
+    environ: Mapping[str, str],
+) -> Callable[[], socket.socket] | None:
+    """In fake agent mode, a proxy listener factory that never binds."""
+    raise NotImplementedError
 
 
 def build_review_command(

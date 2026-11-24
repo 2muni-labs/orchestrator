@@ -177,7 +177,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     hub = tmp_path / "hub"
     (hub / "tests").mkdir(parents=True)
     (hub / "tests" / "fake_agents").symlink_to(HUB_SOURCE / "tests" / "fake_agents")
-    for part in (("config", "subagent.md"), ("schemas", "result.json")):
+    for part in (
+        ("config", "subagent.md"),
+        ("config", "pins.toml"),
+        ("schemas", "result.json"),
+    ):
         (hub / part[0]).mkdir(exist_ok=True)
         (hub / part[0] / part[1]).symlink_to(HUB_SOURCE.joinpath(*part))
     gitconfig = tmp_path / "gitconfig"
@@ -192,7 +196,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
         "ORCH_FAKE_AGENTS": "1",
         "ORCH_FAKE_SCENARIO": "success",
         "ORCH_FAKE_PYTHON": sys.executable,
-        "CODEX_HOME": str(home / "codex"),
+        "CODEX_HOME": str(home / ".codex"),
         "GIT_CONFIG_GLOBAL": str(gitconfig),
         "GIT_CONFIG_NOSYSTEM": "1",
     }
