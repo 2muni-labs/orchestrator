@@ -33,6 +33,7 @@ from orch.selfcheck import (
     FetchError,
     Notify,
     SelfcheckError,
+    SwitchReport,
     _link_state,
     _restore_link,
     _switch_link,
@@ -76,6 +77,8 @@ CODEX_AUTOMATED_IDS = frozenset({"FL-M4", "S-M2", "S-M2b", "isolation"})
 SANDBOX_TIMEOUT_SEC = 300
 SANDBOX_PROBE_HOST = "example.com"
 SANDBOX_PROBE_FILE = "probe.txt"
+PREVIOUS_DIR = "previous"
+MISE_FILES = ("config.toml", "mise.lock")
 
 Mise = Callable[
     [Sequence[str], Path, Mapping[str, str], float], subprocess.CompletedProcess[str]
@@ -1087,6 +1090,26 @@ def _parse_release(item: object) -> tuple[str, datetime] | None:
 
 
 # The version in use
+
+
+# Switch and rollback
+
+
+def apply_codex(
+    *,
+    hub: Path,
+    orch_home: Path,
+    home: Path,
+    now: datetime,
+    machine: str | None = None,
+) -> SwitchReport:
+    raise NotImplementedError
+
+
+def rollback_codex(
+    *, orch_home: Path, home: Path, now: datetime, machine: str | None = None
+) -> SwitchReport:
+    raise NotImplementedError
 
 
 def check_current_codex(
