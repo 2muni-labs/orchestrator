@@ -113,7 +113,18 @@ EXPECTED_COLUMNS = {
         "failed_tests",
         "at",
     },
-    "events": {"id", "task_id", "from_state", "to_state", "actor", "note", "at"},
+    "events": {
+        "id",
+        "task_id",
+        "from_state",
+        "to_state",
+        "actor",
+        "note",
+        "at",
+        "kind",
+        "session_id",
+        "target",
+    },
     "tracking_targets": {"target", "repository", "imported_at"},
     "tracking_projects": {"target", "key", "title", "url"},
     "tracking_records": {
@@ -1641,3 +1652,129 @@ def test_list_runs_of_a_task_without_runs_is_empty(conn: sqlite3.Connection) -> 
     add_task(conn, "a")
     assert store.list_runs(conn, "a") == ()
     assert store.list_runs(conn, "missing") == ()
+
+
+# Schema v9: input wait rows in events (m-p5-input-wait, ADR 0030)
+
+
+def test_the_v9_migration_is_the_three_event_columns_only() -> None:
+    assert len(store.MIGRATIONS) >= 9
+    assert store.MIGRATIONS[8] == (
+        "ALTER TABLE events ADD COLUMN kind TEXT",
+        "ALTER TABLE events ADD COLUMN session_id TEXT",
+        "ALTER TABLE events ADD COLUMN target TEXT",
+    )
+
+
+def test_a_v8_database_keeps_its_events_as_transitions(db_path: Path) -> None:
+    old = sqlite3.connect(db_path, isolation_level=None)
+    for statements in store.MIGRATIONS[:8]:
+        for statement in statements:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 8")
+    old.execute(
+        """INSERT INTO events (task_id, from_state, to_state, actor, note, at)
+        VALUES ('kept', 'prepared', 'queued', 'orch', NULL, 'a')"""
+    )
+    old.close()
+    conn = connect(db_path)
+    assert user_version(conn) == len(store.MIGRATIONS)
+    row = conn.execute(
+        "SELECT task_id, from_state, to_state, kind, session_id, target FROM events"
+    ).fetchone()
+    assert row == ("kept", "prepared", "queued", None, None, None)
+
+
+def test_a_transition_leaves_the_wait_columns_null(conn: sqlite3.Connection) -> None:
+    insert_task(conn, make_task())
+    store.transition(
+        conn, "feat-x", TaskState.PREPARED, TaskState.QUEUED, actor="orch", at="t"
+    )
+    assert conn.execute("SELECT kind, session_id, target FROM events").fetchall() == [
+        (None, None, None)
+    ]
+
+
+def test_the_wait_kinds() -> None:
+    assert store.WAIT_KINDS == ("wait_start", "wait_end")
+
+
+def test_record_wait_inserts_a_wait_row_and_returns_its_id(
+    conn: sqlite3.Connection,
+) -> None:
+    insert_task(conn, make_task())
+    store.transition(
+        conn, "feat-x", TaskState.PREPARED, TaskState.QUEUED, actor="orch", at="t"
+    )
+    first = store.record_wait(
+        conn,
+        kind="wait_start",
+        target="sample",
+        session_id="s-1",
+        note="permission_request",
+        at="2026-11-24T12:00:00+00:00",
+    )
+    second = store.record_wait(
+        conn,
+        kind="wait_end",
+        target="sample",
+        session_id="s-1",
+        note="post_tool_use",
+        at="2026-11-24T12:00:05+00:00",
+    )
+    assert (first, second) == (2, 3)
+    rows = conn.execute(
+        """SELECT id, task_id, from_state, to_state, actor, note, at, kind,
+        session_id, target FROM events WHERE id > 1 ORDER BY id"""
+    ).fetchall()
+    assert rows == [
+        (
+            2,
+            None,
+            None,
+            None,
+            "hook",
+            "permission_request",
+            "2026-11-24T12:00:00+00:00",
+            "wait_start",
+            "s-1",
+            "sample",
+        ),
+        (
+            3,
+            None,
+            None,
+            None,
+            "hook",
+            "post_tool_use",
+            "2026-11-24T12:00:05+00:00",
+            "wait_end",
+            "s-1",
+            "sample",
+        ),
+    ]
+    assert not conn.in_transaction
+
+
+@pytest.mark.parametrize("kind", ["transition", "wait", "", "WAIT_START"])
+def test_record_wait_refuses_other_kinds(conn: sqlite3.Connection, kind: str) -> None:
+    with pytest.raises(ValueError):
+        store.record_wait(
+            conn, kind=kind, target="t", session_id="s", note="stop", at="a"
+        )
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_record_wait_joins_an_open_transaction(conn: sqlite3.Connection) -> None:
+    with pytest.raises(RuntimeError):
+        with store.transaction(conn):
+            store.record_wait(
+                conn,
+                kind="wait_start",
+                target="t",
+                session_id="s",
+                note="idle_prompt",
+                at="a",
+            )
+            raise RuntimeError("roll back")
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0

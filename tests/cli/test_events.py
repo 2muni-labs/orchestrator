@@ -13,8 +13,10 @@ OTHER = "other"
 EVENT_KEYS = [
     "schema_version",
     "id",
+    "kind",
     "task_id",
     "target",
+    "session_id",
     "from_state",
     "to_state",
     "actor",
@@ -80,10 +82,12 @@ def test_an_event_has_every_field_in_the_contract_order(
     assert len(found) == 1
     assert list(found[0]) == EVENT_KEYS
     assert found[0] == {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": 1,
+        "kind": "transition",
         "task_id": "feat-a",
         "target": TARGET,
+        "session_id": None,
         "from_state": "prepared",
         "to_state": "reserved",
         "actor": "orch",
@@ -145,6 +149,87 @@ def test_an_event_without_a_task_row_is_left_out(conn: sqlite3.Connection) -> No
     move(conn, "feat-a", TaskState.PREPARED, TaskState.RESERVED)
     found = events.read_events(conn, since=0, target=None)
     assert [(e["id"], e["task_id"]) for e in found] == [(2, "feat-a")]
+
+
+def wait(
+    conn: sqlite3.Connection,
+    kind: str,
+    *,
+    target: str = TARGET,
+    session_id: str = "session-1",
+    note: str = "permission_request",
+    at: str = "2026-11-24T12:00:00+00:00",
+) -> int:
+    return store.record_wait(
+        conn, kind=kind, target=target, session_id=session_id, note=note, at=at
+    )
+
+
+def test_a_wait_line_has_every_field_with_nulls_for_the_task(
+    conn: sqlite3.Connection,
+) -> None:
+    wait(conn, "wait_start", note="idle_prompt")
+    found = events.read_events(conn, since=0, target=None)
+    assert [list(line) for line in found] == [EVENT_KEYS]
+    assert found[0] == {
+        "schema_version": 2,
+        "id": 1,
+        "kind": "wait_start",
+        "task_id": None,
+        "target": TARGET,
+        "session_id": "session-1",
+        "from_state": None,
+        "to_state": None,
+        "actor": "hook",
+        "note": "idle_prompt",
+        "at": "2026-11-24T12:00:00+00:00",
+    }
+
+
+def test_waits_and_transitions_share_one_id_order(conn: sqlite3.Connection) -> None:
+    add_task(conn, "feat-a")
+    wait(conn, "wait_start")
+    move(conn, "feat-a", TaskState.PREPARED, TaskState.RESERVED)
+    wait(conn, "wait_end", note="post_tool_use")
+    found = events.read_events(conn, since=0, target=None)
+    assert [(e["id"], e["kind"], e["task_id"]) for e in found] == [
+        (1, "wait_start", None),
+        (2, "transition", "feat-a"),
+        (3, "wait_end", None),
+    ]
+    assert [e["id"] for e in events.read_events(conn, since=2, target=None)] == [3]
+
+
+def test_target_filters_waits_by_their_own_target(conn: sqlite3.Connection) -> None:
+    add_task(conn, "feat-a")
+    wait(conn, "wait_start", target=OTHER)
+    move(conn, "feat-a", TaskState.PREPARED, TaskState.RESERVED)
+    wait(conn, "wait_start", target=TARGET, session_id="session-2")
+    mine = events.read_events(conn, since=0, target=TARGET)
+    assert [(e["id"], e["kind"]) for e in mine] == [
+        (2, "transition"),
+        (3, "wait_start"),
+    ]
+    other = events.read_events(conn, since=0, target=OTHER)
+    assert [(e["id"], e["target"]) for e in other] == [(1, OTHER)]
+
+
+def test_a_wait_row_needs_no_task_row(conn: sqlite3.Connection) -> None:
+    wait(conn, "wait_start")
+    conn.execute(
+        "INSERT INTO events (task_id, from_state, to_state, actor, note, at)"
+        " VALUES ('ghost', 'prepared', 'queued', 'orch', NULL, 'x')"
+    )
+    found = events.read_events(conn, since=0, target=None)
+    assert [(e["id"], e["kind"]) for e in found] == [(1, "wait_start")]
+
+
+def test_stream_writes_wait_lines_too(conn: sqlite3.Connection) -> None:
+    wait(conn, "wait_start")
+    wait(conn, "wait_end", note="stop")
+    written: list[str] = []
+    assert events.stream(conn, written.append) == 2
+    assert [json.loads(line)["kind"] for line in written] == ["wait_start", "wait_end"]
 
 
 def test_no_events_is_an_empty_list(conn: sqlite3.Connection) -> None:

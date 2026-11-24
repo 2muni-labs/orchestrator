@@ -176,6 +176,9 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
 )
 
 
+WAIT_KINDS = ("wait_start", "wait_end")
+
+
 class StoreError(Exception):
     """Base class for state store errors."""
 
@@ -781,3 +784,16 @@ def clear_suite_runs(
             "DELETE FROM suite_runs WHERE task_id = ? AND attempt = ? AND gate = ?",
             ((task_id, attempt, gate.value) for gate in gates),
         )
+
+
+def record_wait(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    target: str,
+    session_id: str,
+    note: str,
+    at: str,
+) -> int:
+    """Record the start or end of a main session input wait and return its id."""
+    raise NotImplementedError

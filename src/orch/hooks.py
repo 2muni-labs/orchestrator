@@ -17,6 +17,16 @@ from orch.models import TaskState
 Alive = Callable[[int, str], bool]
 RecoverErrorHandler = Callable[[str, Exception], None]
 
+SESSION_ID_PATTERN = r"[A-Za-z0-9_-]{1,128}"
+WAIT_MARKER_MAX_AGE = timedelta(days=7)
+END_HOOKS: Mapping[str, str] = {
+    "post-tool-use": "post_tool_use",
+    "post-tool-use-failure": "post_tool_use_failure",
+    "user-prompt-submit": "user_prompt_submit",
+    "stop": "stop",
+    "session-end": "session_end",
+}
+
 
 def process_alive(pid: int, started_at: str) -> bool:
     return bool(started_at) and runner.process_started_at(pid) == started_at
@@ -229,6 +239,54 @@ def handle_notification(
     except Exception as exc:
         _log(environ, now, "notification", type(exc).__name__)
     return ""
+
+
+def waits_dir(orch_home: Path, target: str) -> Path:
+    """Return the directory of the target's open wait markers."""
+    raise NotImplementedError
+
+
+def start_wait(
+    environ: Mapping[str, str],
+    payload: Mapping[str, object],
+    *,
+    note: str,
+    now: datetime,
+) -> None:
+    """Record a wait start unless the session already has an open wait."""
+    raise NotImplementedError
+
+
+def end_wait(
+    environ: Mapping[str, str],
+    payload: Mapping[str, object],
+    *,
+    note: str,
+    now: datetime,
+) -> None:
+    """Record a wait end when the session has an open wait."""
+    raise NotImplementedError
+
+
+def clean_wait_markers(orch_home: Path, target: str, *, now: datetime) -> int:
+    """Remove wait markers older than WAIT_MARKER_MAX_AGE and count them."""
+    raise NotImplementedError
+
+
+def handle_permission_request(
+    stdin_text: str, environ: Mapping[str, str], *, now: datetime | None = None
+) -> str:
+    raise NotImplementedError
+
+
+def handle_wait_end(
+    stdin_text: str,
+    environ: Mapping[str, str],
+    *,
+    hook: str,
+    now: datetime | None = None,
+) -> str:
+    raise NotImplementedError
 
 
 def run_hook(name: str) -> int:

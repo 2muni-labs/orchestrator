@@ -1,4 +1,6 @@
+import io
 import json
+import os
 import sqlite3
 import urllib.request
 from collections.abc import Iterator
@@ -780,3 +782,500 @@ def test_bad_json_fails_open(orch_home: Path, environ: dict[str, str]) -> None:
         .read_text()
         .startswith(f"{NOW.isoformat()} notification ")
     )
+
+
+# Input wait records (m-p5-input-wait, technical design 4.13, ADR 0030)
+
+SESSION = "0b6f6a1e-5c3a-4b8e-9c55-1d2f3e4a5b6c"
+
+
+def hook_input(session_id: object = SESSION, **extra: object) -> str:
+    return json.dumps({"session_id": session_id, **extra})
+
+
+def wait_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return conn.execute(
+        """SELECT kind, target, session_id, task_id, from_state, to_state, actor,
+        note, at FROM events ORDER BY id"""
+    ).fetchall()
+
+
+def marker(orch_home: Path, session_id: str = SESSION) -> Path:
+    return orch_home / "orchestrator" / "waits" / session_id
+
+
+def start_row(note: str, at: datetime = NOW) -> tuple[object, ...]:
+    return (
+        "wait_start",
+        "orchestrator",
+        SESSION,
+        None,
+        None,
+        None,
+        "hook",
+        note,
+        at.isoformat(),
+    )
+
+
+def end_row(note: str, at: datetime) -> tuple[object, ...]:
+    return (
+        "wait_end",
+        "orchestrator",
+        SESSION,
+        None,
+        None,
+        None,
+        "hook",
+        note,
+        at.isoformat(),
+    )
+
+
+def test_wait_constants_follow_the_design() -> None:
+    assert hooks.SESSION_ID_PATTERN == r"[A-Za-z0-9_-]{1,128}"
+    assert hooks.WAIT_MARKER_MAX_AGE == timedelta(days=7)
+    assert dict(hooks.END_HOOKS) == {
+        "post-tool-use": "post_tool_use",
+        "post-tool-use-failure": "post_tool_use_failure",
+        "user-prompt-submit": "user_prompt_submit",
+        "stop": "stop",
+        "session-end": "session_end",
+    }
+
+
+def test_waits_dir_is_under_the_target_runtime(orch_home: Path) -> None:
+    assert hooks.waits_dir(orch_home, "orchestrator") == (
+        orch_home / "orchestrator" / "waits"
+    )
+
+
+def test_a_permission_request_starts_a_wait(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    output = hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    assert output == ""
+    assert wait_rows(conn) == [start_row("permission_request")]
+    assert marker(orch_home).is_file()
+    assert not (orch_home / "hooks.log").exists()
+
+
+def test_an_end_hook_closes_the_open_wait(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    later = NOW + timedelta(seconds=42)
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    output = hooks.handle_wait_end(
+        hook_input(), environ, hook="post-tool-use", now=later
+    )
+    assert output == ""
+    assert wait_rows(conn) == [
+        start_row("permission_request"),
+        end_row("post_tool_use", later),
+    ]
+    assert not marker(orch_home).exists()
+
+
+@pytest.mark.parametrize("hook", list(hooks.END_HOOKS))
+def test_every_end_hook_records_its_own_note(
+    environ: dict[str, str], conn: sqlite3.Connection, hook: str
+) -> None:
+    later = NOW + timedelta(seconds=1)
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    hooks.handle_wait_end(hook_input(), environ, hook=hook, now=later)
+    assert wait_rows(conn)[-1] == end_row(hooks.END_HOOKS[hook], later)
+
+
+def test_an_end_without_an_open_wait_records_nothing(
+    environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    hooks.handle_wait_end(hook_input(), environ, hook="stop", now=NOW)
+    assert wait_rows(conn) == []
+
+
+def test_an_end_without_an_open_wait_does_not_open_the_database(
+    orch_home: Path, environ: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_db_path(orch_home).parent.mkdir(parents=True, exist_ok=True)
+    state_db_path(orch_home).touch()
+
+    def refuse(path: Path) -> sqlite3.Connection:
+        raise AssertionError("state.db opened")
+
+    monkeypatch.setattr(store, "connect", refuse)
+    hooks.handle_wait_end(hook_input(), environ, hook="post-tool-use", now=NOW)
+    assert not (orch_home / "hooks.log").exists()
+
+
+def test_a_second_start_in_the_same_wait_records_nothing(
+    environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    hooks.handle_notification(
+        json.dumps({"session_id": SESSION, "notification_type": "idle_prompt"}),
+        environ,
+        now=NOW + timedelta(seconds=6),
+        transport=Transport(),
+    )
+    assert wait_rows(conn) == [start_row("permission_request")]
+
+
+def test_two_ends_record_one_end(
+    environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    later = NOW + timedelta(seconds=3)
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    hooks.handle_wait_end(hook_input(), environ, hook="post-tool-use", now=later)
+    hooks.handle_wait_end(hook_input(), environ, hook="stop", now=later)
+    assert wait_rows(conn) == [
+        start_row("permission_request"),
+        end_row("post_tool_use", later),
+    ]
+
+
+def test_a_new_wait_after_an_end_starts_again(
+    environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    t1, t2 = NOW + timedelta(seconds=1), NOW + timedelta(seconds=2)
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    hooks.handle_wait_end(hook_input(), environ, hook="post-tool-use", now=t1)
+    hooks.handle_permission_request(hook_input(), environ, now=t2)
+    assert [row[0] for row in wait_rows(conn)] == [
+        "wait_start",
+        "wait_end",
+        "wait_start",
+    ]
+
+
+def test_sessions_have_separate_waits(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    hooks.handle_permission_request(hook_input("other-session"), environ, now=NOW)
+    hooks.handle_wait_end(hook_input("other-session"), environ, hook="stop", now=NOW)
+    assert [(row[0], row[2]) for row in wait_rows(conn)] == [
+        ("wait_start", SESSION),
+        ("wait_start", "other-session"),
+        ("wait_end", "other-session"),
+    ]
+    assert marker(orch_home).is_file()
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [None, "", 7, "has space", "../escape", "a/b", "x" * 129, "ünicode"],
+)
+def test_a_bad_session_id_records_nothing(
+    orch_home: Path,
+    environ: dict[str, str],
+    conn: sqlite3.Connection,
+    session_id: object,
+) -> None:
+    hooks.handle_permission_request(hook_input(session_id), environ, now=NOW)
+    hooks.handle_wait_end(hook_input(session_id), environ, hook="stop", now=NOW)
+    assert wait_rows(conn) == []
+    assert not (orch_home / "orchestrator" / "waits").exists() or not any(
+        (orch_home / "orchestrator" / "waits").iterdir()
+    )
+    assert not (orch_home / "hooks.log").exists()
+
+
+def test_the_longest_session_id_is_accepted(
+    environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    long_id = "a" * 128
+    hooks.handle_permission_request(hook_input(long_id), environ, now=NOW)
+    assert [row[2] for row in wait_rows(conn)] == [long_id]
+
+
+def test_no_target_records_nothing(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    del environ["ORCH_TARGET"]
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    assert wait_rows(conn) == []
+    assert not (orch_home / "hooks.log").exists()
+
+
+def test_without_a_database_nothing_is_created(
+    orch_home: Path, environ: dict[str, str]
+) -> None:
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+    assert not state_db_path(orch_home).exists()
+    assert not marker(orch_home).exists()
+    assert not (orch_home / "hooks.log").exists()
+
+
+def test_a_failed_start_write_removes_the_marker_and_logs(
+    orch_home: Path,
+    environ: dict[str, str],
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*args: object, **kwargs: object) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "record_wait", broken)
+    assert hooks.handle_permission_request(hook_input(), environ, now=NOW) == ""
+    assert not marker(orch_home).exists()
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} permission-request OperationalError\n"
+    )
+
+
+def test_a_failed_end_write_is_logged_under_the_hook_name(
+    orch_home: Path,
+    environ: dict[str, str],
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks.handle_permission_request(hook_input(), environ, now=NOW)
+
+    def broken(*args: object, **kwargs: object) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "record_wait", broken)
+    assert (
+        hooks.handle_wait_end(hook_input(), environ, hook="user-prompt-submit", now=NOW)
+        == ""
+    )
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} user-prompt-submit OperationalError\n"
+    )
+
+
+@pytest.mark.parametrize("text", ["[", "[]", "null"])
+def test_bad_wait_hook_input_fails_open_and_logs(
+    orch_home: Path, environ: dict[str, str], text: str
+) -> None:
+    assert hooks.handle_permission_request(text, environ, now=NOW) == ""
+    assert hooks.handle_wait_end(text, environ, hook="stop", now=NOW) == ""
+    lines = (orch_home / "hooks.log").read_text().splitlines()
+    assert [line.split()[1] for line in lines] == ["permission-request", "stop"]
+
+
+def test_start_and_end_wait_raise_for_their_callers(
+    environ: dict[str, str], conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> int:
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(store, "record_wait", broken)
+    payload = {"session_id": SESSION}
+    with pytest.raises(sqlite3.OperationalError):
+        hooks.start_wait(environ, payload, note="permission_request", now=NOW)
+    monkeypatch.undo()
+    hooks.start_wait(environ, payload, note="permission_request", now=NOW)
+    monkeypatch.setattr(store, "record_wait", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        hooks.end_wait(environ, payload, note="stop", now=NOW)
+
+
+# Notification: permission_prompt and idle_prompt start a wait
+
+
+def notification(kind: str, session_id: str = SESSION) -> str:
+    return json.dumps(
+        {"session_id": session_id, "notification_type": kind, "message": "m"}
+    )
+
+
+def test_a_permission_prompt_sends_ntfy_and_starts_a_wait(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    write_config(orch_home, NTFY)
+    transport = Transport()
+    hooks.handle_notification(
+        notification("permission_prompt"), environ, now=NOW, transport=transport
+    )
+    assert len(transport.calls) == 1
+    assert wait_rows(conn) == [start_row("permission_prompt")]
+
+
+def test_an_idle_prompt_starts_a_wait_without_ntfy_or_config(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    write_config(orch_home, "not = [valid")
+    transport = Transport()
+    hooks.handle_notification(
+        notification("idle_prompt"), environ, now=NOW, transport=transport
+    )
+    assert transport.calls == []
+    assert wait_rows(conn) == [start_row("idle_prompt")]
+    assert not (orch_home / "hooks.log").exists()
+
+
+@pytest.mark.parametrize("kind", ["auth_success", "elicitation_dialog"])
+def test_other_notifications_record_no_wait(
+    environ: dict[str, str], conn: sqlite3.Connection, kind: str
+) -> None:
+    hooks.handle_notification(
+        notification(kind), environ, now=NOW, transport=Transport()
+    )
+    assert wait_rows(conn) == []
+
+
+def test_a_failed_send_still_starts_the_wait(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    write_config(orch_home, NTFY)
+    hooks.handle_notification(
+        notification("permission_prompt"),
+        environ,
+        now=NOW,
+        transport=Transport(OSError("down")),
+    )
+    assert wait_rows(conn) == [start_row("permission_prompt")]
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} notification failed\n"
+    )
+
+
+def test_a_broken_config_still_starts_the_wait(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    write_config(orch_home, "not = [valid")
+    hooks.handle_notification(
+        notification("permission_prompt"), environ, now=NOW, transport=Transport()
+    )
+    assert wait_rows(conn) == [start_row("permission_prompt")]
+
+
+def test_a_failed_wait_still_sends_ntfy_and_logs(
+    orch_home: Path,
+    environ: dict[str, str],
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_config(orch_home, NTFY)
+
+    def broken(*args: object, **kwargs: object) -> int:
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(store, "record_wait", broken)
+    transport = Transport()
+    hooks.handle_notification(
+        notification("permission_prompt"), environ, now=NOW, transport=transport
+    )
+    assert len(transport.calls) == 1
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} notification wait OperationalError\n"
+    )
+
+
+# SessionStart removes stale wait markers
+
+
+def age(path: Path, days: float) -> None:
+    stamp = (NOW - timedelta(days=days)).timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def test_clean_wait_markers_removes_only_old_markers(orch_home: Path) -> None:
+    waits = hooks.waits_dir(orch_home, "orchestrator")
+    waits.mkdir(parents=True)
+    old, fresh, edge = waits / "old", waits / "fresh", waits / "edge"
+    for path in (old, fresh, edge):
+        path.touch()
+    age(old, 8)
+    age(fresh, 1)
+    age(edge, 6.9)
+    assert hooks.clean_wait_markers(orch_home, "orchestrator", now=NOW) == 1
+    assert sorted(p.name for p in waits.iterdir()) == ["edge", "fresh"]
+
+
+def test_clean_wait_markers_without_a_directory_is_zero(orch_home: Path) -> None:
+    assert hooks.clean_wait_markers(orch_home, "orchestrator", now=NOW) == 0
+
+
+def test_clean_wait_markers_leaves_directories(orch_home: Path) -> None:
+    waits = hooks.waits_dir(orch_home, "orchestrator")
+    (waits / "nested").mkdir(parents=True)
+    age(waits / "nested", 30)
+    assert hooks.clean_wait_markers(orch_home, "orchestrator", now=NOW) == 0
+    assert (waits / "nested").is_dir()
+
+
+def test_clean_wait_markers_records_no_wait_end(
+    orch_home: Path, environ: dict[str, str], conn: sqlite3.Connection
+) -> None:
+    hooks.handle_permission_request(hook_input(), environ, now=NOW - timedelta(days=9))
+    age(marker(orch_home), 9)
+    hooks.clean_wait_markers(orch_home, "orchestrator", now=NOW)
+    assert [row[0] for row in wait_rows(conn)] == ["wait_start"]
+    assert not marker(orch_home).exists()
+
+
+def test_session_start_cleans_markers_even_without_a_database(
+    orch_home: Path, environ: dict[str, str]
+) -> None:
+    waits = hooks.waits_dir(orch_home, "orchestrator")
+    waits.mkdir(parents=True)
+    (waits / "old").touch()
+    age(waits / "old", 8)
+    assert handle_session_start("{}", environ, now=NOW) == ""
+    assert not (waits / "old").exists()
+    assert not state_db_path(orch_home).exists()
+
+
+def test_session_start_logs_a_cleanup_failure_and_continues(
+    orch_home: Path,
+    environ: dict[str, str],
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_task(conn, "feat-a", TaskState.JUDGING)
+
+    def broken(*args: object, **kwargs: object) -> int:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(hooks, "clean_wait_markers", broken)
+    output = handle_session_start("{}", environ, now=NOW)
+    assert "feat-a" in output
+    assert (orch_home / "hooks.log").read_text() == (
+        f"{NOW.isoformat()} session-start waits PermissionError\n"
+    )
+
+
+def test_session_start_without_a_target_cleans_nothing(
+    orch_home: Path, environ: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del environ["ORCH_TARGET"]
+    calls: list[object] = []
+    monkeypatch.setattr(hooks, "clean_wait_markers", lambda *a, **k: calls.append(a))
+    handle_session_start("{}", environ, now=NOW)
+    assert calls == []
+
+
+# run_hook dispatch
+
+
+@pytest.mark.parametrize(
+    ("name", "note"),
+    [("permission-request", None), *[(n, v) for n, v in hooks.END_HOOKS.items()]],
+)
+def test_run_hook_routes_the_wait_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    note: str | None,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def start(stdin_text: str, environ: object, **kwargs: object) -> str:
+        calls.append(("start", kwargs))
+        return ""
+
+    def end(stdin_text: str, environ: object, **kwargs: object) -> str:
+        calls.append(("end", kwargs))
+        return ""
+
+    monkeypatch.setattr(hooks, "handle_permission_request", start)
+    monkeypatch.setattr(hooks, "handle_wait_end", end)
+    monkeypatch.setattr("sys.stdin", io.StringIO(hook_input()))
+    assert hooks.run_hook(name) == 0
+    if note is None:
+        assert calls == [("start", {})]
+    else:
+        assert calls == [("end", {"hook": name})]
+    assert capsys.readouterr().out == ""

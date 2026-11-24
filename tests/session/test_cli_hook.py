@@ -508,3 +508,48 @@ def test_the_hook_runner_is_on_a_safety_path() -> None:
         source = Path(inspect.getsourcefile(function) or "").resolve()
         path = source.relative_to(hub).as_posix()
         assert any(gate.glob_matches(path, entry) for entry in safety), path
+
+
+# Input wait hooks (m-p5-input-wait)
+
+WAIT_HOOKS = (
+    "permission-request",
+    "post-tool-use",
+    "post-tool-use-failure",
+    "user-prompt-submit",
+    "stop",
+    "session-end",
+)
+
+
+def test_the_wait_hooks_are_accepted_names() -> None:
+    assert set(WAIT_HOOKS) <= set(cli._HOOK_NAMES)
+    assert set(WAIT_HOOKS) - {"permission-request"} == set(hooks.END_HOOKS)
+
+
+def wait_kinds(env: Path) -> list[tuple[str, str]]:
+    conn = store.connect(config.state_db_path(env / "runtime"))
+    try:
+        return conn.execute("SELECT kind, note FROM events ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("end", WAIT_HOOKS[1:])
+def test_a_wait_runs_end_to_end_through_orch_hook(
+    run: Run, env: Path, monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", "sample")
+    store.connect(config.state_db_path(env / "runtime")).close()
+    payload = json.dumps({"session_id": "s-1", "tool_name": "Bash"})
+    assert run("permission-request", payload) == (0, "")
+    assert run(end, payload) == (0, "")
+    assert wait_kinds(env) == [
+        ("wait_start", "permission_request"),
+        ("wait_end", hooks.END_HOOKS[end]),
+    ]
+
+
+@pytest.mark.parametrize("name", WAIT_HOOKS)
+def test_a_wait_hook_never_blocks_on_bad_input(run: Run, name: str) -> None:
+    assert run(name, "not json") == (0, "")
