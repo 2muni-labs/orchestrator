@@ -9,6 +9,7 @@ Measure again after a macOS update (execution design, chapter 6).
 """
 
 import os
+import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -194,7 +195,49 @@ def codex_profile(*, port: int, codex_home: Path, output: Path | None = None) ->
     output None: an implementation run, which writes the worktree.
     output set: a review or explore run, which writes only that file.
     """
-    raise NotImplementedError
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("port must be an integer between 1 and 65535")
+
+    codex_home = codex_home.resolve()
+    output = output.resolve() if output is not None else None
+    for path in (codex_home, output):
+        if path is not None and any(
+            char in '"\\' or ord(char) < 0x20 or ord(char) == 0x7F for char in str(path)
+        ):
+            raise ValueError(
+                "profile paths must not contain quotes, backslashes or controls"
+            )
+    if output is not None and output.is_dir():
+        raise ValueError("output must not be a directory")
+
+    ch = str(codex_home)
+    profile = PROFILE.replace(
+        '  (subpath (string-append (param "HOME") "/.codex"))\n', "", 1
+    )
+    profile = profile.replace(
+        "(deny network*)",
+        f'(deny network*)\n(allow network-outbound (remote ip "localhost:{port}"))',
+        1,
+    )
+    if output is not None:
+        profile = profile.replace('  (subpath (param "WORKTREE"))\n', "", 1)
+
+    lines = [f'  (regex #"^{re.escape(ch)}/{CODEX_SQLITE_PATTERN}$")\n']
+    lines.extend(f'  (subpath "{ch}/{name}")\n' for name in CODEX_WRITE_DIRS)
+    lines.extend(f'  (literal "{ch}/{name}")\n' for name in CODEX_WRITE_FILES)
+    if output is not None:
+        lines.append(f'  (literal "{output}")\n')
+    tmpdir_allow = '  (subpath (param "TMPDIR"))\n'
+    profile = profile.replace(tmpdir_allow, tmpdir_allow + "".join(lines), 1)
+
+    denies = " ".join(f'(literal "{ch}/{name}")' for name in CODEX_DENY_FILES)
+    names = " ".join(f'(global-name "{name}")' for name in CODEX_TLS_SERVICES)
+    tail = (
+        f"\n(deny file-write* {denies})\n"
+        f"(allow mach-lookup {names})\n"
+        '(allow file-read* (subpath "/Library/Keychains"))\n'
+    )
+    return profile + tail
 
 
 def wrap_codex(
@@ -209,4 +252,15 @@ def wrap_codex(
     output: Path | None = None,
 ) -> list[str]:
     """Return argv run under codex_profile with the parameters that wrap passes."""
-    raise NotImplementedError
+    return [
+        executable,
+        "-p",
+        codex_profile(port=port, codex_home=codex_home, output=output),
+        "-D",
+        f"WORKTREE={worktree.resolve()}",
+        "-D",
+        f"TMPDIR={tmpdir.resolve()}",
+        "-D",
+        f"HOME={home.resolve()}",
+        *argv,
+    ]
