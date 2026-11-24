@@ -5651,22 +5651,143 @@ def test_a_switch_error_exits_20(orch: Call, monkeypatch: pytest.MonkeyPatch) ->
     }
 
 
+CODEX_APPLIED = SwitchReport("applied", None, "0.170.0", "0.160.0", None, ("0.150.0",))
+CODEX_ROLLED_BACK = SwitchReport(
+    "rolled_back", None, "0.160.0", "0.170.0", "codex@0.170.0", ()
+)
+
+
+def fake_codex_switch(
+    monkeypatch: pytest.MonkeyPatch, name: str, report: SwitchReport
+) -> Recorder:
+    recorder = Recorder(report)
+    monkeypatch.setattr(selfcheck_codex, name, recorder)
+    return recorder
+
+
 @pytest.mark.usefixtures("selfcheckable")
-@pytest.mark.parametrize("args", [("--apply", "codex"), ("--rollback", "codex")])
-def test_codex_is_not_switched_yet(
-    orch: Call, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+def test_selfcheck_apply_codex_switches_codex(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    apply = fake_switch(monkeypatch, "apply_claude", APPLIED)
-    rollback = fake_switch(monkeypatch, "rollback_claude", ROLLED_BACK)
-    run = fake_run_codex(monkeypatch)
+    apply = fake_codex_switch(monkeypatch, "apply_codex", CODEX_APPLIED)
+    rollback = fake_codex_switch(monkeypatch, "rollback_codex", CODEX_ROLLED_BACK)
+    claude_apply = fake_switch(monkeypatch, "apply_claude", APPLIED)
+    claude_rollback = fake_switch(monkeypatch, "rollback_claude", ROLLED_BACK)
+    run = fake_run_claude(monkeypatch)
+    codex = fake_run_codex(monkeypatch)
+    code, data = orch("selfcheck", "--apply", "codex")
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "switch": CODEX_APPLIED.to_json(),
+        "current": CURRENTS_OK,
+        "paused": [],
+    }
+    [call] = apply
+    assert set(call) == {"args", "hub", "orch_home", "home", "now"}
+    assert (call["args"], call["hub"], call["orch_home"], call["home"]) == (
+        (),
+        env.hub,
+        env.orch_home,
+        env.home,
+    )
+    assert rollback == [] and claude_apply == [] and claude_rollback == []
+    assert run == [] and codex == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_selfcheck_rollback_codex_reports_the_hold_example(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    apply = fake_codex_switch(monkeypatch, "apply_codex", CODEX_APPLIED)
+    rollback = fake_codex_switch(monkeypatch, "rollback_codex", CODEX_ROLLED_BACK)
+    claude_rollback = fake_switch(monkeypatch, "rollback_claude", ROLLED_BACK)
+    code, data = orch("selfcheck", "--rollback", "codex")
+    assert code == 0, data
+    assert data["switch"] == CODEX_ROLLED_BACK.to_json()
+    assert data["current"] == CURRENTS_OK
+    assert data["switch"]["hold"] == "codex@0.170.0"  # type: ignore[index]
+    [call] = rollback
+    assert set(call) == {"args", "orch_home", "home", "now"}
+    assert (call["args"], call["orch_home"], call["home"]) == (
+        (),
+        env.orch_home,
+        env.home,
+    )
+    assert apply == [] and claude_rollback == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize(
+    ("args", "name"),
+    [
+        (("--apply", "codex"), "apply_codex"),
+        (("--rollback", "codex"), "rollback_codex"),
+    ],
+)
+def test_a_refused_codex_switch_exits_64_without_checking(
+    orch: Call, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...], name: str
+) -> None:
+    report = SwitchReport("refused", "config", "0.160.0", None, None, ())
+    fake_codex_switch(monkeypatch, name, report)
+    current = fake_current(monkeypatch)
     code, data = orch("selfcheck", *args)
     assert code == USAGE
     assert data == {
         "ok": False,
         "error": "refused",
-        "message": "Codex는 아직 selfcheck 전환 대상이 아닙니다.",
+        "message": "전환할 수 없습니다: config",
+        "switch": report.to_json(),
     }
-    assert apply == [] and rollback == [] and run == []
+    assert current == []
+
+
+@pytest.mark.usefixtures("selfcheckable")
+@pytest.mark.parametrize(
+    ("status", "reason", "code", "error", "message"),
+    [
+        ("busy", None, 20, "busy", "다른 selfcheck가 실행 중입니다."),
+        (
+            "error",
+            "config_write",
+            20,
+            "switch_error",
+            "전환 중 오류가 발생했습니다: config_write",
+        ),
+    ],
+)
+def test_a_codex_switch_that_cannot_finish_exits_20(
+    orch: Call,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    reason: str | None,
+    code: int,
+    error: str,
+    message: str,
+) -> None:
+    report = SwitchReport(status, reason, "0.160.0", None, None, ())
+    fake_codex_switch(monkeypatch, "apply_codex", report)
+    assert orch("selfcheck", "--apply", "codex") == (
+        code,
+        {"ok": False, "error": error, "message": message, "switch": report.to_json()},
+    )
+
+
+@pytest.mark.usefixtures("selfcheckable")
+def test_a_codex_switch_lifts_the_pause(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_run_claude(monkeypatch)
+    fake_run_codex(monkeypatch)
+    fake_send(monkeypatch)
+    fake_current(monkeypatch)
+    fake_codex_current(monkeypatch, CurrentCheck("mismatch", "path", "0.160.0"))
+    orch("selfcheck")
+    assert pause_rows(env) != []
+    fake_codex_current(monkeypatch, CODEX_OK)
+    fake_codex_switch(monkeypatch, "rollback_codex", CODEX_ROLLED_BACK)
+    assert orch("selfcheck", "--rollback", "codex")[1]["paused"] == []
+    assert pause_rows(env) == []
 
 
 @pytest.mark.usefixtures("selfcheckable")
