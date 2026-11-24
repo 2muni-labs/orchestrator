@@ -23,7 +23,17 @@ def build_command(
 ) -> LaneCommand:
     """Build the command of the spec's lane. Lanes other than B and C are refused."""
     if spec.lane is Lane.B:
-        raise NotImplementedError
+        if codex_sandbox is None:
+            raise LaneError("Lane B requires a Codex sandbox")
+        return codex.build_command(
+            spec=spec,
+            spec_text=spec_text,
+            worktree=worktree,
+            config=config,
+            environ=environ,
+            log_label=log_label,
+            run_sandbox=codex_sandbox,
+        )
     if spec.lane is Lane.C:
         return claude.build_command(
             spec=spec,

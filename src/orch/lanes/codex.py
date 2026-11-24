@@ -3,18 +3,21 @@
 import json
 import re
 import socket
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
+from orch import proxy, sandbox
 from orch.config import Config
 from orch.lanes.base import (
     LOG_TAIL_LINES,
     LaneCommand,
     LaneError,
-    build_prompt,  # noqa: F401 (used by the implementation)
+    build_prompt,
     child_env,
-    load_hub_rules,  # noqa: F401 (used by the implementation)
+    load_hub_rules,
     matches_limit,
     resolve_agent,
 )
@@ -39,7 +42,14 @@ class CodexSandbox:
 
 def codex_home(environ: Mapping[str, str]) -> Path:
     """Return HOME/.codex; CODEX_HOME may only name the same directory."""
-    raise NotImplementedError
+    home = environ.get("HOME")
+    if not home or not Path(home).is_absolute():
+        raise LaneError("Codex requires an absolute HOME")
+    expected = Path(home) / ".codex"
+    if "CODEX_HOME" in environ:
+        if Path(environ["CODEX_HOME"]).resolve() != expected.resolve():
+            raise LaneError("CODEX_HOME must name HOME/.codex")
+    return expected
 
 
 def build_command(
@@ -53,19 +63,118 @@ def build_command(
     run_sandbox: CodexSandbox,
 ) -> LaneCommand:
     """Build codex exec under the orch Codex profile, behind the proxy."""
-    raise NotImplementedError
+    if spec.effort is None:
+        raise LaneError("Codex requires an effort")
+    agent = resolve_agent(PROVIDER, config.codex_path, environ)
+    home = codex_home(environ)
+    argv = (
+        str(agent),
+        "exec",
+        "--json",
+        *ISOLATION_ARGS,
+        "-C",
+        str(worktree),
+        "-m",
+        spec.model,
+        "-c",
+        f"model_reasoning_effort={spec.effort}",
+        "--sandbox",
+        "danger-full-access",
+        "-",
+    )
+    try:
+        wrapped = sandbox.wrap_codex(
+            argv,
+            executable=sandbox.executable(environ),
+            worktree=worktree,
+            tmpdir=run_sandbox.tmpdir,
+            home=Path(environ["HOME"]),
+            codex_home=home,
+            port=run_sandbox.port,
+        )
+    except ValueError as exc:
+        raise LaneError("Cannot build the Codex sandbox") from exc
+    env = child_env(environ)
+    env.update(TMPDIR=str(run_sandbox.tmpdir))
+    env.update(proxy.proxy_env(run_sandbox.port))
+    return LaneCommand(
+        provider=PROVIDER,
+        argv=tuple(wrapped),
+        cwd=worktree,
+        env=env,
+        stdin_text=build_prompt(
+            spec_text,
+            task_id=spec.id,
+            log_label=log_label,
+            hub_rules=load_hub_rules(environ),
+        ),
+    )
 
 
 def command_events(log_text: str) -> int:
     """Count item.completed events of command_execution items in a log."""
-    raise NotImplementedError
+    count = 0
+    for line in log_text.splitlines():
+        event = _json_object(line)
+        if event is None or event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "command_execution":
+            count += 1
+    return count
+
+
+class _FakeProxyListener:
+    """The listener operations used by AllowlistProxy, without binding."""
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.timeout: float = 0.05
+        self.closed = False
+        self.accepted = False
+        self.peer: socket.socket | None = None
+
+    def getsockname(self) -> tuple[str, int]:
+        return ("127.0.0.1", FAKE_PROXY_PORT)
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def close(self) -> None:
+        self.closed = True
+        if self.peer is not None:
+            self.peer.close()
+
+    def accept(self) -> tuple[socket.socket, tuple[str, int]]:
+        if self.closed:
+            raise OSError("Fake listener is closed")
+        if not self.accepted:
+            self.accepted = True
+            if self.mode == "die":
+                time.sleep(0.3)
+                raise OSError("Fake listener stopped")
+            if self.mode == "deny":
+                client, self.peer = socket.socketpair()
+                self.peer.sendall(FAKE_DENIED_REQUEST)
+                return client, ("127.0.0.1", FAKE_PROXY_PORT)
+        time.sleep(self.timeout)
+        raise TimeoutError
 
 
 def fake_proxy_listener(
     environ: Mapping[str, str],
 ) -> Callable[[], socket.socket] | None:
     """In fake agent mode, a proxy listener factory that never binds."""
-    raise NotImplementedError
+    if environ.get("ORCH_FAKE_AGENTS") != "1":
+        return None
+    mode = environ.get(FAKE_PROXY_ENV, "")
+
+    def factory() -> socket.socket:
+        if mode not in ("", "die", "deny"):
+            raise proxy.ProxyError("Fake listener cannot start")
+        return cast(socket.socket, _FakeProxyListener(mode))
+
+    return factory
 
 
 def build_review_command(
