@@ -165,3 +165,48 @@ def check(*, executable: str, worktree: Path, tmpdir: Path, home: Path) -> None:
         lines = result.stderr.splitlines()
         detail = f": {lines[0]}" if lines else ""
         raise SandboxError(f"샌드박스 점검 종료 코드 {result.returncode}{detail}")
+
+
+# Codex runs (ADR 0028)
+
+CODEX_TLS_SERVICES = (
+    "com.apple.trustd.agent",
+    "com.apple.trustd",
+    "com.apple.SecurityServer",
+    "com.apple.securityd",
+    "com.apple.securityd.xpc",
+)
+CODEX_WRITE_DIRS = (
+    "sessions",
+    "tmp",
+    "cache",
+    "thread-writer-locks",
+    "shell_snapshots",
+)
+CODEX_WRITE_FILES = ("models_cache.json", ".sqlite-maintenance.lock", "installation_id")
+CODEX_DENY_FILES = ("config.toml", "auth.json", "hooks.json")
+CODEX_SQLITE_PATTERN = r"[a-z_]+_[0-9]+\.sqlite(-wal|-shm)?"
+
+
+def codex_profile(*, port: int, codex_home: Path, output: Path | None = None) -> str:
+    """The gate profile adapted for one Codex run (ADR 0028).
+
+    output None: an implementation run, which writes the worktree.
+    output set: a review or explore run, which writes only that file.
+    """
+    raise NotImplementedError
+
+
+def wrap_codex(
+    argv: Sequence[str],
+    *,
+    executable: str,
+    worktree: Path,
+    tmpdir: Path,
+    home: Path,
+    codex_home: Path,
+    port: int,
+    output: Path | None = None,
+) -> list[str]:
+    """Return argv run under codex_profile with the parameters that wrap passes."""
+    raise NotImplementedError
