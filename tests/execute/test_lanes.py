@@ -888,28 +888,34 @@ def test_modules_import_only_the_standard_library_and_orch(module: object) -> No
     assert "subprocess" not in imported
 
 
-# Codex review command (m12-review-core)
+# Codex review command (m12-review-core, m-codex-review-sandbox)
+
+REVIEW_OUT = Path("/", "o", "logs", "review", "feat-x.1.out")
+REVIEW_ENV = {"PATH": "/usr/bin", "HOME": "/h"}
 
 
 def build_review(
-    config: Config, environ: dict[str, str] | None = None, effort: str = "high"
+    config: Config,
+    environ: dict[str, str] | None = None,
+    effort: str = "high",
+    run_sandbox: codex.CodexSandbox = SANDBOX,
+    output_path: Path = REVIEW_OUT,
 ) -> LaneCommand:
     return codex.build_review_command(
         worktree=Path("/", "w", "feat-x"),
         prompt="Review this.\n",
-        output_path=Path("/", "o", "logs", "review", "feat-x.1.out"),
+        output_path=output_path,
         model="gpt-6.1-sol",
         effort=effort,
         config=config,
-        environ=environ if environ is not None else {"PATH": "/usr/bin"},
+        environ=environ if environ is not None else REVIEW_ENV,
+        run_sandbox=run_sandbox,
     )
 
 
-def test_review_command_is_exact(agents: Config) -> None:
-    command = build_review(agents)
-    assert command.provider == "codex"
-    assert command.argv == (
-        str(agents.codex_path),
+def inner_review_argv(config: Config) -> list[str]:
+    return [
+        str(config.codex_path),
         "exec",
         "--json",
         "--disable",
@@ -923,21 +929,51 @@ def test_review_command_is_exact(agents: Config) -> None:
         "-c",
         "model_reasoning_effort=high",
         "--sandbox",
-        "read-only",
+        "danger-full-access",
         "-o",
-        str(Path("/", "o", "logs", "review", "feat-x.1.out")),
+        str(REVIEW_OUT),
         "-",
+    ]
+
+
+def test_review_command_is_exact(agents: Config) -> None:
+    command = build_review(agents)
+    assert command.provider == "codex"
+    assert command.argv == tuple(
+        sandbox.wrap_codex(
+            inner_review_argv(agents),
+            executable=sandbox.SANDBOX_EXEC,
+            worktree=Path("/", "w", "feat-x"),
+            tmpdir=RUN_TMPDIR,
+            home=Path("/h"),
+            codex_home=Path("/h/.codex"),
+            port=PORT,
+            output=REVIEW_OUT,
+        )
     )
     assert command.cwd == Path("/", "w", "feat-x")
     assert command.stdin_text == "Review this.\n"
     assert "Review this." not in " ".join(command.argv)
 
 
+def test_review_command_runs_under_the_review_profile(agents: Config) -> None:
+    argv = build_review(agents).argv
+    assert argv[:2] == (sandbox.SANDBOX_EXEC, "-p")
+    assert argv[2] == sandbox.codex_profile(
+        port=PORT, codex_home=Path("/h/.codex"), output=REVIEW_OUT
+    )
+    assert argv[2] != sandbox.codex_profile(port=PORT, codex_home=Path("/h/.codex"))
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
+    assert argv[argv.index("-o") + 1] == str(REVIEW_OUT)
+
+
 def test_review_command_never_writes_outside_its_output(agents: Config) -> None:
     argv = build_review(agents).argv
     assert "workspace-write" not in argv
+    assert "read-only" not in argv
     assert "--add-dir" not in argv
     assert "--output-schema" not in argv
+    assert f'(literal "{REVIEW_OUT}")' in argv[2]
 
 
 @pytest.mark.parametrize("effort", ["", "max", "HIGH"])
@@ -951,6 +987,8 @@ def test_review_command_passes_only_the_allowed_environment(agents: Config) -> N
         "PATH": "/usr/bin",
         "HOME": "/h",
         "CODEX_HOME": "/h/.codex",
+        "TMPDIR": "/var/old",
+        "HTTPS_PROXY": "http://evil:1",
         "GH_TOKEN": "x",
         "GITHUB_TOKEN": "y",
         "OPENAI_API_KEY": "z",
@@ -959,15 +997,57 @@ def test_review_command_passes_only_the_allowed_environment(agents: Config) -> N
         "PATH": "/usr/bin",
         "HOME": "/h",
         "CODEX_HOME": "/h/.codex",
+        "TMPDIR": str(RUN_TMPDIR),
+        **PROXY_ENV,
     }
 
 
 def test_review_command_uses_the_fake_agent_in_fake_mode(
     agents: Config, tmp_path: Path
 ) -> None:
-    environ = {"PATH": "/usr/bin", "ORCH_FAKE_AGENTS": "1", "ORCH_HUB": str(tmp_path)}
-    command = build_review(agents, environ)
-    assert command.argv[0] == str(tmp_path / "tests" / "fake_agents" / "codex")
+    environ = {
+        "PATH": "/usr/bin",
+        "HOME": "/h",
+        "ORCH_FAKE_AGENTS": "1",
+        "ORCH_FAKE_SANDBOX_EXEC": "/fake/sandbox-exec",
+        "ORCH_HUB": str(tmp_path),
+    }
+    argv = build_review(agents, environ).argv
+    assert argv[0] == "/fake/sandbox-exec"
+    assert str(tmp_path / "tests" / "fake_agents" / "codex") in argv
+
+
+@pytest.mark.parametrize("codex_home", ["/h/codex", "/other/.codex"])
+def test_review_command_refuses_another_codex_home(
+    agents: Config, codex_home: str
+) -> None:
+    with pytest.raises(LaneError):
+        build_review(agents, {**REVIEW_ENV, "CODEX_HOME": codex_home})
+
+
+@pytest.mark.parametrize("home", [None, "h"])
+def test_review_command_needs_an_absolute_home(
+    agents: Config, home: str | None
+) -> None:
+    environ = {"PATH": "/usr/bin"}
+    if home is not None:
+        environ["HOME"] = home
+    with pytest.raises(LaneError):
+        build_review(agents, environ)
+
+
+def test_review_command_refuses_a_port_the_profile_refuses(agents: Config) -> None:
+    with pytest.raises(LaneError):
+        build_review(agents, run_sandbox=codex.CodexSandbox(port=0, tmpdir=RUN_TMPDIR))
+
+
+def test_review_command_refuses_an_output_the_profile_refuses(
+    agents: Config, tmp_path: Path
+) -> None:
+    with pytest.raises(LaneError):
+        build_review(agents, output_path=tmp_path)
+    with pytest.raises(LaneError):
+        build_review(agents, output_path=Path("/", "o", 'bad"name.out'))
 
 
 # Isolation from the user's Codex hooks and plugin MCP servers

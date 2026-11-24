@@ -1,10 +1,12 @@
 """orch review: run a Codex review, store a review verdict, validate a triage."""
 
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
 import tempfile
+import time
 import tomllib
 from collections import Counter
 from collections.abc import Mapping
@@ -12,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from orch import config, gitops, results, runner, store
+from orch import config, gitops, proxy, results, runner, store
 from orch.config import Config, Target, TargetPaths
 from orch.lanes import base, codex
 from orch.models import Lane, Review, Severity, Task, TaskState, Verdict
@@ -303,6 +305,7 @@ class ReviewRun:
     log_path: Path
     output_path: Path
     diff_path: Path
+    proxy_denials: int
 
 
 def review_prompt(task_id: str, *, spec_path: Path, diff_path: Path) -> str:
@@ -355,82 +358,150 @@ def run_codex_review(
     spec_path = paths.tasks / f"{task_id}.md"
     if not spec_path.is_file():
         raise ReviewFlowError("Task specification is missing")
-
-    base_sha = gitops.merge_base(worktree, f"origin/{target.default_branch}")
-    diff_text = gitops.diff(worktree, base_sha)
     diff_path = paths.reviews / f"{task_id}.diff"
-    diff_path.parent.mkdir(parents=True, exist_ok=True)
-    diff_path.write_text(diff_text, encoding="utf-8")
+    try:
+        merge_base = gitops.merge_base(worktree, f"origin/{target.default_branch}")
+        diff_text = gitops.diff(worktree, merge_base)
+        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        diff_path.write_text(diff_text, encoding="utf-8")
+    except (gitops.GitError, OSError) as exc:
+        raise ReviewFlowError("Cannot store the review diff") from exc
     log_path = next_review_log(paths.logs, task_id)
     output_path = log_path.with_suffix(".out")
-    state = task.state
-    outcome = ReviewOutcome.FAILED
-    exit_code = None
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.unlink(missing_ok=True)
-        command = codex.build_review_command(
-            worktree=worktree,
-            prompt=review_prompt(task_id, spec_path=spec_path, diff_path=diff_path),
+    proxy_log = log_path.with_suffix(".proxy.log")
+    px: proxy.AllowlistProxy | None = None
+    tmpdir: Path | None = None
+    process: subprocess.Popen[bytes] | None = None
+
+    def finish(
+        outcome: ReviewOutcome,
+        exit_code: int | None,
+        state: TaskState = task.state,
+    ) -> ReviewRun:
+        if px is not None:
+            px.stop()
+        return ReviewRun(
+            task_id=task_id,
+            outcome=outcome,
+            state=state,
+            exit_code=exit_code,
+            log_path=log_path,
             output_path=output_path,
-            model=model,
-            effort=effort,
-            config=config,
-            environ=environ,
+            diff_path=diff_path,
+            proxy_denials=len(px.denials()) if px is not None else 0,
         )
-        with (
-            tempfile.TemporaryFile(dir=log_path.parent) as stdin,
-            log_path.open("xb") as log,
-        ):
-            stdin.write(command.stdin_text.encode("utf-8"))
-            stdin.seek(0)
-            process = subprocess.Popen(
-                list(command.argv),
-                cwd=command.cwd,
-                env=dict(command.env),
-                stdin=stdin,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-    except OSError, base.LaneError:
-        pass
-    else:
-        timed_out = False
+
+    try:
         try:
-            process.wait(
-                timeout=task.timeout_sec if timeout_sec is None else timeout_sec
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.unlink(missing_ok=True)
+            hub = Path(environ["ORCH_HUB"])
+            if not hub.is_absolute():
+                raise base.LaneError("Codex reviews require an absolute ORCH_HUB")
+            hosts = proxy.load_proxy_hosts(hub)
+            tmpdir = Path(tempfile.mkdtemp(prefix="orch-codex-")).resolve()
+            listener = codex.fake_proxy_listener(environ)
+            if listener is None:
+                px = proxy.AllowlistProxy(hosts, proxy_log)
+            else:
+                px = proxy.AllowlistProxy(hosts, proxy_log, listener_factory=listener)
+            port = px.start()
+            command = codex.build_review_command(
+                worktree=worktree,
+                prompt=review_prompt(task_id, spec_path=spec_path, diff_path=diff_path),
+                output_path=output_path,
+                model=model,
+                effort=effort,
+                config=config,
+                environ=environ,
+                run_sandbox=codex.CodexSandbox(port=port, tmpdir=tmpdir),
             )
-        except subprocess.TimeoutExpired:
-            runner.stop_process(process)
-            timed_out = True
-        else:
-            runner._send(process.pid, set(), signal.SIGKILL)
+            with (
+                tempfile.TemporaryFile(dir=log_path.parent) as stdin,
+                log_path.open("xb") as log,
+            ):
+                stdin.write(command.stdin_text.encode("utf-8"))
+                stdin.seek(0)
+                process = subprocess.Popen(
+                    list(command.argv),
+                    cwd=command.cwd,
+                    env=dict(command.env),
+                    stdin=stdin,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except Exception:
+            if process is not None:
+                runner.stop_process(process)
+            return finish(ReviewOutcome.FAILED, None)
+
+        timed_out = False
+        proxy_stopped = False
+        deadline = time.monotonic() + (
+            task.timeout_sec if timeout_sec is None else timeout_sec
+        )
+        try:
+            while True:
+                if not px.alive():
+                    runner.stop_process(process)
+                    proxy_stopped = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    runner.stop_process(process)
+                    timed_out = True
+                    break
+                try:
+                    process.wait(timeout=min(runner.PROXY_POLL_SEC, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                proxy_stopped = not px.alive()
+                runner._send(process.pid, set(), signal.SIGKILL)
+                break
+        finally:
+            px.stop()
+
         exit_code = process.returncode
         if timed_out:
-            outcome = ReviewOutcome.TIMEOUT
-        elif exit_code == 0 and output_path.exists():
+            return finish(ReviewOutcome.TIMEOUT, exit_code)
+        if proxy_stopped:
+            return finish(ReviewOutcome.FAILED, exit_code)
+        if exit_code == 0 and output_path.is_file():
             try:
-                text = output_path.read_text(encoding="utf-8")
+                if (
+                    codex.command_events(
+                        log_path.read_text(encoding="utf-8", errors="replace")
+                    )
+                    == 0
+                ):
+                    return finish(ReviewOutcome.INVALID, exit_code)
                 state = save_review(
-                    conn, task_id, text, paths=paths, home=home, orch_home=orch_home
+                    conn,
+                    task_id,
+                    output_path.read_text(encoding="utf-8"),
+                    paths=paths,
+                    home=home,
+                    orch_home=orch_home,
                 )
-            except ReviewFlowError, OSError, UnicodeError:
-                outcome = ReviewOutcome.INVALID
-            else:
-                outcome = ReviewOutcome.SAVED
-        elif codex.hit_usage_limit(
+            except OSError, UnicodeError, ReviewFlowError:
+                return finish(ReviewOutcome.INVALID, exit_code)
+            return finish(ReviewOutcome.SAVED, exit_code, state)
+        if codex.hit_usage_limit(
             log_path,
-            patterns=base.patterns_for(config, "codex"),
+            patterns=base.patterns_for(config, codex.PROVIDER),
             environ=environ,
         ):
-            outcome = ReviewOutcome.QUOTA
-    return ReviewRun(
-        task_id=task_id,
-        outcome=outcome,
-        state=state,
-        exit_code=exit_code,
-        log_path=log_path,
-        output_path=output_path,
-        diff_path=diff_path,
-    )
+            return finish(ReviewOutcome.QUOTA, exit_code)
+        return finish(ReviewOutcome.FAILED, exit_code)
+    except BaseException:
+        if process is not None:
+            runner.stop_process(process)
+        raise
+    finally:
+        try:
+            if px is not None:
+                px.stop()
+        finally:
+            if tmpdir is not None:
+                shutil.rmtree(tmpdir, ignore_errors=True)

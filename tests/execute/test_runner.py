@@ -2076,3 +2076,22 @@ def test_a_lane_b_run_without_valid_proxy_hosts_does_not_start(
         run(conn, repo, paths, home, "success", ORCH_HUB=str(root))
     assert task_of(conn).state is TaskState.RESERVED
     assert latest_run(conn, TASK) is None
+
+
+@pytest.mark.parametrize("mode", ["fail", "die"])
+def test_the_run_tmpdir_is_removed_when_the_proxy_fails(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    root = tmp_path / "run-tmp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(root))
+    result = run(conn, repo, paths, home, "timeout", ORCH_FAKE_PROXY=mode)
+    assert result.failure_reason is FailureReason.ABORTED
+    assert list(root.iterdir()) == []

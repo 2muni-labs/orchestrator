@@ -186,34 +186,51 @@ def build_review_command(
     effort: str,
     config: Config,
     environ: Mapping[str, str],
+    run_sandbox: CodexSandbox,
 ) -> LaneCommand:
-    """codex exec in a read-only sandbox; the final message goes to output_path."""
-    try:
-        Effort(effort)
-    except ValueError as exc:
-        raise LaneError("Invalid Codex review effort") from exc
+    """codex exec under the review-mode orch profile, behind the proxy."""
+    if effort not in Effort:
+        raise LaneError("Codex requires a valid effort")
     agent = resolve_agent(PROVIDER, config.codex_path, environ)
+    home = codex_home(environ)
+    argv = (
+        str(agent),
+        "exec",
+        "--json",
+        *ISOLATION_ARGS,
+        "-C",
+        str(worktree),
+        "-m",
+        model,
+        "-c",
+        f"model_reasoning_effort={effort}",
+        "--sandbox",
+        "danger-full-access",
+        "-o",
+        str(output_path),
+        "-",
+    )
+    try:
+        wrapped = sandbox.wrap_codex(
+            argv,
+            executable=sandbox.executable(environ),
+            worktree=worktree,
+            tmpdir=run_sandbox.tmpdir,
+            home=Path(environ["HOME"]),
+            codex_home=home,
+            port=run_sandbox.port,
+            output=output_path,
+        )
+    except ValueError as exc:
+        raise LaneError("Cannot build the Codex sandbox") from exc
+    env = child_env(environ)
+    env.update(TMPDIR=str(run_sandbox.tmpdir))
+    env.update(proxy.proxy_env(run_sandbox.port))
     return LaneCommand(
         provider=PROVIDER,
-        argv=(
-            str(agent),
-            "exec",
-            "--json",
-            *ISOLATION_ARGS,
-            "-C",
-            str(worktree),
-            "-m",
-            model,
-            "-c",
-            f"model_reasoning_effort={effort}",
-            "--sandbox",
-            "read-only",
-            "-o",
-            str(output_path),
-            "-",
-        ),
+        argv=tuple(wrapped),
         cwd=worktree,
-        env=child_env(environ),
+        env=env,
         stdin_text=prompt,
     )
 
