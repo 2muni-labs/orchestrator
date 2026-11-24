@@ -56,7 +56,7 @@ tests/             tests, owned by the main agent
 docs/github-tracking.json  reviewed project/issue recovery bindings
 docs/measurements/ measurement records, such as the CU0 baseline
 templates/task.md  task spec template
-schemas/           result and review JSON schemas
+schemas/           result, review and explore answer JSON schemas
 scripts/guard_regress.py  guard false-positive check over local transcripts
 scripts/usage_baseline.py  CU0/CU6 baseline measurement (aggregates only)
 targets.toml       registered targets, with home-relative paths only
@@ -72,6 +72,7 @@ config/subagent.md implementation sub-agent rules that orch run adds to the prom
   reviews/<id>.json     review reports
   reviews/<id>.diff     diff handed to the reviewer
   reviews/<id>.triage.md  reasons for rejecting or deferring review findings
+  explore/<n>.md        orch explore questions; <n>.json holds the checked answer
   logs/<id>.<n>.log     execution log of the task's nth run
   worktrees/<id>/       git worktree on branch task/<id>
 ```

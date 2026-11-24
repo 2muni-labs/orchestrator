@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "orch explore answer",
+  "description": "The final message of an orch explore run. orch also checks that explore_id equals the question id, that each path names a regular file inside --dir, and that each line is within that file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["explore_id", "claims", "unresolved"],
+  "properties": {
+    "explore_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "claims": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["statement", "path", "line", "method"],
+        "properties": {
+          "statement": {
+            "description": "One fact, in Korean.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "path": {
+            "description": "Relative to --dir, with forward slashes.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "line": { "type": "integer", "minimum": 1 },
+          "method": { "enum": ["read", "grep"] }
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "description": "What could not be confirmed, in Korean.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    }
+  }
+}
