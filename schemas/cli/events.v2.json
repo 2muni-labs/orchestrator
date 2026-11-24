@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/events.v2.json",
+  "title": "orch events line",
+  "description": "One line of orch events (JSON Lines): a task state transition or the start or end of an input wait in a main session. An error is printed as one error object instead. Version 2: kind and session_id added; task_id, from_state and to_state are null on wait lines. Fields may be added within this version and readers must ignore fields they do not know (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "id",
+        "kind",
+        "task_id",
+        "target",
+        "session_id",
+        "from_state",
+        "to_state",
+        "actor",
+        "note",
+        "at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "transition",
+            "wait_start",
+            "wait_end"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_state": {
+          "enum": [
+            "prepared",
+            "queued",
+            "reserved",
+            "running",
+            "judging",
+            "gating",
+            "reviewing",
+            "ready",
+            "conflict",
+            "pr_open",
+            "closed",
+            "blocked",
+            "discarded",
+            "orphaned",
+            null
+          ]
+        },
+        "to_state": {
+          "enum": [
+            "prepared",
+            "queued",
+            "reserved",
+            "running",
+            "judging",
+            "gating",
+            "reviewing",
+            "ready",
+            "conflict",
+            "pr_open",
+            "closed",
+            "blocked",
+            "discarded",
+            "orphaned",
+            null
+          ]
+        },
+        "actor": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "transition"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "session_id": {
+                "const": null
+              },
+              "from_state": {
+                "enum": [
+                  "prepared",
+                  "queued",
+                  "reserved",
+                  "running",
+                  "judging",
+                  "gating",
+                  "reviewing",
+                  "ready",
+                  "conflict",
+                  "pr_open",
+                  "closed",
+                  "blocked",
+                  "discarded",
+                  "orphaned"
+                ]
+              },
+              "to_state": {
+                "enum": [
+                  "prepared",
+                  "queued",
+                  "reserved",
+                  "running",
+                  "judging",
+                  "gating",
+                  "reviewing",
+                  "ready",
+                  "conflict",
+                  "pr_open",
+                  "closed",
+                  "blocked",
+                  "discarded",
+                  "orphaned"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "wait_start",
+                  "wait_end"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_id": {
+                "const": null
+              },
+              "from_state": {
+                "const": null
+              },
+              "to_state": {
+                "const": null
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "note": {
+                "enum": [
+                  "permission_request",
+                  "permission_prompt",
+                  "idle_prompt",
+                  "post_tool_use",
+                  "post_tool_use_failure",
+                  "user_prompt_submit",
+                  "stop",
+                  "session_end"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}
