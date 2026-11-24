@@ -1,3 +1,4 @@
+import fcntl
 import functools
 import importlib.metadata
 import io
@@ -6663,3 +6664,217 @@ def test_commands_outside_the_contract_stay_unversioned(
 ) -> None:
     _, data = orch(*args)
     assert "schema_version" not in data
+
+
+# orch explore (technical design 4.16, ADR 0029)
+
+
+EXPLORE_ID = "q1"
+
+
+def explore_question(env: Env, eid: str = EXPLORE_ID) -> Path:
+    path = env.paths.root / "explore" / f"{eid}.md"
+    write(path, "app.py에는 무엇이 있나?\n")
+    return path
+
+
+def explore_answer(env: Env, monkeypatch: pytest.MonkeyPatch, value: object) -> None:
+    path = env.drafts / "answer.json"
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    write(path, text)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "explore_answer")
+    monkeypatch.setenv("ORCH_FAKE_ANSWER_FILE", str(path))
+
+
+def valid_explore_answer(eid: str = EXPLORE_ID) -> dict[str, object]:
+    return {
+        "explore_id": eid,
+        "claims": [
+            {
+                "statement": "app.py의 첫 줄은 base다.",
+                "path": "src/app.py",
+                "line": 1,
+                "method": "read",
+            }
+        ],
+        "unresolved": [],
+    }
+
+
+def explore_files(env: Env, n: int = 1) -> dict[str, str]:
+    return {
+        "answer_path": str(env.paths.root / "explore" / f"{EXPLORE_ID}.json"),
+        "log_path": str(env.paths.logs / "explore" / f"{EXPLORE_ID}.{n}.log"),
+    }
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_saves_a_checked_answer(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = explore_question(env)
+    explore_answer(env, monkeypatch, valid_explore_answer())
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("explore", str(question))
+    assert code == 0, data
+    assert data == {
+        "ok": True,
+        "explore_id": EXPLORE_ID,
+        "outcome": "saved",
+        "exit_code": 0,
+        **explore_files(env),
+        "claims": 1,
+        "unresolved": 0,
+        "proxy_denials": 0,
+    }
+    saved = json.loads(Path(data["answer_path"]).read_text(encoding="utf-8"))
+    assert saved == valid_explore_answer()
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_changes_no_task_state(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert(env, state=TaskState.PREPARED)
+    before = orch("status")
+    explore_question(env)
+    explore_answer(env, monkeypatch, valid_explore_answer())
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("explore", str(explore_question(env)))
+    assert code == 0, data
+    assert orch("status") == before
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_reads_a_worktree_given_with_dir(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = env.paths.worktrees / "feat-x"
+    write(worktree / "only.py", "x = 1\n")
+    value = valid_explore_answer()
+    value["claims"][0]["path"] = "only.py"
+    explore_answer(env, monkeypatch, value)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("explore", str(explore_question(env)), "--dir", str(worktree))
+    assert code == 0, data
+    assert data["outcome"] == "saved"
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("scenario", "outcome", "code"),
+    [
+        ("review_no_output", "failed", 20),
+        ("review_fail", "failed", 20),
+        ("review_usage_limit", "quota", 40),
+    ],
+)
+def test_explore_reports_runs_that_saved_nothing(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    outcome: str,
+    code: int,
+) -> None:
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", scenario)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    result = orch("explore", str(explore_question(env)))
+    assert result[0] == code, result
+    data = result[1]
+    assert (data["ok"], data["outcome"]) == (False, outcome)
+    assert (data["claims"], data["unresolved"]) == (0, 0)
+    assert not Path(data["answer_path"]).exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_reports_an_invalid_answer(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    explore_answer(env, monkeypatch, valid_explore_answer("q2"))
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("explore", str(explore_question(env)))
+    assert code == 20, data
+    assert data == {
+        "ok": False,
+        "explore_id": EXPLORE_ID,
+        "outcome": "invalid",
+        "exit_code": 0,
+        **explore_files(env),
+        "claims": 0,
+        "unresolved": 0,
+        "proxy_denials": 0,
+    }
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_is_busy_at_the_a_lane_limit(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = env.paths.root / "explore"
+    root.mkdir(parents=True, exist_ok=True)
+    handles = []
+    try:
+        for name in ("a", "b"):
+            handle = (root / f"{name}.lock").open("a+")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            handles.append(handle)
+        explore_answer(env, monkeypatch, valid_explore_answer())
+        monkeypatch.setenv("ORCH_TARGET", TARGET)
+        code, data = orch("explore", str(explore_question(env)))
+    finally:
+        for handle in handles:
+            handle.close()
+    assert code == 30, data
+    assert data == {
+        "ok": False,
+        "explore_id": EXPLORE_ID,
+        "outcome": "busy",
+        "exit_code": None,
+        "answer_path": explore_files(env)["answer_path"],
+        "log_path": None,
+        "claims": 0,
+        "unresolved": 0,
+        "proxy_denials": 0,
+    }
+    assert not (env.paths.logs / "explore").exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_refuses_a_bad_question_or_dir(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    bad = env.paths.root / "explore" / "Bad.md"
+    write(bad, "질문\n")
+    assert_error(orch("explore", str(bad)), USAGE, "refused")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    assert_error(
+        orch("explore", str(explore_question(env)), "--dir", str(outside)),
+        USAGE,
+        "refused",
+    )
+    assert not (env.paths.logs / "explore").exists()
+
+
+def test_explore_needs_orch_target(orch: Call, env: Env) -> None:
+    assert_error(orch("explore", str(explore_question(env))), USAGE, "usage")
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_refuses_an_unregistered_target(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", "unknown")
+    assert_error(orch("explore", str(explore_question(env))), USAGE, "refused")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("explore",), ("explore", "a.md", "b.md"), ("explore", "a.md", "--dir")],
+)
+def test_explore_bad_arguments_are_a_usage_error(
+    orch: Call, args: tuple[str, ...]
+) -> None:
+    assert_error(orch(*args), USAGE, "usage")
