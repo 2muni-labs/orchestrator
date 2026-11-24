@@ -6,20 +6,24 @@ import json
 import os
 import platform
 import re
+import secrets  # noqa: F401 (used by the implementation)
 import shutil
 import stat
 import subprocess
+import tempfile  # noqa: F401 (used by the implementation)
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
-from orch import notify
+from orch import notify, proxy, sandbox  # noqa: F401 (used by the implementation)
 from orch.config import Config
 from orch.lanes.codex import ISOLATION_ARGS
 from orch.selfcheck import (
     CODESIGN,
+    GIT,  # noqa: F401 (used by the implementation)
     SESSION_PATH,
     CheckResult,
     Command,
@@ -67,7 +71,10 @@ MACHO_MAGICS = frozenset(
         b"\xca\xfe\xba\xbf",
     }
 )
-CODEX_AUTOMATED_IDS = frozenset({"FL-M4", "isolation"})
+CODEX_AUTOMATED_IDS = frozenset({"FL-M4", "S-M2", "S-M2b", "isolation"})
+SANDBOX_TIMEOUT_SEC = 300
+SANDBOX_PROBE_HOST = "example.com"
+SANDBOX_PROBE_FILE = "probe.txt"
 
 Mise = Callable[
     [Sequence[str], Path, Mapping[str, str], float], subprocess.CompletedProcess[str]
@@ -444,6 +451,50 @@ def check_isolation(ctx: IsolationContext) -> CheckResult:
         return CheckResult("isolation", "fail", "isolation:error")
 
 
+# The S-M2 and S-M2b checks (ADR 0028): one run under the profile behind the proxy
+
+
+class ProbeProxy(Protocol):
+    def start(self) -> int: ...
+    def alive(self) -> bool: ...
+    def stop(self) -> None: ...
+    def events(self) -> tuple[proxy.ProxyEvent, ...]: ...
+
+
+ProxyFactory = Callable[[frozenset[str], Path], ProbeProxy]
+
+
+def default_proxy(hosts: frozenset[str], log_path: Path) -> ProbeProxy:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SandboxContext:
+    binary: Path
+    workdir: Path
+    project: Path
+    home: Path
+    hosts: frozenset[str]
+    run: Run
+    env: Mapping[str, str]
+    canary_name: str
+    canary_token: str
+    write_token: str
+    proxy_factory: ProxyFactory
+
+
+def sandbox_probe_argv(binary: Path, project: Path) -> list[str]:
+    raise NotImplementedError
+
+
+def sandbox_probe_prompt(canary: Path, write_token: str) -> str:
+    raise NotImplementedError
+
+
+def check_sandbox(ctx: SandboxContext) -> tuple[CheckResult, CheckResult]:
+    raise NotImplementedError
+
+
 # Run
 
 
@@ -486,6 +537,8 @@ def run_codex(
     send: Notify = notify.send,
     machine: str | None = None,
     environ: Mapping[str, str] | None = None,
+    session: Run = run_with_input,
+    proxy_factory: ProxyFactory = default_proxy,
 ) -> CodexReport:
     run: _CodexRun | None = None
     try:
@@ -501,6 +554,8 @@ def run_codex(
             send,
             platform.machine() if machine is None else machine,
             os.environ if environ is None else environ,
+            session,
+            proxy_factory,
         )
         orch_home.mkdir(parents=True, exist_ok=True)
         with (orch_home / "agents.json.lock").open("a") as lock:
@@ -540,6 +595,8 @@ class _CodexRun:
     send: Notify
     machine: str
     environ: Mapping[str, str]
+    session: Run
+    proxy_factory: ProxyFactory
     current: str | None = None
     latest: str | None = None
     candidate: str | None = None
@@ -628,51 +685,7 @@ class _CodexRun:
         if not candidates:
             return self.report("up_to_date", "no_candidate")
         self.candidate = max(candidates, key=parse_version)
-        if all(item in CODEX_AUTOMATED_IDS for item in pins.blocking):
-            return self.report("error", "unsupported")
-        self.checks = tuple(
-            CheckResult(
-                item, "skipped" if item in CODEX_AUTOMATED_IDS else "missing", ""
-            )
-            for item in pins.blocking
-        )
-        self.warnings = pins.warn
-        previous_candidate = codex.get("candidate")
-        if (
-            isinstance(previous_candidate, dict)
-            and previous_candidate["version"] == self.candidate
-            and previous_candidate["status"] == "not_automated"
-            and previous_candidate["pins_sha256"] == pins.sha256
-        ):
-            self.checks = tuple(
-                CheckResult(item["id"], item["result"], item["detail"])
-                for item in previous_candidate["checks"]
-            )
-            self.warnings = tuple(previous_candidate["warnings"])
-            return self.report("not_automated", reused=True)
-        codex["candidate"] = {
-            "version": self.candidate,
-            "status": "not_automated",
-            "sha256": None,
-            "path": None,
-            "pins_sha256": pins.sha256,
-            "checks": [asdict(check) for check in self.checks],
-            "warnings": list(self.warnings),
-            "at": self.now.isoformat(),
-        }
-        self.save(state)
-        try:
-            notified = self.send(
-                "selfcheck_failed",
-                settings=self.settings,
-                orch_home=self.orch_home,
-                home=self.home,
-                now=self.now,
-                target=f"codex@{self.candidate}",
-            ).value
-        except Exception:
-            notified = "failed"
-        return self.report("not_automated", notified=notified)
+        raise NotImplementedError
 
     def bootstrap(
         self,
