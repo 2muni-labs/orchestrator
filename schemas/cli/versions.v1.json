@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/versions.v1.json",
+  "title": "orch versions output",
+  "description": "JSON output of orch versions: installed, baseline, current, previous and latest versions of the agents, orch, tmux and macOS, the selfcheck candidate and the items to measure again. Version 1. Fields may be added within this version and readers must ignore fields they do not know; removing, renaming or changing a field's meaning or format needs version 2 (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "agents",
+        "orch",
+        "tools"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "agents": {
+          "type": "object",
+          "required": [
+            "claude",
+            "codex"
+          ],
+          "properties": {
+            "claude": {
+              "type": "object",
+              "required": [
+                "installed",
+                "baseline",
+                "current",
+                "previous",
+                "latest",
+                "latest_checked_at",
+                "behind",
+                "candidate",
+                "remeasure",
+                "commands"
+              ],
+              "properties": {
+                "installed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "baseline": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "current": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "previous": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "latest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "latest_checked_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "behind": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "candidate": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "version",
+                    "status",
+                    "at",
+                    "checks",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "ready",
+                        "failed",
+                        "not_automated"
+                      ]
+                    },
+                    "at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "result",
+                          "detail"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "result": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "remeasure": {
+                  "type": "object",
+                  "required": [
+                    "blocking",
+                    "warn"
+                  ],
+                  "properties": {
+                    "blocking": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "warn": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "commands": {
+                  "type": "object",
+                  "required": [
+                    "apply",
+                    "rollback"
+                  ],
+                  "properties": {
+                    "apply": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "rollback": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "codex": {
+              "type": "object",
+              "required": [
+                "installed",
+                "baseline",
+                "current",
+                "previous",
+                "latest",
+                "latest_checked_at",
+                "behind",
+                "candidate",
+                "remeasure",
+                "commands"
+              ],
+              "properties": {
+                "installed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "baseline": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "current": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "previous": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "latest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "latest_checked_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "behind": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "candidate": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "version",
+                    "status",
+                    "at",
+                    "checks",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "ready",
+                        "failed",
+                        "not_automated"
+                      ]
+                    },
+                    "at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "result",
+                          "detail"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "result": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "remeasure": {
+                  "type": "object",
+                  "required": [
+                    "blocking",
+                    "warn"
+                  ],
+                  "properties": {
+                    "blocking": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "warn": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "commands": {
+                  "type": "object",
+                  "required": [
+                    "apply",
+                    "rollback"
+                  ],
+                  "properties": {
+                    "apply": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "rollback": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "orch": {
+          "type": "object",
+          "required": [
+            "installed",
+            "latest"
+          ],
+          "properties": {
+            "installed": {
+              "type": "string"
+            },
+            "latest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "required": [
+            "tmux",
+            "macos"
+          ],
+          "properties": {
+            "tmux": {
+              "type": "object",
+              "required": [
+                "installed",
+                "baseline",
+                "differs"
+              ],
+              "properties": {
+                "installed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "baseline": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "differs": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "macos": {
+              "type": "object",
+              "required": [
+                "installed",
+                "baseline",
+                "differs"
+              ],
+              "properties": {
+                "installed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "baseline": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "differs": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

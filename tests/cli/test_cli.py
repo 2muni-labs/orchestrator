@@ -6735,14 +6735,22 @@ def test_explore_saves_a_checked_answer(
 def test_explore_changes_no_task_state(
     orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    def status() -> tuple[int, dict[str, object]]:
+        # elapsed_sec follows the wall clock and can move by a second between
+        # the two calls on a slow machine; the task state is what must not move.
+        code, data = orch("status")
+        for task in data["tasks"]:
+            task.pop("elapsed_sec")
+        return code, data
+
     insert(env, state=TaskState.PREPARED)
-    before = orch("status")
+    before = status()
     explore_question(env)
     explore_answer(env, monkeypatch, valid_explore_answer())
     monkeypatch.setenv("ORCH_TARGET", TARGET)
     code, data = orch("explore", str(explore_question(env)))
     assert code == 0, data
-    assert orch("status") == before
+    assert status() == before
 
 
 @pytest.mark.usefixtures("target")

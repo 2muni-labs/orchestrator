@@ -10,7 +10,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "schemas" / "cli"
 PIPELINE = ROOT / "src" / "orch"
-COMMANDS = ("status", "show", "events", "doctor")
+# (command, version). events.v1.json stays until the version pull request that
+# follows m-p5-input-wait removes it (technical design 4.13, ADR 0030).
+SCHEMAS = (
+    ("status", 1),
+    ("show", 1),
+    ("events", 1),
+    ("events", 2),
+    ("doctor", 1),
+    ("versions", 1),
+    ("roadmap", 1),
+)
 WORKSPACE = "workspace"
 
 
@@ -18,28 +28,32 @@ def load(name: str) -> dict[str, object]:
     return json.loads((CONTRACT / name).read_text(encoding="utf-8"))
 
 
-def test_the_contract_holds_one_schema_per_command() -> None:
+def test_the_contract_holds_exactly_the_listed_schemas() -> None:
     assert sorted(path.name for path in CONTRACT.iterdir()) == sorted(
-        f"{command}.v1.json" for command in COMMANDS
+        f"{command}.v{version}.json" for command, version in SCHEMAS
     )
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_each_schema_is_a_valid_2020_12_schema(command: str) -> None:
-    schema = load(f"{command}.v1.json")
+@pytest.mark.parametrize(("command", "version"), SCHEMAS)
+def test_each_schema_is_a_valid_2020_12_schema(command: str, version: int) -> None:
+    schema = load(f"{command}.v{version}.json")
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     jsonschema.Draft202012Validator.check_schema(schema)
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_each_schema_versions_its_objects_and_errors(command: str) -> None:
-    schema = load(f"{command}.v1.json")
+@pytest.mark.parametrize(("command", "version"), SCHEMAS)
+def test_each_schema_versions_its_objects_and_errors(
+    command: str, version: int
+) -> None:
+    schema = load(f"{command}.v{version}.json")
+    assert schema["$id"].endswith(f"/schemas/cli/{command}.v{version}.json")
     validator = jsonschema.Draft202012Validator(schema)
-    error = {"ok": False, "schema_version": 1, "error": "usage", "message": "m"}
+    error = {"ok": False, "schema_version": version, "error": "usage", "message": "m"}
     assert list(validator.iter_errors(error)) == []
     unversioned = {"ok": False, "error": "usage", "message": "m"}
     assert list(validator.iter_errors(unversioned)) != []
-    assert list(validator.iter_errors({**error, "schema_version": 2})) != []
+    other = {**error, "schema_version": version + 1}
+    assert list(validator.iter_errors(other)) != []
 
 
 # Pipeline modules never import workspace code.

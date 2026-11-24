@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/2muni-labs/orchestrator/schemas/cli/roadmap.v1.json",
+  "title": "orch roadmap output",
+  "description": "JSON output of orch roadmap: the target's docs/roadmap.toml read from origin/<default branch>, with progress per milestone from the tasks' milestone and state; tasks linked by replaces form one chain. An invalid roadmap is an error object with problems. Version 1. Fields may be added within this version and readers must ignore fields they do not know; removing, renaming or changing a field's meaning or format needs version 2 (technical design 4.13).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "target",
+        "ref",
+        "commit",
+        "phases",
+        "unknown_milestones",
+        "no_milestone"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "target": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "status",
+              "exit",
+              "milestones"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "done",
+                  "current",
+                  "planned"
+                ]
+              },
+              "exit": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "milestones": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "title",
+                    "total",
+                    "done",
+                    "progress",
+                    "chains"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "done": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "progress": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "chains": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "tasks",
+                          "state"
+                        ],
+                        "properties": {
+                          "tasks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "state": {
+                            "enum": [
+                              "prepared",
+                              "queued",
+                              "reserved",
+                              "running",
+                              "judging",
+                              "gating",
+                              "reviewing",
+                              "ready",
+                              "conflict",
+                              "pr_open",
+                              "closed",
+                              "blocked",
+                              "discarded",
+                              "orphaned"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "unknown_milestones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "milestone",
+              "chains"
+            ],
+            "properties": {
+              "milestone": {
+                "type": "string"
+              },
+              "chains": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "tasks",
+                    "state"
+                  ],
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "state": {
+                      "enum": [
+                        "prepared",
+                        "queued",
+                        "reserved",
+                        "running",
+                        "judging",
+                        "gating",
+                        "reviewing",
+                        "ready",
+                        "conflict",
+                        "pr_open",
+                        "closed",
+                        "blocked",
+                        "discarded",
+                        "orphaned"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "no_milestone": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "schema_version",
+        "error",
+        "message"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "where",
+              "reason"
+            ],
+            "properties": {
+              "where": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
