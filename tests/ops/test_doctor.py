@@ -15,6 +15,7 @@ import pytest
 from orch import (
     config,
     doctor,
+    latest,
     lifecycle,
     notify,
     selfcheck,
@@ -2050,3 +2051,94 @@ def test_an_exception_in_the_check_is_isolated(
     report = h.go()
     assert report.errors == ("agent_versions RuntimeError",)
     assert [c.item for c in report.checks][-1] == "network"
+
+
+# agent_latest (m-p5-latest)
+
+HUB = Path("/abs/hub")
+
+
+class LatestCheck:
+    def __init__(self, result: tuple[CheckLevel, str | None] | Exception) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs: object) -> tuple[CheckLevel, str | None]:
+        self.calls.append(kwargs)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_the_default_latest_check_is_the_latest_module() -> None:
+    parameters = inspect.signature(run_doctor).parameters
+    assert parameters["check_latest"].default is latest.check
+    assert parameters["check_latest"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["hub"].default is None
+    assert parameters["hub"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_agent_latest_runs_after_agent_versions_with_the_hub(
+    h: Harness, orch_home: Path
+) -> None:
+    check = LatestCheck((CheckLevel.OK, None))
+    report = h.go(hub=HUB, check_latest=check)
+    items = [c.item for c in report.checks]
+    assert items[-2:] == ["agent_versions", "agent_latest"]
+    assert result_of(report, "agent_latest") == (CheckLevel.OK, None)
+    assert check.calls == [{"orch_home": orch_home, "hub": HUB, "now": NOW}]
+
+
+def test_without_a_hub_agent_latest_is_skipped(h: Harness) -> None:
+    check = LatestCheck((CheckLevel.WARN, "claude=behind"))
+    report = h.go(check_latest=check)
+    assert "agent_latest" not in [c.item for c in report.checks]
+    assert check.calls == []
+
+
+def test_a_behind_agent_warns_once_without_pausing(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    check = LatestCheck((CheckLevel.WARN, "claude=behind"))
+    report = h.go(hub=HUB, check_latest=check)
+    assert result_of(report, "agent_latest") == (CheckLevel.WARN, "claude=behind")
+    assert report.paused == ()
+    assert pauses(conn) == []
+    assert stored(conn, "agent_latest") is CheckLevel.WARN
+    assert h.events() == ["doctor_agent_latest"]
+    assert h.sent[0]["level"] == "warn"
+    h.go(hub=HUB, check_latest=check)
+    assert h.events() == ["doctor_agent_latest"]
+
+
+def test_an_ok_detail_is_kept_without_notifying(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    check = LatestCheck((CheckLevel.OK, "codex=unknown"))
+    report = h.go(hub=HUB, check_latest=check)
+    assert result_of(report, "agent_latest") == (CheckLevel.OK, "codex=unknown")
+    assert h.events() == []
+
+
+def test_agent_latest_never_touches_an_existing_pause(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    h.current = CurrentCheck("no_record", None, None)
+    report = h.go(hub=HUB, check_latest=LatestCheck((CheckLevel.OK, None)))
+    assert report.paused == ("agent_unverified",)
+    assert pauses(conn) == ["agent_unverified"]
+
+
+def test_a_failing_latest_check_is_an_error_and_others_still_run(
+    h: Harness, conn: sqlite3.Connection
+) -> None:
+    check = LatestCheck(latest.LatestError("pins"))
+    report = h.go(hub=HUB, check_latest=check)
+    assert report.errors == ("agent_latest LatestError",)
+    assert "agent_latest" not in [c.item for c in report.checks]
+    assert result_of(report, "agent_versions") == (CheckLevel.OK, None)
+    assert stored(conn, "agent_latest") is None
+
+
+def test_agent_latest_is_not_a_pause_item() -> None:
+    assert "agent_latest" not in doctor.PAUSE_ITEMS

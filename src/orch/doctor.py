@@ -13,6 +13,7 @@ from typing import Final
 from orch import (
     config,
     gc,
+    latest,
     lifecycle,
     notify,
     selfcheck,
@@ -80,6 +81,8 @@ def run_doctor(
     check_current_codex: Callable[
         ..., selfcheck.CurrentCheck
     ] = selfcheck_codex.check_current_codex,
+    hub: Path | None = None,
+    check_latest: Callable[..., tuple[CheckLevel, str | None]] = latest.check,
 ) -> DoctorReport:
     """Check health independently, pause dispatch as needed and kill stuck runs."""
     checks: list[DoctorCheck] = []
