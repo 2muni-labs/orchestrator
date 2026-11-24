@@ -110,6 +110,11 @@ def run_doctor(
         if item == "track_sync":
             return track_sync_check(conn, target, now=now)
 
+        if item == "agent_latest":
+            if hub is None:
+                return None
+            return check_latest(orch_home=orch_home, hub=hub, now=now)
+
         if item == "agent_versions":
             currents = {
                 "claude": (
@@ -228,6 +233,7 @@ def run_doctor(
         "disk",
         "network",
         "agent_versions",
+        "agent_latest",
     ):
         process_item(item)
 

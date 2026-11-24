@@ -1157,6 +1157,7 @@ def _command(
         assert hub is not None
         report = doctor.run_doctor(
             conn,
+            hub=hub,
             settings=settings,
             targets=config.load_targets(hub / "targets.toml"),
             orch_home=orch_home,
