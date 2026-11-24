@@ -239,6 +239,12 @@ def main():
     elif scenario == "detached_child":
         start_child(start_new_session=True)
         sleep_forever()
+    elif scenario == "explore_answer":
+        time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "0")))
+        with open(os.environ["ORCH_FAKE_ANSWER_FILE"], encoding="utf-8") as source:
+            text = source.read()
+        with open(output, "w", encoding="utf-8") as handle:
+            handle.write(text)
     elif scenario == "review_pass":
         write_review(output, review_id)
     elif scenario == "review_block":

@@ -20,6 +20,7 @@ from orch import (
     credentials,
     doctor,
     events,
+    explore,
     fulltest,
     gate,
     gc,
@@ -158,6 +159,9 @@ def _parser() -> argparse.ArgumentParser:
     review_parser.add_argument("save_id", metavar="ID", nargs="?")
     review_parser.add_argument("--by", choices=("codex",))
     review_parser.add_argument("--triage", type=Path, metavar="FILE")
+    explore_parser = commands.add_parser("explore")
+    explore_parser.add_argument("question", type=Path, metavar="QUESTION")
+    explore_parser.add_argument("--dir", type=Path, metavar="DIR")
     wait = commands.add_parser("wait")
     wait.add_argument("id", nargs="?")
     wait.add_argument("--pr")
@@ -717,6 +721,35 @@ def _execute(
         return _track(args, secrets)
     if args.command == "fulltest":
         return _fulltest(args, secrets)
+    if args.command == "explore":
+        name = os.environ.get("ORCH_TARGET")
+        if not name:
+            raise _UsageError("ORCH_TARGET is required for explore")
+        orch_home, hub = _environment(args.command, require_hub=True)
+        assert hub is not None
+        target = _target(hub, name)
+        report = explore.run_explore(
+            args.question,
+            dir_arg=args.dir,
+            target=target,
+            config=config.load_config(orch_home),
+            paths=config.target_paths(orch_home, name),
+            environ=os.environ,
+        )
+        code = {
+            explore.ExploreOutcome.SAVED: 0,
+            explore.ExploreOutcome.INVALID: 20,
+            explore.ExploreOutcome.FAILED: 20,
+            explore.ExploreOutcome.TIMEOUT: 20,
+            explore.ExploreOutcome.BUSY: 30,
+            explore.ExploreOutcome.QUOTA: 40,
+        }[report.outcome]
+        return code, {
+            "ok": report.outcome == explore.ExploreOutcome.SAVED,
+            **asdict(report),
+            "answer_path": str(report.answer_path),
+            "log_path": str(report.log_path) if report.log_path is not None else None,
+        }
     if args.command == "sandbox":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv:
@@ -1423,6 +1456,7 @@ def main(argv: list[str] | None = None) -> int:
         except (
             lifecycle.LifecycleError,
             review.ReviewFlowError,
+            explore.ExploreError,
             gate.GateError,
             gitops.LeaseRejectedError,
             launcher.LaunchError,
