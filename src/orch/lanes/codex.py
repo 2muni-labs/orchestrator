@@ -21,7 +21,7 @@ from orch.lanes.base import (
     matches_limit,
     resolve_agent,
 )
-from orch.models import Effort  # noqa: F401 (used by the implementation)
+from orch.models import Effort
 from orch.taskfile import TaskSpec
 
 PROVIDER = "codex"
@@ -189,7 +189,50 @@ def build_review_command(
     run_sandbox: CodexSandbox,
 ) -> LaneCommand:
     """codex exec under the review-mode orch profile, behind the proxy."""
-    raise NotImplementedError
+    if effort not in Effort:
+        raise LaneError("Codex requires a valid effort")
+    agent = resolve_agent(PROVIDER, config.codex_path, environ)
+    home = codex_home(environ)
+    argv = (
+        str(agent),
+        "exec",
+        "--json",
+        *ISOLATION_ARGS,
+        "-C",
+        str(worktree),
+        "-m",
+        model,
+        "-c",
+        f"model_reasoning_effort={effort}",
+        "--sandbox",
+        "danger-full-access",
+        "-o",
+        str(output_path),
+        "-",
+    )
+    try:
+        wrapped = sandbox.wrap_codex(
+            argv,
+            executable=sandbox.executable(environ),
+            worktree=worktree,
+            tmpdir=run_sandbox.tmpdir,
+            home=Path(environ["HOME"]),
+            codex_home=home,
+            port=run_sandbox.port,
+            output=output_path,
+        )
+    except ValueError as exc:
+        raise LaneError("Cannot build the Codex sandbox") from exc
+    env = child_env(environ)
+    env.update(TMPDIR=str(run_sandbox.tmpdir))
+    env.update(proxy.proxy_env(run_sandbox.port))
+    return LaneCommand(
+        provider=PROVIDER,
+        argv=tuple(wrapped),
+        cwd=worktree,
+        env=env,
+        stdin_text=prompt,
+    )
 
 
 def _json_object(line: str) -> dict[str, object] | None:
