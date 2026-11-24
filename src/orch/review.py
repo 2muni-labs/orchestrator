@@ -1,9 +1,9 @@
 """orch review: run a Codex review, store a review verdict, validate a triage."""
 
 import os
-import signal
+import signal  # noqa: F401 (used by the implementation)
 import sqlite3
-import subprocess
+import subprocess  # noqa: F401 (used by the implementation)
 import tempfile
 import tomllib
 from collections import Counter
@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from orch import config, gitops, results, runner, store
+from orch import config, gitops, results, runner, store  # noqa: F401 (used by the implementation)
 from orch.config import Config, Target, TargetPaths
-from orch.lanes import base, codex
+from orch.lanes import base, codex  # noqa: F401 (used by the implementation)
 from orch.models import Lane, Review, Severity, Task, TaskState, Verdict
 from orch.redact import RedactionError, redact
 
@@ -303,6 +303,7 @@ class ReviewRun:
     log_path: Path
     output_path: Path
     diff_path: Path
+    proxy_denials: int
 
 
 def review_prompt(task_id: str, *, spec_path: Path, diff_path: Path) -> str:
@@ -355,82 +356,5 @@ def run_codex_review(
     spec_path = paths.tasks / f"{task_id}.md"
     if not spec_path.is_file():
         raise ReviewFlowError("Task specification is missing")
-
-    base_sha = gitops.merge_base(worktree, f"origin/{target.default_branch}")
-    diff_text = gitops.diff(worktree, base_sha)
-    diff_path = paths.reviews / f"{task_id}.diff"
-    diff_path.parent.mkdir(parents=True, exist_ok=True)
-    diff_path.write_text(diff_text, encoding="utf-8")
-    log_path = next_review_log(paths.logs, task_id)
-    output_path = log_path.with_suffix(".out")
-    state = task.state
-    outcome = ReviewOutcome.FAILED
-    exit_code = None
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.unlink(missing_ok=True)
-        command = codex.build_review_command(
-            worktree=worktree,
-            prompt=review_prompt(task_id, spec_path=spec_path, diff_path=diff_path),
-            output_path=output_path,
-            model=model,
-            effort=effort,
-            config=config,
-            environ=environ,
-        )
-        with (
-            tempfile.TemporaryFile(dir=log_path.parent) as stdin,
-            log_path.open("xb") as log,
-        ):
-            stdin.write(command.stdin_text.encode("utf-8"))
-            stdin.seek(0)
-            process = subprocess.Popen(
-                list(command.argv),
-                cwd=command.cwd,
-                env=dict(command.env),
-                stdin=stdin,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-    except OSError, base.LaneError:
-        pass
-    else:
-        timed_out = False
-        try:
-            process.wait(
-                timeout=task.timeout_sec if timeout_sec is None else timeout_sec
-            )
-        except subprocess.TimeoutExpired:
-            runner.stop_process(process)
-            timed_out = True
-        else:
-            runner._send(process.pid, set(), signal.SIGKILL)
-        exit_code = process.returncode
-        if timed_out:
-            outcome = ReviewOutcome.TIMEOUT
-        elif exit_code == 0 and output_path.exists():
-            try:
-                text = output_path.read_text(encoding="utf-8")
-                state = save_review(
-                    conn, task_id, text, paths=paths, home=home, orch_home=orch_home
-                )
-            except ReviewFlowError, OSError, UnicodeError:
-                outcome = ReviewOutcome.INVALID
-            else:
-                outcome = ReviewOutcome.SAVED
-        elif codex.hit_usage_limit(
-            log_path,
-            patterns=base.patterns_for(config, "codex"),
-            environ=environ,
-        ):
-            outcome = ReviewOutcome.QUOTA
-    return ReviewRun(
-        task_id=task_id,
-        outcome=outcome,
-        state=state,
-        exit_code=exit_code,
-        log_path=log_path,
-        output_path=output_path,
-        diff_path=diff_path,
-    )
+    del worktree, spec_path  # used by the implementation
+    raise NotImplementedError

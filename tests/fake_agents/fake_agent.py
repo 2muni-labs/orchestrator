@@ -210,6 +210,22 @@ def main():
         with open(os.environ["ORCH_FAKE_ENV_FILE"], "w", encoding="utf-8") as handle:
             json.dump(values, handle)
         report(worktree, task_id)
+    elif scenario in ("review_env_values", "review_env_then_hang"):
+        names = PROXY_VARS + ("TMPDIR",)
+        values = {name: os.environ.get(name) for name in names}
+        tmpdir = os.environ.get("TMPDIR")
+        values["tmpdir_is_dir"] = bool(tmpdir) and os.path.isdir(tmpdir)
+        with open(os.environ["ORCH_FAKE_ENV_FILE"], "w", encoding="utf-8") as handle:
+            json.dump(values, handle)
+        if scenario == "review_env_then_hang":
+            sleep_forever()
+        write_review(output, review_id)
+    elif scenario == "review_slow_pass":
+        time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
+        write_review(output, review_id)
+    elif scenario == "review_pass_then_hang":
+        write_review(output, review_id)
+        sleep_forever()
     elif scenario == "slow_success":
         time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
         touch(worktree, CHANGED_FILE)

@@ -21,7 +21,7 @@ from orch.lanes.base import (
     matches_limit,
     resolve_agent,
 )
-from orch.models import Effort
+from orch.models import Effort  # noqa: F401 (used by the implementation)
 from orch.taskfile import TaskSpec
 
 PROVIDER = "codex"
@@ -186,36 +186,10 @@ def build_review_command(
     effort: str,
     config: Config,
     environ: Mapping[str, str],
+    run_sandbox: CodexSandbox,
 ) -> LaneCommand:
-    """codex exec in a read-only sandbox; the final message goes to output_path."""
-    try:
-        Effort(effort)
-    except ValueError as exc:
-        raise LaneError("Invalid Codex review effort") from exc
-    agent = resolve_agent(PROVIDER, config.codex_path, environ)
-    return LaneCommand(
-        provider=PROVIDER,
-        argv=(
-            str(agent),
-            "exec",
-            "--json",
-            *ISOLATION_ARGS,
-            "-C",
-            str(worktree),
-            "-m",
-            model,
-            "-c",
-            f"model_reasoning_effort={effort}",
-            "--sandbox",
-            "read-only",
-            "-o",
-            str(output_path),
-            "-",
-        ),
-        cwd=worktree,
-        env=child_env(environ),
-        stdin_text=prompt,
-    )
+    """codex exec under the review-mode orch profile, behind the proxy."""
+    raise NotImplementedError
 
 
 def _json_object(line: str) -> dict[str, object] | None:

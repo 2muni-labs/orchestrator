@@ -1026,6 +1026,7 @@ def test_a_codex_pass_is_saved_and_moves_to_ready(
         "state": "ready",
         "exit_code": 0,
         **review_paths(env),
+        "proxy_denials": 0,
     }
     assert state_of(env) is TaskState.READY
     saved = json.loads(env.paths.review_path(TASK).read_text(encoding="utf-8"))
@@ -1086,7 +1087,37 @@ def test_the_review_runs_codex_with_the_policy_model_and_effort(
     argv = json.loads(args_file.read_text(encoding="utf-8"))["argv"]
     assert argv[argv.index("-m") + 1] == "gpt-6.1-sol"
     assert "model_reasoning_effort=medium" in argv
-    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize(
+    ("extra", "outcome"),
+    [
+        ({"ORCH_FAKE_NO_COMMANDS": "1"}, "invalid"),
+        ({"ORCH_FAKE_PROXY": "fail"}, "failed"),
+    ],
+)
+def test_a_review_without_commands_or_proxy_keeps_reviewing(
+    orch: Call,
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: dict[str, str],
+    outcome: str,
+) -> None:
+    make_codex_reviewing(orch, env)
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_pass")
+    for name, value in extra.items():
+        monkeypatch.setenv(name, value)
+    code, data = orch("review", TASK, "--by", "codex", unchecked=True)
+    assert code == 20, data
+    assert (data["outcome"], data["state"], data["proxy_denials"]) == (
+        outcome,
+        "reviewing",
+        0,
+    )
+    assert state_of(env) is TaskState.REVIEWING
+    assert not env.paths.review_path(TASK).exists()
 
 
 @pytest.mark.usefixtures("target")
@@ -1123,6 +1154,7 @@ def test_each_outcome_has_its_exit_code_and_the_call_is_exact(
             log_path=paths.logs / "review" / f"{task_id}.1.log",
             output_path=paths.logs / "review" / f"{task_id}.1.out",
             diff_path=paths.reviews / f"{task_id}.diff",
+            proxy_denials=2,
         )
 
     monkeypatch.setattr(review, "run_codex_review", fake)
@@ -1135,6 +1167,7 @@ def test_each_outcome_has_its_exit_code_and_the_call_is_exact(
         "state": "reviewing",
         "exit_code": None if outcome == "timeout" else 1,
         **review_paths(env),
+        "proxy_denials": 2,
     }
     assert len(calls) == 1
     call = calls[0]
