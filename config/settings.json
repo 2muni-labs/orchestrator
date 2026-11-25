@@ -24,9 +24,51 @@
     ],
     "Notification": [
       {
-        "matcher": "permission_prompt",
+        "matcher": "permission_prompt|idle_prompt",
         "hooks": [
           { "type": "command", "command": "orch hook notification", "timeout": 15 }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook permission-request", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook post-tool-use", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook post-tool-use-failure", "timeout": 10 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook user-prompt-submit", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook stop", "timeout": 10 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "orch hook session-end", "timeout": 10 }
         ]
       }
     ]

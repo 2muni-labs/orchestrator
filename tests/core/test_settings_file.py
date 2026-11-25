@@ -38,6 +38,49 @@ def test_the_hooks_call_orch_hook() -> None:
     assert commands("Notification") == ["orch hook notification"]
 
 
+WAIT_HOOKS = {
+    "PermissionRequest": "permission-request",
+    "PostToolUse": "post-tool-use",
+    "PostToolUseFailure": "post-tool-use-failure",
+    "UserPromptSubmit": "user-prompt-submit",
+    "Stop": "stop",
+    "SessionEnd": "session-end",
+}
+
+
+def test_the_input_wait_hooks_are_registered() -> None:
+    # Technical design 4.13: one plain command per event, never "|| exit 2",
+    # so a failing wait hook can never block a tool call or a prompt.
+    assert set(SETTINGS["hooks"]) == {
+        "SessionStart",
+        "PreToolUse",
+        "SubagentStop",
+        "Notification",
+        *WAIT_HOOKS,
+    }
+    for event, name in WAIT_HOOKS.items():
+        assert commands(event) == [f"orch hook {name}"]
+        assert all("matcher" not in group for group in SETTINGS["hooks"][event])
+
+
+def test_notification_matches_permission_and_idle_prompts() -> None:
+    assert [group["matcher"] for group in SETTINGS["hooks"]["Notification"]] == [
+        "permission_prompt|idle_prompt"
+    ]
+
+
+def test_every_registered_hook_name_exists_in_orch() -> None:
+    # A name the CLI rejects would fail on every event it is registered for.
+    from orch import cli
+
+    names = {
+        command.removeprefix("orch hook ").removesuffix(" || exit 2")
+        for event in SETTINGS["hooks"]
+        for command in commands(event)
+    }
+    assert names <= set(cli._HOOK_NAMES)
+
+
 def test_pre_bash_matches_only_bash() -> None:
     assert [group["matcher"] for group in SETTINGS["hooks"]["PreToolUse"]] == ["Bash"]
 
