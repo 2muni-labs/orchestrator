@@ -37,6 +37,7 @@ from orch import (
     scheduler,
     service,
     store,
+    versions,
     waiter,
     watch,
 )
@@ -7142,3 +7143,107 @@ def test_roadmap_does_not_fetch(
     code, data = orch("roadmap")
     assert code == 0, data
     assert data["commit"] == pushed
+
+
+# orch versions (m-p5-versions, schemas/cli/versions.v1.json)
+
+
+def fake_binary(path: Path, output: str) -> Path:
+    write(path, f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
+    path.chmod(0o755)
+    return path
+
+
+def versions_setup(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = env.home / "fakebin"
+    claude = fake_binary(bin_dir / "claude", "2.1.330 (Claude Code)")
+    codex = fake_binary(bin_dir / "codex", "codex-cli 0.171.0")
+    fake_binary(bin_dir / "tmux", "tmux 3.8")
+    write(
+        env.orch_home / "config", f'[agents]\nclaude = "{claude}"\ncodex = "{codex}"\n'
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+def test_versions_reports_configured_binaries_and_the_contract(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    versions_setup(env, monkeypatch)
+    code, data = orch("versions")
+    assert code == 0, data
+    assert contract_errors("versions", data) == []
+    assert list(data)[:2] == ["ok", "schema_version"]
+    assert data["agents"]["claude"]["installed"] == "2.1.330"  # type: ignore[index]
+    assert data["agents"]["codex"]["installed"] == "0.171.0"  # type: ignore[index]
+    assert data["tools"]["tmux"]["installed"] == "3.8"  # type: ignore[index]
+    assert data["orch"] == {  # the env hub is not a git clone
+        "installed": importlib.metadata.version("orch"),
+        "latest": None,
+    }
+    assert not config.state_db_path(env.orch_home).exists()
+
+
+def test_versions_without_tmux_on_path_reports_it_unknown(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    versions_setup(env, monkeypatch)
+    (env.home / "fakebin" / "tmux").unlink()
+    code, data = orch("versions")
+    assert code == 0, data
+    assert data["tools"]["tmux"]["installed"] is None  # type: ignore[index]
+    assert data["tools"]["tmux"]["differs"] is None  # type: ignore[index]
+
+
+def test_versions_without_agent_paths_reports_them_unknown(
+    orch: Call, env: Env
+) -> None:
+    code, data = orch("versions")
+    assert code == 0, data
+    assert contract_errors("versions", data) == []
+    for agent in ("claude", "codex"):
+        assert data["agents"][agent]["installed"] is None  # type: ignore[index]
+
+
+def test_versions_with_a_bad_config_is_a_config_error(orch: Call, env: Env) -> None:
+    write(env.orch_home / "config", "[agents]\nclaude = 5\n")
+    code, data = orch("versions")
+    assert (code, data["error"], data["schema_version"]) == (USAGE, "config", 1)
+    assert contract_errors("versions", data) == []
+
+
+def test_versions_with_bad_pins_is_a_config_error(orch: Call, env: Env) -> None:
+    pins = env.hub / "config" / "pins.toml"
+    pins.unlink()
+    write(pins, "[claude]\nversion = 1\n")
+    code, data = orch("versions")
+    assert (code, data["error"], data["schema_version"]) == (USAGE, "config", 1)
+    assert contract_errors("versions", data) == []
+
+
+def test_versions_needs_the_hub(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    code, data = orch("versions")
+    assert_error((code, data), USAGE, "usage")
+    assert data["schema_version"] == 1
+
+
+def test_versions_hands_its_inputs_to_build_report(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    versions_setup(env, monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    def fake(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"agents": {}, "orch": {}, "tools": {}}
+
+    monkeypatch.setattr(versions, "build_report", fake)
+    code, data = orch("versions")
+    assert code == 0, data
+    [call] = calls
+    assert call["orch_home"] == env.orch_home
+    assert call["hub"] == env.hub
+    assert call["claude_path"] == env.home / "fakebin" / "claude"
+    assert call["codex_path"] == env.home / "fakebin" / "codex"
+    assert call["tmux_path"] == env.home / "fakebin" / "tmux"
+    assert call["orch_version"] == importlib.metadata.version("orch")
