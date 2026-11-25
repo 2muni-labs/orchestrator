@@ -4,8 +4,10 @@ import json
 import os
 import re
 import tempfile
+import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -60,14 +62,28 @@ class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: object,
         newurl: str,
     ) -> urllib.request.Request | None:
-        raise NotImplementedError
+        if urllib.parse.urlsplit(newurl).scheme.lower() != "https":
+            raise urllib.error.URLError("Redirect to a non-https URL")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def http_fetch(url: str, timeout: float) -> tuple[int, bytes]:
     """GET url and return its status and at most BODY_LIMIT + 1 body bytes."""
+    opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
+    deadline = time.monotonic() + timeout
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            return response.status, response.read(BODY_LIMIT + 1)
+        with opener.open(url, timeout=timeout) as response:
+            body = bytearray()
+            while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Latest version fetch exceeded its deadline")
+                chunk = response.read(READ_CHUNK)
+                if not chunk:
+                    break
+                body.extend(chunk)
+                if len(body) > BODY_LIMIT:
+                    break
+            return response.status, bytes(body[: BODY_LIMIT + 1])
     except urllib.error.HTTPError as exc:
         exc.close()
         return exc.code, b""
@@ -220,7 +236,9 @@ def current_versions(orch_home: Path) -> dict[str, str | None]:
     for agent in AGENTS:
         current = state["agents"].get(agent, {}).get("current")
         if current is not None:
-            versions[agent] = current["version"]
+            version = current["version"]
+            if isinstance(version, str) and re.fullmatch(VERSION_PATTERN, version):
+                versions[agent] = version
     return versions
 
 
