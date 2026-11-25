@@ -168,6 +168,25 @@
               }
             }
           }
+        },
+        "doctor": {
+          "type": "object",
+          "required": [
+            "last_at",
+            "stale"
+          ],
+          "properties": {
+            "last_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "stale": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },
