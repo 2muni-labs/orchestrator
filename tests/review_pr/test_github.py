@@ -1409,3 +1409,23 @@ def test_compare_failure_hides_the_token(gh: FakeGh) -> None:
         compare(github="owner/sample", base="main", head=SHA, token=TOKEN)
     assert "HTTP 404" in str(caught.value)
     assert TOKEN not in error_chain_text(caught.value)
+
+
+# Base endings (m-compare-base-dot, #501)
+
+
+@pytest.mark.parametrize("base", ["a.", "main.", "release/", "release/1.2.", "v1/"])
+def test_compare_refuses_a_base_ending_with_a_dot_or_a_slash(
+    gh: FakeGh, base: str
+) -> None:
+    with pytest.raises(GitHubError):
+        compared(gh, COMPARED, base=base)
+    assert gh.calls() == []
+
+
+@pytest.mark.parametrize("base", ["release/1.2", "v1.0", "a", "feature/x-y_z"])
+def test_compare_accepts_a_base_with_inner_dots_and_slashes(
+    gh: FakeGh, base: str
+) -> None:
+    compared(gh, COMPARED, base=base)
+    assert gh.calls() == [["api", f"repos/owner/sample/compare/{base}...{SHA}"]]
