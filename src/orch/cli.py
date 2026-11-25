@@ -44,6 +44,7 @@ from orch import (
     taskfile,
     tracking,
     tracksync,
+    versions,
     waiter,
     watch,
 )
@@ -195,6 +196,7 @@ def _parser() -> argparse.ArgumentParser:
     open_parser.add_argument("--no-attach", action="store_true")
     commands.add_parser("hook").add_argument("name", choices=_HOOK_NAMES)
     commands.add_parser("doctor")
+    commands.add_parser("versions")
     selfcheck_parser = commands.add_parser("selfcheck")
     switch = selfcheck_parser.add_mutually_exclusive_group()
     switch.add_argument(
@@ -762,6 +764,22 @@ def _roadmap(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
+    if args.command == "versions":
+        orch_home, hub = _environment("versions", require_hub=True)
+        assert hub is not None
+        try:
+            settings = config.load_config(orch_home)
+            tmux = shutil.which("tmux")
+            return 0, versions.build_report(
+                orch_home=orch_home,
+                hub=hub,
+                claude_path=settings.claude_path,
+                codex_path=settings.codex_path,
+                tmux_path=Path(tmux) if tmux and Path(tmux).is_absolute() else None,
+                orch_version=importlib.metadata.version("orch"),
+            )
+        except (config.ConfigError, versions.VersionsError) as exc:
+            return 64, {"ok": False, "error": "config", "message": str(exc)}
     if args.command == "events":
         return _events(args)
     if args.command == "roadmap":
@@ -1484,6 +1502,7 @@ def main(argv: list[str] | None = None) -> int:
     secrets: list[str] = []
     command = (sys.argv[1:] if argv is None else argv)[:1]
     is_contract_command = bool(command) and command[0] in {
+        "versions",
         "status",
         "show",
         "events",
