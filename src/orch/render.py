@@ -80,12 +80,30 @@ DOCTOR_STALE_AFTER = timedelta(minutes=30)
 
 def doctor_state(checks: Iterable[DoctorCheck], now: datetime) -> dict[str, object]:
     """Return the last doctor run and whether it is stale (B46)."""
-    raise NotImplementedError
+    latest: datetime | None = None
+    last_at: str | None = None
+    for check in checks:
+        try:
+            at = datetime.fromisoformat(check.at)
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            continue
+        if latest is None or at > latest:
+            latest = at
+            last_at = check.at
+    return {
+        "last_at": last_at,
+        "stale": latest is None or now - latest >= DOCTOR_STALE_AFTER,
+    }
 
 
 def doctor_stale_line(state: Mapping[str, object]) -> str | None:
     """Return the line that reports a stale doctor, or None."""
-    raise NotImplementedError
+    if not state["stale"]:
+        return None
+    last_at = state["last_at"]
+    return f"doctor 미실행 (마지막 실행: {last_at if last_at is not None else '없음'})"
 
 
 def todo_text(

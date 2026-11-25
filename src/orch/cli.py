@@ -1120,15 +1120,20 @@ def _command(
         chains = scheduler.blocked_chains(conn, target=session_target)
         pauses = store.list_pauses(conn)
         now = datetime.now(UTC)
+        doctor_status = render.doctor_state(store.list_doctor_checks(conn), now)
         if args.human:
             lines = render.status_lines(tasks, chains, now)
             if pauses:
                 lines.insert(0, "새 배분 중단: " + ", ".join(p.reason for p in pauses))
+            doctor_line = render.doctor_stale_line(doctor_status)
+            if doctor_line is not None:
+                lines.append(doctor_line)
             return 0, {"lines": lines}
         return 0, {
             "tasks": [render.status_row(task, now) for task in tasks],
             "blocked_chains": [asdict(chain) for chain in chains],
             "paused": [asdict(pause) for pause in pauses],
+            "doctor": doctor_status,
         }
 
     # Check task ownership before loading target configuration or issuing a token.
