@@ -85,7 +85,13 @@ def recover(
     return tuple(orphaned)
 
 
-def summary(conn: sqlite3.Connection, *, target: str, orphaned: Sequence[str]) -> str:
+def summary(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    orphaned: Sequence[str],
+    now: datetime,
+) -> str:
     orphaned = [
         task_id
         for task_id in orphaned

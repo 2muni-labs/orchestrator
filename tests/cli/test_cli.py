@@ -15,7 +15,7 @@ import urllib.request
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1805,6 +1805,7 @@ def test_status_on_a_new_home_is_empty(orch: Call) -> None:
             "tasks": [],
             "blocked_chains": [],
             "paused": [],
+            "doctor": {"last_at": None, "stale": True},
         },
     )
 
@@ -1851,6 +1852,7 @@ def test_status_human_shows_elapsed_and_head(
 ) -> None:
     insert(env)
     set_pushed_sha(env, "318f3dd" + "0" * 33)
+    record_doctor_run(env, datetime.now(UTC))
     assert main(["status", "--human"]) == 0
     assert re.fullmatch(
         rf"{TASK} pr_open \d+h \d\dm 318f3dd\n", capsys.readouterr().out
@@ -7247,3 +7249,77 @@ def test_versions_hands_its_inputs_to_build_report(
     assert call["codex_path"] == env.home / "fakebin" / "codex"
     assert call["tmux_path"] == env.home / "fakebin" / "tmux"
     assert call["orch_version"] == importlib.metadata.version("orch")
+
+
+# doctor staleness in orch status (B46, m-doctor-stale)
+
+
+def record_doctor_run(env: Env, at: datetime) -> None:
+    conn = connect(env)
+    try:
+        store.record_doctor_check(
+            conn,
+            target="",
+            item="disk",
+            level=CheckLevel.OK,
+            detail=None,
+            at=at.isoformat(),
+        )
+    finally:
+        conn.close()
+
+
+def test_status_reports_a_doctor_that_never_ran(orch: Call) -> None:
+    code, data = orch("status")
+    assert code == 0, data
+    assert data["doctor"] == {"last_at": None, "stale": True}
+    assert contract_errors("status", data) == []
+
+
+def test_status_reports_a_recent_doctor_run(orch: Call, env: Env) -> None:
+    at = datetime.now(UTC) - timedelta(minutes=5)
+    record_doctor_run(env, at)
+    code, data = orch("status")
+    assert code == 0, data
+    assert data["doctor"] == {"last_at": at.isoformat(), "stale": False}
+    assert contract_errors("status", data) == []
+
+
+def test_status_human_ends_with_the_stale_doctor_line(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    add_pauses(env, "disk")
+    at = datetime.now(UTC) - timedelta(hours=2)
+    record_doctor_run(env, at)
+    assert main(["status", "--human"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "새 배분 중단: disk"
+    assert lines[1].startswith(f"{TASK} pr_open")
+    assert lines[-1] == f"doctor 미실행 (마지막 실행: {at.isoformat()})"
+    assert len(lines) == 3
+
+
+def test_status_human_has_no_doctor_line_after_a_recent_run(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    insert(env)
+    record_doctor_run(env, datetime.now(UTC) - timedelta(minutes=1))
+    assert main(["status", "--human"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f"{TASK} pr_open")
+
+
+def test_status_survives_an_unreadable_doctor_run(orch: Call, env: Env) -> None:
+    conn = connect(env)
+    try:
+        store.record_doctor_check(
+            conn, target="", item="disk", level=CheckLevel.OK, detail=None, at="x"
+        )
+    finally:
+        conn.close()
+    code, data = orch("status")
+    assert code == 0, data
+    assert data["doctor"] == {"last_at": None, "stale": True}
+    assert contract_errors("status", data) == []

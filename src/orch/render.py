@@ -6,10 +6,18 @@ import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from orch.models import Gate, GateResult, Review, Severity, Task, TaskState
+from orch.models import (
+    DoctorCheck,
+    Gate,
+    GateResult,
+    Review,
+    Severity,
+    Task,
+    TaskState,
+)
 from orch.review import Triage, override_section
 from orch.scheduler import BlockedChain
 from orch.tracking import Project, Record
@@ -65,6 +73,19 @@ def status_lines(
         f"{chain.task_id} {chain.state}: {', '.join(chain.causes)}" for chain in chains
     )
     return lines
+
+
+DOCTOR_STALE_AFTER = timedelta(minutes=30)
+
+
+def doctor_state(checks: Iterable[DoctorCheck], now: datetime) -> dict[str, object]:
+    """Return the last doctor run and whether it is stale (B46)."""
+    raise NotImplementedError
+
+
+def doctor_stale_line(state: Mapping[str, object]) -> str | None:
+    """Return the line that reports a stale doctor, or None."""
+    raise NotImplementedError
 
 
 def todo_text(
