@@ -173,6 +173,11 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             PRIMARY KEY (task_id, attempt, gate)
         )""",
     ),
+    (
+        "ALTER TABLE events ADD COLUMN kind TEXT",
+        "ALTER TABLE events ADD COLUMN session_id TEXT",
+        "ALTER TABLE events ADD COLUMN target TEXT",
+    ),
 )
 
 
@@ -796,4 +801,14 @@ def record_wait(
     at: str,
 ) -> int:
     """Record the start or end of a main session input wait and return its id."""
-    raise NotImplementedError
+    if kind not in WAIT_KINDS:
+        raise ValueError(f"Invalid wait kind: {kind}")
+    with transaction(conn):
+        cursor = conn.execute(
+            """INSERT INTO events (
+                task_id, from_state, to_state, actor, note, at, kind,
+                session_id, target
+            ) VALUES (NULL, NULL, NULL, 'hook', ?, ?, ?, ?, ?)""",
+            (note, at, kind, session_id, target),
+        )
+        return cursor.lastrowid

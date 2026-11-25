@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -147,6 +148,12 @@ def handle_session_start(
         if now is None:
             now = datetime.now(UTC)
         orch_home = config.orch_home(environ)
+        target = environ.get("ORCH_TARGET")
+        if target:
+            try:
+                clean_wait_markers(orch_home, target, now=now)
+            except Exception as exc:
+                _log(environ, now, "session-start", "waits " + type(exc).__name__)
         path = config.state_db_path(orch_home)
         if not path.exists():
             return ""
@@ -159,7 +166,6 @@ def handle_session_start(
                     environ, now, "session-start", f"{key} {type(exc).__name__}"
                 ),
             )
-            target = environ.get("ORCH_TARGET")
             context = summary(conn, target=target, orphaned=orphaned) if target else ""
         if not context:
             return ""
@@ -220,30 +226,40 @@ def handle_notification(
         if now is None:
             now = datetime.now(UTC)
         payload = _payload(stdin_text)
-        if payload.get("notification_type") != "permission_prompt":
+        kind = payload.get("notification_type")
+        if kind not in ("permission_prompt", "idle_prompt"):
             return ""
-        orch_home = config.orch_home(environ)
-        outcome = notify.send(
-            "input_wait",
-            settings=config.load_config(orch_home),
-            orch_home=orch_home,
-            home=Path(environ["HOME"]),
-            now=now,
-            target=target,
-            task_id="main",
-            transport=transport,
-            stderr=io.StringIO(),
-        )
-        if outcome in (notify.Outcome.FAILED, notify.Outcome.REFUSED_PERMISSIONS):
-            _log(environ, now, "notification", outcome.value)
     except Exception as exc:
         _log(environ, now, "notification", type(exc).__name__)
+        return ""
+    if kind == "permission_prompt":
+        try:
+            orch_home = config.orch_home(environ)
+            outcome = notify.send(
+                "input_wait",
+                settings=config.load_config(orch_home),
+                orch_home=orch_home,
+                home=Path(environ["HOME"]),
+                now=now,
+                target=target,
+                task_id="main",
+                transport=transport,
+                stderr=io.StringIO(),
+            )
+            if outcome in (notify.Outcome.FAILED, notify.Outcome.REFUSED_PERMISSIONS):
+                _log(environ, now, "notification", outcome.value)
+        except Exception as exc:
+            _log(environ, now, "notification", type(exc).__name__)
+    try:
+        start_wait(environ, payload, note=kind, now=now)
+    except Exception as exc:
+        _log(environ, now, "notification", "wait " + type(exc).__name__)
     return ""
 
 
 def waits_dir(orch_home: Path, target: str) -> Path:
     """Return the directory of the target's open wait markers."""
-    raise NotImplementedError
+    return config.target_paths(orch_home, target).root / "waits"
 
 
 def start_wait(
@@ -254,7 +270,38 @@ def start_wait(
     now: datetime,
 ) -> None:
     """Record a wait start unless the session already has an open wait."""
-    raise NotImplementedError
+    target = environ.get("ORCH_TARGET")
+    session_id = payload.get("session_id")
+    if (
+        not target
+        or not isinstance(session_id, str)
+        or not re.fullmatch(SESSION_ID_PATTERN, session_id)
+    ):
+        return
+    orch_home = config.orch_home(environ)
+    path = config.state_db_path(orch_home)
+    if not path.exists():
+        return
+    marker = waits_dir(orch_home, target) / session_id
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    try:
+        os.close(descriptor)
+        with closing(store.connect(path)) as conn:
+            store.record_wait(
+                conn,
+                kind="wait_start",
+                target=target,
+                session_id=session_id,
+                note=note,
+                at=now.isoformat(),
+            )
+    except Exception:
+        marker.unlink(missing_ok=True)
+        raise
 
 
 def end_wait(
@@ -265,18 +312,62 @@ def end_wait(
     now: datetime,
 ) -> None:
     """Record a wait end when the session has an open wait."""
-    raise NotImplementedError
+    target = environ.get("ORCH_TARGET")
+    session_id = payload.get("session_id")
+    if (
+        not target
+        or not isinstance(session_id, str)
+        or not re.fullmatch(SESSION_ID_PATTERN, session_id)
+    ):
+        return
+    orch_home = config.orch_home(environ)
+    marker = waits_dir(orch_home, target) / session_id
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    path = config.state_db_path(orch_home)
+    if path.exists():
+        with closing(store.connect(path)) as conn:
+            store.record_wait(
+                conn,
+                kind="wait_end",
+                target=target,
+                session_id=session_id,
+                note=note,
+                at=now.isoformat(),
+            )
 
 
 def clean_wait_markers(orch_home: Path, target: str, *, now: datetime) -> int:
     """Remove wait markers older than WAIT_MARKER_MAX_AGE and count them."""
-    raise NotImplementedError
+    try:
+        markers = list(waits_dir(orch_home, target).iterdir())
+    except FileNotFoundError:
+        return 0
+    cutoff = (now - WAIT_MARKER_MAX_AGE).timestamp()
+    removed = 0
+    for marker in markers:
+        try:
+            info = marker.stat(follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                marker.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return removed
 
 
 def handle_permission_request(
     stdin_text: str, environ: Mapping[str, str], *, now: datetime | None = None
 ) -> str:
-    raise NotImplementedError
+    try:
+        if now is None:
+            now = datetime.now(UTC)
+        start_wait(environ, _payload(stdin_text), note="permission_request", now=now)
+    except Exception as exc:
+        _log(environ, now, "permission-request", type(exc).__name__)
+    return ""
 
 
 def handle_wait_end(
@@ -286,7 +377,13 @@ def handle_wait_end(
     hook: str,
     now: datetime | None = None,
 ) -> str:
-    raise NotImplementedError
+    try:
+        if now is None:
+            now = datetime.now(UTC)
+        end_wait(environ, _payload(stdin_text), note=END_HOOKS[hook], now=now)
+    except Exception as exc:
+        _log(environ, now, hook, type(exc).__name__)
+    return ""
 
 
 def run_hook(name: str) -> int:
@@ -309,11 +406,14 @@ def run_hook(name: str) -> int:
     try:
         if name == "pre-bash":
             output = guard.handle(stdin_text, os.environ)
+        elif name in END_HOOKS:
+            output = handle_wait_end(stdin_text, os.environ, hook=name)
         else:
             handler = {
                 "session-start": handle_session_start,
                 "subagent-stop": handle_subagent_stop,
                 "notification": handle_notification,
+                "permission-request": handle_permission_request,
             }[name]
             output = handler(stdin_text, os.environ)
     except BaseException as exc:

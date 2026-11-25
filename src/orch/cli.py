@@ -73,7 +73,18 @@ _REFRESH_COMMANDS = {
 
 
 AGENT_PAUSE = "agent_unverified"
-_HOOK_NAMES = ("session-start", "pre-bash", "subagent-stop", "notification")
+_HOOK_NAMES = (
+    "session-start",
+    "pre-bash",
+    "subagent-stop",
+    "notification",
+    "permission-request",
+    "post-tool-use",
+    "post-tool-use-failure",
+    "user-prompt-submit",
+    "stop",
+    "session-end",
+)
 
 
 class _UsageError(Exception):
@@ -1489,7 +1500,11 @@ def main(argv: list[str] | None = None) -> int:
                 "message": f"내부 오류가 발생했습니다: {exc}",
             }
         if is_contract_command:
-            output = {"ok": output["ok"], "schema_version": 1, **output}
+            output = {
+                "ok": output["ok"],
+                "schema_version": 2 if is_events else 1,
+                **output,
+            }
         print(
             credentials.redact_secrets(json.dumps(output, ensure_ascii=False), secrets)
         )
@@ -1517,7 +1532,11 @@ def main(argv: list[str] | None = None) -> int:
                 "message": "내부 오류가 발생했습니다.",
             }
             if is_contract_command:
-                output = {"ok": output["ok"], "schema_version": 1, **output}
+                output = {
+                    "ok": output["ok"],
+                    "schema_version": 2 if is_events else 1,
+                    **output,
+                }
             print(
                 credentials.redact_secrets(
                     json.dumps(output, ensure_ascii=False), secrets
