@@ -6992,3 +6992,153 @@ def test_explore_bad_arguments_are_a_usage_error(
     orch: Call, args: tuple[str, ...]
 ) -> None:
     assert_error(orch(*args), USAGE, "usage")
+
+
+# orch roadmap (m-p5-roadmap, schemas/cli/roadmap.v1.json)
+
+ROADMAP = """schema_version = 1
+
+[[phase]]
+id = "P5a"
+title = "파이프라인 확장"
+status = "current"
+exit = ["1주 무인 운용"]
+
+  [[phase.milestone]]
+  id = "M19"
+  title = "파이프라인 확장"
+"""
+
+
+def push_roadmap(repo: Path, text: str = ROADMAP) -> str:
+    write(repo / "docs" / "roadmap.toml", text)
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "roadmap")
+    git(repo, "push", "-q", "origin", "main")
+    return git(repo, "rev-parse", "HEAD")
+
+
+def insert_milestone_task(
+    env: Env, task_id: str, state: TaskState, milestone: str | None
+) -> None:
+    insert(env, task_id, state)
+    conn = connect(env)
+    try:
+        conn.execute(
+            "UPDATE tasks SET milestone = ? WHERE id = ?", (milestone, task_id)
+        )
+    finally:
+        conn.close()
+
+
+@pytest.mark.usefixtures("target")
+def test_roadmap_reports_the_session_targets_progress(
+    orch: Call, env: Env, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = push_roadmap(repo)
+    insert_milestone_task(env, "done-1", TaskState.CLOSED, "M19")
+    insert_milestone_task(env, "open-1", TaskState.PR_OPEN, "M19")
+    insert_milestone_task(env, "elsewhere", TaskState.CLOSED, "M77")
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("roadmap")
+    assert code == 0, data
+    assert contract_errors("roadmap", data) == []
+    assert list(data)[:2] == ["ok", "schema_version"]
+    assert (data["target"], data["ref"], data["commit"]) == (
+        TARGET,
+        "origin/main",
+        commit,
+    )
+    [phase] = data["phases"]  # type: ignore[misc]
+    [m19] = phase["milestones"]
+    assert (m19["total"], m19["done"], m19["progress"]) == (2, 1, 0.5)
+    assert data["unknown_milestones"] == [
+        {"milestone": "M77", "chains": [{"tasks": ["elsewhere"], "state": "closed"}]}
+    ]
+    assert data["no_milestone"] == 0
+
+
+@pytest.mark.usefixtures("target")
+def test_roadmap_takes_the_target_option_outside_a_session(
+    orch: Call, repo: Path
+) -> None:
+    push_roadmap(repo)
+    code, data = orch("roadmap", "--target", TARGET)
+    assert code == 0, data
+    assert data["target"] == TARGET
+    assert contract_errors("roadmap", data) == []
+
+
+def test_roadmap_without_a_target_is_no_target(orch: Call) -> None:
+    code, data = orch("roadmap")
+    assert code == USAGE
+    assert data["error"] == "no_target"
+    assert data["schema_version"] == 1
+    assert contract_errors("roadmap", data) == []
+
+
+def test_roadmap_for_an_unregistered_target_is_unknown_target(orch: Call) -> None:
+    code, data = orch("roadmap", "--target", "nobody")
+    assert code == USAGE
+    assert data["error"] == "unknown_target"
+    assert contract_errors("roadmap", data) == []
+
+
+def test_roadmap_for_another_target_than_the_session_is_refused(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    assert_error(orch("roadmap", "--target", "other"), USAGE, "refused")
+
+
+@pytest.mark.parametrize("name", ["bad/name", ""])
+def test_roadmap_with_a_bad_target_name_is_a_usage_error(orch: Call, name: str) -> None:
+    code, data = orch("roadmap", "--target", name)
+    assert_error((code, data), USAGE, "usage")
+    assert data["schema_version"] == 1
+
+
+def test_roadmap_needs_the_hub(orch: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ORCH_HUB")
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    assert_error(orch("roadmap"), USAGE, "usage")
+
+
+@pytest.mark.usefixtures("target")
+def test_roadmap_without_the_file_is_no_roadmap(
+    orch: Call, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("roadmap")
+    assert code == USAGE
+    assert data["error"] == "no_roadmap"
+    assert contract_errors("roadmap", data) == []
+
+
+@pytest.mark.usefixtures("target")
+def test_an_invalid_roadmap_lists_its_problems(
+    orch: Call, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    push_roadmap(repo, ROADMAP.replace('status = "current"', 'status = "soon"'))
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("roadmap")
+    assert code == USAGE
+    assert data["error"] == "invalid_roadmap"
+    assert data["problems"] == [{"where": "phase[0].status", "reason": "status"}]
+    assert contract_errors("roadmap", data) == []
+
+
+@pytest.mark.usefixtures("target")
+def test_roadmap_does_not_fetch(
+    orch: Call, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pushed = push_roadmap(repo)
+    other = tmp_path / "other-clone"
+    git(tmp_path, "clone", "-q", str(tmp_path / "remote.git"), str(other))
+    write(other / "docs" / "roadmap.toml", ROADMAP.replace("M19", "M20"))
+    git(other, "commit", "-qam", "newer")
+    git(other, "push", "-q", "origin", "main")
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, data = orch("roadmap")
+    assert code == 0, data
+    assert data["commit"] == pushed
