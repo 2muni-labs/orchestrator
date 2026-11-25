@@ -33,6 +33,7 @@ from orch import (
     prflow,
     render,
     review,
+    roadmap,
     runner,
     scheduler,
     selfcheck,
@@ -144,6 +145,7 @@ def _parser() -> argparse.ArgumentParser:
     events_parser.add_argument("--follow", action="store_true")
     events_parser.add_argument("--since", type=_nonnegative_int, default=0)
     events_parser.add_argument("--target")
+    commands.add_parser("roadmap").add_argument("--target")
     for name in (
         "dispatch",
         "run",
@@ -716,11 +718,54 @@ def _events(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
     return 0, {}
 
 
+def _roadmap(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
+    name = args.target
+    if name is not None:
+        try:
+            config.validate_target_name(name)
+        except config.TargetNameError as exc:
+            raise _UsageError(str(exc)) from exc
+        _check_target(name)
+    else:
+        name = os.environ.get("ORCH_TARGET")
+    if not name:
+        return 64, {
+            "ok": False,
+            "error": "no_target",
+            "message": "Specify --target or ORCH_TARGET",
+        }
+    orch_home, hub = _environment("roadmap", require_hub=True)
+    assert hub is not None
+    try:
+        target = _target(hub, name)
+    except config.ConfigError as exc:
+        return 64, {"ok": False, "error": "unknown_target", "message": str(exc)}
+    try:
+        with closing(store.connect(config.state_db_path(orch_home))) as conn:
+            return 0, roadmap.build_report(
+                conn,
+                target=name,
+                repo=target.path,
+                default_branch=target.default_branch,
+            )
+    except roadmap.RoadmapError as exc:
+        data: dict[str, object] = {
+            "ok": False,
+            "error": exc.error,
+            "message": exc.message,
+        }
+        if exc.error == "invalid_roadmap":
+            data["problems"] = [asdict(problem) for problem in exc.problems]
+        return 64, data
+
+
 def _execute(
     args: argparse.Namespace, secrets: list[str]
 ) -> tuple[int, dict[str, object]]:
     if args.command == "events":
         return _events(args)
+    if args.command == "roadmap":
+        return _roadmap(args)
     if args.command == "show":
         orch_home, _ = _environment(args.command)
         with closing(store.connect(config.state_db_path(orch_home))) as conn:
@@ -1443,6 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
         "show",
         "events",
         "doctor",
+        "roadmap",
     }
     is_events = command == ["events"]
     try:
