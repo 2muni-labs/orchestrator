@@ -213,17 +213,20 @@ def acquire_slot(paths: TargetPaths, explore_id: str, limit: int) -> int | None:
             if same_question or active >= limit:
                 return None
             lock = root / f"{explore_id}.lock"
-            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.ftruncate(fd, 0)
-            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
-            return fd
+            try:
+                fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+                return fd
+            except BaseException:
+                if fd is not None:
+                    with suppress(OSError):
+                        lock.unlink(missing_ok=True)
+                    with suppress(OSError):
+                        os.close(fd)
+                raise
     except BaseException as exc:
-        if fd is not None:
-            with suppress(OSError):
-                (root / f"{explore_id}.lock").unlink(missing_ok=True)
-            with suppress(OSError):
-                os.close(fd)
         if isinstance(exc, OSError):
             raise ExploreError("Cannot acquire explore slot") from exc
         raise
@@ -247,6 +250,8 @@ def _save_answer(path: Path, answer: dict[str, object]) -> None:
             temporary = Path(stream.name)
             json.dump(answer, stream, ensure_ascii=False)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if temporary is not None:
