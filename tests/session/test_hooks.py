@@ -19,7 +19,7 @@ from orch.hooks import (
     recover,
     summary,
 )
-from orch.models import Grade, Lane, Run, Task, TaskState
+from orch.models import CheckLevel, Grade, Lane, Run, Task, TaskState
 
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
 TOPIC = "abcdefghijklmnopqrstuvwxyz012345"
@@ -50,8 +50,23 @@ def environ(tmp_path: Path, orch_home: Path) -> dict[str, str]:
 @pytest.fixture
 def conn(orch_home: Path) -> Iterator[sqlite3.Connection]:
     connection = store.connect(state_db_path(orch_home))
+    # A doctor run at NOW keeps the summaries free of the stale doctor line.
+    record_doctor_run(connection, NOW)
     yield connection
     connection.close()
+
+
+def record_doctor_run(
+    conn: sqlite3.Connection, at: datetime, *, target: str = ""
+) -> None:
+    store.record_doctor_check(
+        conn,
+        target=target,
+        item="disk",
+        level=CheckLevel.OK,
+        detail=None,
+        at=at.isoformat(),
+    )
 
 
 def add_task(
@@ -409,7 +424,7 @@ def test_summary_lists_states_the_main_must_act_on(conn: sqlite3.Connection) -> 
     add_task(conn, "run", TaskState.RUNNING)
     add_task(conn, "done1", TaskState.CLOSED)
     add_task(conn, "other", TaskState.JUDGING, target="other")
-    text = summary(conn, target="orchestrator", orphaned=["orp"])
+    text = summary(conn, target="orchestrator", orphaned=["orp"], now=NOW)
     assert text.splitlines() == [
         "orch 복구 요약 (대상 orchestrator)",
         "- j: judging",
@@ -424,7 +439,7 @@ def test_summary_lists_states_the_main_must_act_on(conn: sqlite3.Connection) -> 
 def test_summary_is_empty_when_nothing_needs_action(conn: sqlite3.Connection) -> None:
     add_task(conn, "run", TaskState.RUNNING)
     add_task(conn, "other", TaskState.JUDGING, target="other")
-    assert summary(conn, target="orchestrator", orphaned=[]) == ""
+    assert summary(conn, target="orchestrator", orphaned=[], now=NOW) == ""
 
 
 def test_summary_lists_only_this_targets_new_orphans(
@@ -433,7 +448,9 @@ def test_summary_lists_only_this_targets_new_orphans(
     add_task(conn, "zz", TaskState.ORPHANED)
     add_task(conn, "x", TaskState.ORPHANED, target="other")
     add_task(conn, "a", TaskState.ORPHANED)
-    text = summary(conn, target="orchestrator", orphaned=["zz", "x", "gone", "a"])
+    text = summary(
+        conn, target="orchestrator", orphaned=["zz", "x", "gone", "a"], now=NOW
+    )
     assert text.splitlines() == [
         "orch 복구 요약 (대상 orchestrator)",
         "- a: orphaned",
@@ -446,7 +463,7 @@ def test_summary_is_empty_when_only_another_target_was_orphaned(
     conn: sqlite3.Connection,
 ) -> None:
     add_task(conn, "x", TaskState.ORPHANED, target="other")
-    assert summary(conn, target="orchestrator", orphaned=["x"]) == ""
+    assert summary(conn, target="orchestrator", orphaned=["x"], now=NOW) == ""
 
 
 def test_summary_drops_the_line_when_no_new_orphan_is_this_targets(
@@ -454,8 +471,34 @@ def test_summary_drops_the_line_when_no_new_orphan_is_this_targets(
 ) -> None:
     add_task(conn, "j", TaskState.JUDGING)
     add_task(conn, "x", TaskState.ORPHANED, target="other")
-    text = summary(conn, target="orchestrator", orphaned=["x"])
+    text = summary(conn, target="orchestrator", orphaned=["x"], now=NOW)
     assert text.splitlines() == ["orch 복구 요약 (대상 orchestrator)", "- j: judging"]
+
+
+def test_summary_reports_a_doctor_that_never_ran(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM doctor_checks")
+    conn.commit()
+    assert summary(conn, target="orchestrator", orphaned=[], now=NOW).splitlines() == [
+        "orch 복구 요약 (대상 orchestrator)",
+        "doctor 미실행 (마지막 실행: 없음)",
+    ]
+
+
+def test_summary_ends_with_a_stale_doctor_line(conn: sqlite3.Connection) -> None:
+    add_task(conn, "j", TaskState.JUDGING)
+    later = NOW + timedelta(minutes=30)
+    text = summary(conn, target="orchestrator", orphaned=[], now=later)
+    assert text.splitlines() == [
+        "orch 복구 요약 (대상 orchestrator)",
+        "- j: judging",
+        f"doctor 미실행 (마지막 실행: {NOW.isoformat()})",
+    ]
+
+
+def test_summary_counts_a_doctor_run_of_any_target(conn: sqlite3.Connection) -> None:
+    record_doctor_run(conn, NOW + timedelta(minutes=20), target="other")
+    later = NOW + timedelta(minutes=40)
+    assert summary(conn, target="orchestrator", orphaned=[], now=later) == ""
 
 
 # handle_session_start
@@ -471,7 +514,7 @@ def test_session_start_outputs_additional_context(
     inner = value["hookSpecificOutput"]
     assert inner["hookEventName"] == "SessionStart"
     assert inner["additionalContext"] == summary(
-        conn, target="orchestrator", orphaned=["a"]
+        conn, target="orchestrator", orphaned=["a"], now=NOW
     )
     assert "\n" not in text.strip()
 
@@ -554,7 +597,7 @@ def test_session_start_logs_each_recovery_failure_and_still_summarises(
 
     text = handle_session_start("{}", environ, now=NOW, alive=alive)
     assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == summary(
-        conn, target="orchestrator", orphaned=["bb"]
+        conn, target="orchestrator", orphaned=["bb"], now=NOW
     )
     assert (orch_home / "hooks.log").read_text() == (
         f"{NOW.isoformat()} session-start a RuntimeError\n"
@@ -574,7 +617,7 @@ def test_session_start_logs_a_reservation_expiry_failure(
     )
     text = handle_session_start("{}", environ, now=NOW, alive=dead)
     assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == summary(
-        conn, target="orchestrator", orphaned=["a"]
+        conn, target="orchestrator", orphaned=["a"], now=NOW
     )
     assert (orch_home / "hooks.log").read_text() == (
         f"{NOW.isoformat()} session-start reservations TypeError\n"
@@ -1279,3 +1322,57 @@ def test_run_hook_routes_the_wait_hooks(
     else:
         assert calls == [("end", {"hook": name})]
     assert capsys.readouterr().out == ""
+
+
+def test_session_start_reports_a_stale_doctor(
+    conn: sqlite3.Connection, environ: dict[str, str]
+) -> None:
+    later = NOW + timedelta(hours=1)
+    text = handle_session_start("{}", environ, now=later, alive=dead)
+    assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == "\n".join(
+        [
+            "orch 복구 요약 (대상 orchestrator)",
+            f"doctor 미실행 (마지막 실행: {NOW.isoformat()})",
+        ]
+    )
+
+
+def record_unreadable_doctor_runs(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM doctor_checks")
+    conn.commit()
+    for item, at in (("disk", "garbage"), ("network", NOW.replace(tzinfo=None))):
+        store.record_doctor_check(
+            conn,
+            target="",
+            item=item,
+            level=CheckLevel.OK,
+            detail=None,
+            at=at if isinstance(at, str) else at.isoformat(),
+        )
+
+
+def test_summary_keeps_the_tasks_when_no_doctor_run_is_readable(
+    conn: sqlite3.Connection,
+) -> None:
+    add_task(conn, "j", TaskState.JUDGING)
+    record_unreadable_doctor_runs(conn)
+    assert summary(conn, target="orchestrator", orphaned=[], now=NOW).splitlines() == [
+        "orch 복구 요약 (대상 orchestrator)",
+        "- j: judging",
+        "doctor 미실행 (마지막 실행: 없음)",
+    ]
+
+
+def test_session_start_keeps_the_summary_with_an_unreadable_doctor_run(
+    conn: sqlite3.Connection, environ: dict[str, str]
+) -> None:
+    add_task(conn, "j", TaskState.JUDGING)
+    record_unreadable_doctor_runs(conn)
+    text = handle_session_start("{}", environ, now=NOW, alive=dead)
+    assert json.loads(text)["hookSpecificOutput"]["additionalContext"] == "\n".join(
+        [
+            "orch 복구 요약 (대상 orchestrator)",
+            "- j: judging",
+            "doctor 미실행 (마지막 실행: 없음)",
+        ]
+    )

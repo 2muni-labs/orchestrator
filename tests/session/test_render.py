@@ -9,6 +9,8 @@ import pytest
 
 from orch import prflow, render
 from orch.models import (
+    CheckLevel,
+    DoctorCheck,
     Finding,
     Gate,
     GateResult,
@@ -22,8 +24,11 @@ from orch.models import (
     Verdict,
 )
 from orch.render import (
+    DOCTOR_STALE_AFTER,
     PlanEntry,
     build_body,
+    doctor_stale_line,
+    doctor_state,
     elapsed_sec,
     entry_open,
     format_elapsed,
@@ -812,3 +817,79 @@ def test_plan_text_leaves_out_paths_and_bodies() -> None:
     text = plan_text(PLAN_PROJECT, entries, tasks_by_id, NOW)
     assert "/Users/" not in text and ".orch" not in text
     assert "worktree" not in text
+
+
+# doctor staleness (B46, m-doctor-stale)
+
+
+def doctor_check(at: str, target: str = "", item: str = "disk") -> DoctorCheck:
+    return DoctorCheck(target=target, item=item, level=CheckLevel.OK, at=at)
+
+
+def test_doctor_state_is_stale_without_any_run() -> None:
+    assert doctor_state([], NOW) == {"last_at": None, "stale": True}
+
+
+def test_doctor_state_takes_the_latest_run_over_all_targets() -> None:
+    latest = (NOW - timedelta(minutes=5)).isoformat()
+    checks = [
+        doctor_check((NOW - timedelta(hours=2)).isoformat(), target="a"),
+        doctor_check(latest, target="b", item="claude_auth"),
+        doctor_check((NOW - timedelta(minutes=40)).isoformat()),
+    ]
+    assert doctor_state(checks, NOW) == {"last_at": latest, "stale": False}
+
+
+def test_doctor_state_compares_times_not_strings() -> None:
+    later = "2026-11-05T20:50:00+09:00"
+    checks = [doctor_check("2026-11-05T11:40:00+00:00"), doctor_check(later)]
+    assert doctor_state(checks, NOW) == {"last_at": later, "stale": False}
+
+
+@pytest.mark.parametrize(
+    ("age", "stale"),
+    [
+        (DOCTOR_STALE_AFTER - timedelta(seconds=1), False),
+        (DOCTOR_STALE_AFTER, True),
+        (timedelta(hours=3), True),
+        (timedelta(minutes=-5), False),
+    ],
+    ids=["just-fresh", "thirty-minutes", "hours", "future"],
+)
+def test_doctor_state_is_stale_from_thirty_minutes(age: timedelta, stale: bool) -> None:
+    at = (NOW - age).isoformat()
+    assert doctor_state([doctor_check(at)], NOW) == {"last_at": at, "stale": stale}
+
+
+def test_doctor_stale_after_is_thirty_minutes() -> None:
+    assert DOCTOR_STALE_AFTER == timedelta(minutes=30)
+
+
+def test_doctor_stale_line_names_the_last_run() -> None:
+    at = "2026-11-05T11:00:00+00:00"
+    assert (
+        doctor_stale_line({"last_at": at, "stale": True})
+        == f"doctor 미실행 (마지막 실행: {at})"
+    )
+    assert (
+        doctor_stale_line({"last_at": None, "stale": True})
+        == "doctor 미실행 (마지막 실행: 없음)"
+    )
+
+
+def test_doctor_stale_line_is_none_when_fresh() -> None:
+    assert doctor_stale_line({"last_at": NOW.isoformat(), "stale": False}) is None
+
+
+@pytest.mark.parametrize(
+    "unreadable", ["garbage", "", "2026-11-05T11:55:00"], ids=["text", "empty", "naive"]
+)
+def test_doctor_state_ignores_an_unreadable_run(unreadable: str) -> None:
+    fresh = (NOW - timedelta(minutes=5)).isoformat()
+    checks = [doctor_check(unreadable, item="a"), doctor_check(fresh, item="b")]
+    assert doctor_state(checks, NOW) == {"last_at": fresh, "stale": False}
+
+
+def test_doctor_state_is_stale_when_no_run_is_readable() -> None:
+    checks = [doctor_check("garbage"), doctor_check("2026-11-05T11:55:00", item="b")]
+    assert doctor_state(checks, NOW) == {"last_at": None, "stale": True}
