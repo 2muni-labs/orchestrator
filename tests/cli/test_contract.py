@@ -10,12 +10,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "schemas" / "cli"
 PIPELINE = ROOT / "src" / "orch"
-# (command, version). events.v1.json stays until the version pull request that
-# follows m-p5-input-wait removes it (technical design 4.13, ADR 0030).
+# (command, version). Only the current version of each command is kept;
+# events.v1.json was removed in 0.25.0 (technical design 4.13, ADR 0030).
 SCHEMAS = (
     ("status", 1),
     ("show", 1),
-    ("events", 1),
     ("events", 2),
     ("doctor", 1),
     ("versions", 1),
