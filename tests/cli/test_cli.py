@@ -4468,6 +4468,7 @@ def test_doctor_hands_over_settings_targets_and_thresholds(
     assert call["orch_home"] == env.orch_home
     assert call["home"] == env.home
     assert call["environ"] is os.environ
+    assert call["hub"] == env.hub
     assert call["disk_warn_gb"] == 20
     assert call["disk_fail_gb"] == 5
     assert call["terminal"] is cli_module._terminal
@@ -4531,6 +4532,7 @@ def test_a_missing_tailscale_file_only_warns_on_network(
         "[doctor]\ndisk_warn_gb = 1\ndisk_fail_gb = 1\n"
         f'tailscale = "{tools / "no-such-tailscale"}"\n',
     )
+    write_fresh_latest(env)
     code, data = orch("doctor")
     assert code == 0, data
     levels = {
@@ -4540,6 +4542,7 @@ def test_a_missing_tailscale_file_only_warns_on_network(
     assert levels["network"] == ("warn", "FileNotFoundError")
     assert levels["codex_auth"] == ("ok", None)
     assert levels["agent_versions"] == ("fail", "claude=no_record,codex=no_record")
+    assert levels["agent_latest"] == ("ok", "claude=no_record,codex=no_record")
     assert data["paused"] == ["agent_unverified"]
     assert data["errors"] == []
 
@@ -4636,6 +4639,7 @@ def test_a_real_doctor_kill_moves_the_task_and_refreshes_todo(
             run=healthy_run,
             free_bytes=lambda path: 50 * 10**9,
             kill=fast_kill,
+            check_latest=lambda **_: (CheckLevel.OK, None),
             **kwargs,  # type: ignore[arg-type]
         )
 
@@ -4645,6 +4649,23 @@ def test_a_real_doctor_kill_moves_the_task_and_refreshes_todo(
     assert data["killed"] == [TASK]
     assert state_of(env) is TaskState.JUDGING
     assert "judging" in env.paths.todo.read_text(encoding="utf-8")
+
+
+def write_fresh_latest(env: Env) -> None:
+    """A fresh latest.json keeps doctor agent_latest off the network and the pins."""
+    write(
+        env.orch_home / "latest.json",
+        json.dumps(
+            {
+                "format": 1,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "agents": {
+                    "claude": {"latest": "2.1.330", "error": None},
+                    "codex": {"latest": None, "error": "fetch"},
+                },
+            }
+        ),
+    )
 
 
 def add_script(path: Path, *, output: str = "", code: int = 0) -> Path:
@@ -4674,6 +4695,7 @@ def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
         f'[agents]\nclaude = "{claude}"\ncodex = "{codex}"\n'
         f'[doctor]\ndisk_warn_gb = 1\ndisk_fail_gb = 1\ntailscale = "{tailscale}"\n',
     )
+    write_fresh_latest(env)
 
     code, data = orch("doctor")
     assert code == 0, data
@@ -4686,7 +4708,10 @@ def test_a_real_doctor_pass_pauses_dispatch_until_the_login_returns(
         "disk": "ok",
         "network": "ok",
         "agent_versions": "fail",
+        "agent_latest": "ok",
     }
+    details = {check["item"]: check["detail"] for check in data["checks"]}  # type: ignore[attr-defined]
+    assert details["agent_latest"] == "claude=no_record,codex=no_record"
     assert data["paused"] == ["agent_unverified", "codex_auth"]
     assert TOKEN not in json.dumps(data)
     assert orch("next")[1]["paused"] == ["agent_unverified", "codex_auth"]

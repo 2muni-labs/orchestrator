@@ -13,6 +13,7 @@ from typing import Final
 from orch import (
     config,
     gc,
+    latest,
     lifecycle,
     notify,
     selfcheck,
@@ -80,6 +81,8 @@ def run_doctor(
     check_current_codex: Callable[
         ..., selfcheck.CurrentCheck
     ] = selfcheck_codex.check_current_codex,
+    hub: Path | None = None,
+    check_latest: Callable[..., tuple[CheckLevel, str | None]] = latest.check,
 ) -> DoctorReport:
     """Check health independently, pause dispatch as needed and kill stuck runs."""
     checks: list[DoctorCheck] = []
@@ -106,6 +109,11 @@ def run_doctor(
 
         if item == "track_sync":
             return track_sync_check(conn, target, now=now)
+
+        if item == "agent_latest":
+            if hub is None:
+                return None
+            return check_latest(orch_home=orch_home, hub=hub, now=now)
 
         if item == "agent_versions":
             currents = {
@@ -225,6 +233,7 @@ def run_doctor(
         "disk",
         "network",
         "agent_versions",
+        "agent_latest",
     ):
         process_item(item)
 
