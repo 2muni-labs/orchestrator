@@ -22,6 +22,7 @@ FETCH_TIMEOUT_SEC: Final = 10
 BODY_LIMIT: Final = 65536
 AGENTS: Final = ("claude", "codex")
 VERSION_PATTERN: Final = r"[0-9]+(\.[0-9]+){1,3}"
+READ_CHUNK: Final = 8192
 
 
 class LatestError(Exception):
@@ -45,6 +46,21 @@ class LatestRecord:
 
 
 Fetch = Callable[[str, float], tuple[int, bytes]]
+
+
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an https URL."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        raise NotImplementedError
 
 
 def http_fetch(url: str, timeout: float) -> tuple[int, bytes]:

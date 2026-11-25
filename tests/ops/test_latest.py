@@ -5,7 +5,11 @@ HTTP 200 with the bare version string, the npm registry returns JSON whose
 "version" is the latest.
 """
 
+import email.message
+import io
 import json
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -487,3 +491,200 @@ def test_check_uses_the_stored_record_within_a_day(orch_home: Path, hub: Path) -
     fetch = healthy()
     assert judge(orch_home, hub, fetch) == (CheckLevel.OK, None)
     assert fetch.calls == []
+
+
+# Fetch hardening (m-latest-https, #605)
+
+
+class FakeResponse:
+    """A response whose read() hands out the given chunks in order."""
+
+    def __init__(self, status: int, chunks: list[bytes]) -> None:
+        self.status = status
+        self.chunks = list(chunks)
+        self.sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.sizes.append(size)
+        return self.chunks.pop(0) if self.chunks else b""
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+class FakeOpener:
+    def __init__(self, response: FakeResponse | Exception) -> None:
+        self.response = response
+        self.opened: list[tuple[str, float]] = []
+
+    def open(self, url: str, timeout: float) -> FakeResponse:
+        self.opened.append((url, timeout))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def use_opener(
+    monkeypatch: pytest.MonkeyPatch, response: FakeResponse | Exception
+) -> tuple[FakeOpener, list[tuple]]:
+    opener = FakeOpener(response)
+    built: list[tuple] = []
+
+    def build_opener(*handlers: object) -> FakeOpener:
+        built.append(handlers)
+        return opener
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+
+    def no_urlopen(*args: object, **kwargs: object) -> None:
+        raise AssertionError("urlopen must not be used")
+
+    monkeypatch.setattr(urllib.request, "urlopen", no_urlopen)
+    return opener, built
+
+
+def is_https_only(handler: object) -> bool:
+    return handler is latest.HttpsOnlyRedirectHandler or isinstance(
+        handler, latest.HttpsOnlyRedirectHandler
+    )
+
+
+def test_the_read_chunk_is_the_designed_value() -> None:
+    assert latest.READ_CHUNK == 8192
+
+
+def test_the_fetch_uses_an_opener_that_only_follows_https_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeResponse(200, [b"2.1.330\n"])
+    opener, built = use_opener(monkeypatch, response)
+    assert latest.http_fetch(CLAUDE_URL, 10) == (200, b"2.1.330\n")
+    assert len(built) == 1
+    assert any(is_https_only(handler) for handler in built[0])
+    assert opener.opened == [(CLAUDE_URL, 10)]
+    assert all(size == latest.READ_CHUNK for size in response.sizes)
+
+
+def redirect(newurl: str) -> object:
+    handler = latest.HttpsOnlyRedirectHandler()
+    request = urllib.request.Request(CLAUDE_URL)
+    return handler.redirect_request(
+        request, io.BytesIO(b""), 302, "Found", email.message.Message(), newurl
+    )
+
+
+@pytest.mark.parametrize(
+    "newurl",
+    [
+        "http://downloads.example.com/latest",
+        "ftp://downloads.example.com/latest",
+        "file:///etc/passwd",
+        "//downloads.example.com/latest",
+    ],
+)
+def test_a_redirect_to_a_non_https_url_is_refused(newurl: str) -> None:
+    with pytest.raises(urllib.error.URLError) as caught:
+        redirect(newurl)
+    assert not isinstance(caught.value, urllib.error.HTTPError)
+
+
+@pytest.mark.parametrize(
+    "newurl", ["https://cdn.example.com/latest", "HTTPS://cdn.example.com/latest"]
+)
+def test_a_redirect_to_https_is_followed(newurl: str) -> None:
+    followed = redirect(newurl)
+    assert isinstance(followed, urllib.request.Request)
+    assert followed.full_url == newurl
+
+
+def test_a_refused_redirect_is_recorded_as_a_fetch_error(
+    orch_home: Path, hub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opener, _ = use_opener(
+        monkeypatch, urllib.error.URLError("redirect to a non-https URL")
+    )
+    result = latest.refresh(orch_home=orch_home, hub=hub, now=NOW)
+    assert result.agents["claude"] == AgentLatest(None, "fetch")
+    assert result.agents["codex"] == AgentLatest(None, "fetch")
+    assert [url for url, _ in opener.opened] == [CLAUDE_URL, CODEX_URL]
+
+
+def test_an_http_error_is_still_returned_as_its_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = urllib.error.HTTPError(
+        CLAUDE_URL, 404, "Not Found", email.message.Message(), io.BytesIO(b"")
+    )
+    use_opener(monkeypatch, error)
+    assert latest.http_fetch(CLAUDE_URL, 10) == (404, b"")
+
+
+def test_a_body_in_many_chunks_is_joined(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_opener(monkeypatch, FakeResponse(200, [b"2.", b"1.", b"330", b"\n"]))
+    assert latest.http_fetch(CLAUDE_URL, 10) == (200, b"2.1.330\n")
+
+
+def test_reading_stops_past_the_body_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    chunk = b"x" * latest.READ_CHUNK
+    count = latest.BODY_LIMIT // latest.READ_CHUNK + 5
+    response = FakeResponse(200, [chunk] * count)
+    use_opener(monkeypatch, response)
+    status, body = latest.http_fetch(CLAUDE_URL, 10)
+    assert status == 200
+    assert body == b"x" * (latest.BODY_LIMIT + 1)
+    assert response.chunks, "reading must stop once the limit is passed"
+
+
+def test_a_slow_body_hits_the_total_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter(range(1000))
+    monkeypatch.setattr(latest.time, "monotonic", lambda: float(next(clock)))
+    response = FakeResponse(200, [b"2"] * 100)
+    use_opener(monkeypatch, response)
+    with pytest.raises(TimeoutError):
+        latest.http_fetch(CLAUDE_URL, 5)
+    assert len(response.chunks) > 90
+
+
+def test_a_slow_body_is_recorded_as_a_fetch_error(
+    orch_home: Path, hub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter(range(100000))
+    monkeypatch.setattr(latest.time, "monotonic", lambda: float(next(clock)))
+
+    response = FakeResponse(200, [b"2"] * 100)
+    opener, _ = use_opener(monkeypatch, response)
+    result = latest.refresh(orch_home=orch_home, hub=hub, now=NOW)
+    assert result.agents["claude"] == AgentLatest(None, "fetch")
+    assert opener.opened[0] == (CLAUDE_URL, latest.FETCH_TIMEOUT_SEC)
+    assert response.sizes, "the body must be read through the opener"
+
+
+@pytest.mark.parametrize("version", ["2.1.x", "", "v2.1.330", "2", "2.1.330-beta"])
+def test_a_malformed_current_version_reads_as_no_record(
+    orch_home: Path, version: object
+) -> None:
+    write_agents(orch_home, "2.1.330", "0.171.0")
+    path = orch_home / "agents.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["agents"]["claude"]["current"]["version"] = version
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert latest.current_versions(orch_home) == {"claude": None, "codex": "0.171.0"}
+
+
+def test_a_malformed_current_version_does_not_fail_the_check(
+    orch_home: Path, hub: Path
+) -> None:
+    write_agents(orch_home, "2.1.330", "0.160.0")
+    path = orch_home / "agents.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["agents"]["claude"]["current"]["version"] = "2.1.x"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert judge(orch_home, hub, healthy()) == (
+        CheckLevel.WARN,
+        "claude=no_record,codex=behind",
+    )
