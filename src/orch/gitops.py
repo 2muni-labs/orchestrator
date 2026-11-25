@@ -152,13 +152,13 @@ def merge_base(cwd: Path, first: str, second: str = "HEAD") -> str:
 def commits_since(cwd: Path, base: str) -> tuple[str, ...]:
     """Return commit ids in base..HEAD, oldest first."""
     _validate_value(base)
-    return tuple(_git(cwd, "rev-list", "--reverse", f"{base}..HEAD").splitlines())
+    return tuple(_git(cwd, "rev-list", "--reverse", f"{base}..HEAD", "--").splitlines())
 
 
 def changed_paths(cwd: Path, since: str) -> frozenset[str]:
     """Return all changes since a revision, including uncommitted and new files."""
     _validate_value(since)
-    tracked = _git(cwd, "diff", "--name-only", "--no-renames", "-z", since)
+    tracked = _git(cwd, "diff", "--name-only", "--no-renames", "-z", since, "--")
     untracked = _git(cwd, "ls-files", "--others", "--exclude-standard", "-z")
     return frozenset(path for path in (tracked + untracked).split("\0") if path)
 
@@ -166,7 +166,7 @@ def changed_paths(cwd: Path, since: str) -> frozenset[str]:
 def diff(cwd: Path, base: str) -> str:
     """Return the diff of base..HEAD."""
     _validate_value(base)
-    return _git(cwd, "diff", "--no-color", "--no-ext-diff", f"{base}..HEAD")
+    return _git(cwd, "diff", "--no-color", "--no-ext-diff", f"{base}..HEAD", "--")
 
 
 def create_worktree(repo: Path, worktree: Path, branch: str, start_point: str) -> None:
@@ -332,7 +332,7 @@ def temporary_merge(worktree: Path, ref: str) -> MergeResult:
 def task_tip(worktree: Path, main_ref: str) -> str:
     """Return the task's last commit, looking through a temporary merge of main_ref."""
     _validate_value(main_ref)
-    commits = _git(worktree, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    commits = _git(worktree, "rev-list", "--parents", "-n", "1", "HEAD", "--").split()
     if len(commits) == 3 and commits[2] == rev_parse(worktree, main_ref):
         return commits[1]
     return commits[0]
@@ -352,8 +352,11 @@ def task_changed_paths(worktree: Path, since: str, main_ref: str) -> frozenset[s
         "-z",
         f"{since}..HEAD",
         f"^{main_ref}",
+        "--",
     )
-    uncommitted = _git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD")
+    uncommitted = _git(
+        worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD", "--"
+    )
     untracked = _git(worktree, "ls-files", "--others", "--exclude-standard", "-z")
     return frozenset(
         path for path in (committed + uncommitted + untracked).split("\0") if path

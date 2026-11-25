@@ -1460,3 +1460,44 @@ def test_changes_are_read_without_following_a_tampered_git_file(
     assert worktree_changes(worktree, snap) == (".git", "base.txt")
     assert not marker.exists()
     assert (worktree / ".git").read_bytes() == original
+
+
+# Files named like revisions (m-gitops-separator, #499)
+
+
+def test_a_file_named_head_does_not_break_task_changed_paths(worktree: Path) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "committed.txt")
+    write(worktree / "HEAD")
+    assert task_changed_paths(worktree, since, MAIN) == {"committed.txt", "HEAD"}
+
+
+def test_a_committed_file_named_head_is_reported(worktree: Path) -> None:
+    since = task_commit(worktree, "first.txt")
+    add_commit(worktree, "HEAD")
+    assert task_changed_paths(worktree, since, MAIN) == {"HEAD"}
+    assert changed_paths(worktree, since) == {"HEAD"}
+
+
+def test_a_file_named_like_the_base_commit_does_not_break_changed_paths(
+    worktree: Path,
+) -> None:
+    since = task_commit(worktree, "first.txt")
+    write(worktree / since)
+    assert changed_paths(worktree, since) == {since}
+    assert task_changed_paths(worktree, since, MAIN) == {since}
+
+
+def test_a_file_named_head_does_not_break_task_tip(worktree: Path) -> None:
+    tip = task_commit(worktree, "first.txt")
+    write(worktree / "HEAD")
+    assert task_tip(worktree, MAIN) == tip
+
+
+def test_range_calls_already_ignore_a_file_named_head(worktree: Path) -> None:
+    # Passes before the change too: git reads "<a>..HEAD" as a range only.
+    base = git(worktree, "rev-parse", "HEAD")
+    tip = task_commit(worktree, "first.txt")
+    write(worktree / "HEAD")
+    assert commits_since(worktree, base) == (tip,)
+    assert "first.txt" in diff(worktree, base)
