@@ -504,9 +504,13 @@ class FakeResponse:
         self.chunks = list(chunks)
         self.sizes: list[int] = []
 
-    def read(self, size: int = -1) -> bytes:
+    def read1(self, size: int = -1) -> bytes:
         self.sizes.append(size)
         return self.chunks.pop(0) if self.chunks else b""
+
+    def read(self, size: int = -1) -> bytes:
+        # read() may loop on the socket past the deadline (m-latest-read1).
+        raise AssertionError("the body must be read with read1")
 
     def __enter__(self) -> FakeResponse:
         return self
@@ -688,3 +692,35 @@ def test_a_malformed_current_version_does_not_fail_the_check(
         CheckLevel.WARN,
         "claude=no_record,codex=behind",
     )
+
+
+# read1 (m-latest-read1, #611)
+
+
+def test_the_body_is_read_with_read1_in_read_chunk_pieces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeResponse(200, [b"2.1", b".330\n"])
+    use_opener(monkeypatch, response)
+    assert latest.http_fetch(CLAUDE_URL, 10) == (200, b"2.1.330\n")
+    assert response.sizes == [latest.READ_CHUNK] * 3
+
+
+def test_a_real_response_returns_after_one_recv_per_read(tmp_path: Path) -> None:
+    import http.client
+    import socket
+
+    left, right = socket.socketpair()
+    try:
+        right.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n2.1")
+        response = http.client.HTTPResponse(left)
+        response.begin()
+        # Only three body bytes have arrived; read1 must return them instead of
+        # waiting for all eight as read(8192) would.
+        left.settimeout(2)
+        assert response.read1(latest.READ_CHUNK) == b"2.1"
+        right.sendall(b".330\n")
+        assert response.read1(latest.READ_CHUNK) == b".330\n"
+    finally:
+        left.close()
+        right.close()

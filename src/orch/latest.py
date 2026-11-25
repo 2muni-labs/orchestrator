@@ -77,7 +77,7 @@ def http_fetch(url: str, timeout: float) -> tuple[int, bytes]:
             while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Latest version fetch exceeded its deadline")
-                chunk = response.read(READ_CHUNK)
+                chunk = response.read1(READ_CHUNK)
                 if not chunk:
                     break
                 body.extend(chunk)
