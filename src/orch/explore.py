@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -122,7 +123,10 @@ def explore_prompt(explore_id: str, question: str) -> str:
 
 def check_answer(text: str, *, explore_id: str, root: Path) -> dict[str, object]:
     """Return the parsed answer, or raise ValueError."""
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except RecursionError as exc:
+        raise ValueError("Answer JSON is nested too deeply") from exc
     if not isinstance(data, dict) or data.keys() != {
         "explore_id",
         "claims",
@@ -184,38 +188,45 @@ def check_answer(text: str, *, explore_id: str, root: Path) -> dict[str, object]
 def acquire_slot(paths: TargetPaths, explore_id: str, limit: int) -> int | None:
     """Hold <n>.lock and return its descriptor, or None when busy."""
     root = explore_root(paths)
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / ".slots.lock").open("a+b") as guard:
-        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
-        active = 0
-        same_question = False
-        for lock in root.glob("*.lock"):
-            if lock.name == ".slots.lock":
-                continue
-            try:
-                handle = lock.open("r+b")
-            except FileNotFoundError:
-                continue
-            with handle:
+    fd: int | None = None
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / ".slots.lock").open("a+b") as guard:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+            active = 0
+            same_question = False
+            for lock in root.glob("*.lock"):
+                if lock.name == ".slots.lock":
+                    continue
                 try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    active += 1
-                    same_question |= lock.name == f"{explore_id}.lock"
-                else:
-                    lock.unlink(missing_ok=True)
-        if same_question or active >= limit:
-            return None
-        lock = root / f"{explore_id}.lock"
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
+                    handle = lock.open("r+b")
+                except FileNotFoundError:
+                    continue
+                with handle:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        active += 1
+                        same_question |= lock.name == f"{explore_id}.lock"
+                    else:
+                        lock.unlink(missing_ok=True)
+            if same_question or active >= limit:
+                return None
+            lock = root / f"{explore_id}.lock"
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.ftruncate(fd, 0)
             os.write(fd, f"{os.getpid()}\n".encode("ascii"))
-        except BaseException:
-            os.close(fd)
-            raise
-        return fd
+            return fd
+    except BaseException as exc:
+        if fd is not None:
+            with suppress(OSError):
+                (root / f"{explore_id}.lock").unlink(missing_ok=True)
+            with suppress(OSError):
+                os.close(fd)
+        if isinstance(exc, OSError):
+            raise ExploreError("Cannot acquire explore slot") from exc
+        raise
 
 
 def release_slot(paths: TargetPaths, explore_id: str, fd: int) -> None:
