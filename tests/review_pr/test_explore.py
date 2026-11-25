@@ -950,3 +950,93 @@ def test_the_report_holds_no_answer_text(
     value = answer(claims=[claim(statement="SECRET-STATEMENT")], unresolved=["X"])
     result = saved_run(repo, paths, home, tmp_path, value)
     assert "SECRET-STATEMENT" not in repr(dataclasses.asdict(result))
+
+
+# Robustness (m-explore-robust, #604)
+
+DEEP = "[" * 100000
+
+
+def test_a_deeply_nested_answer_is_invalid_not_a_recursion_error(root: Path) -> None:
+    with pytest.raises(ValueError):
+        check(DEEP, root)
+    with pytest.raises(ValueError):
+        check(DEEP + "]" * 100000, root)
+
+
+def test_a_deeply_nested_answer_ends_the_run_as_invalid(
+    repo: Path, paths: TargetPaths, home: Path, tmp_path: Path
+) -> None:
+    first = saved_run(repo, paths, home, tmp_path, answer(unresolved=["처음"]))
+    assert first.outcome is ExploreOutcome.SAVED
+    before = first.answer_path.read_text(encoding="utf-8")
+    second = saved_run(repo, paths, home, tmp_path, DEEP)
+    assert (second.outcome, second.exit_code) == (ExploreOutcome.INVALID, 0)
+    assert (second.claims, second.unresolved) == (0, 0)
+    assert first.answer_path.read_text(encoding="utf-8") == before
+    assert not (explore_root(paths) / f"{EID}.lock").exists()
+
+
+def unreadable_lock(paths: TargetPaths, eid: str = "other") -> Path:
+    lock = explore_root(paths) / f"{eid}.lock"
+    write(lock, "99999\n")
+    lock.chmod(0)
+    return lock
+
+
+def test_an_unreadable_lock_file_refuses_the_slot(paths: TargetPaths) -> None:
+    lock = unreadable_lock(paths)
+    try:
+        with pytest.raises(ExploreError):
+            acquire_slot(paths, EID, 2)
+        assert not (explore_root(paths) / f"{EID}.lock").exists()
+    finally:
+        lock.chmod(0o600)
+
+
+def test_a_failure_after_the_own_lock_is_made_removes_it(
+    paths: TargetPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_truncate(fd: int, length: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "ftruncate", broken_truncate)
+    with pytest.raises(ExploreError):
+        acquire_slot(paths, EID, 2)
+    monkeypatch.undo()
+    lock = explore_root(paths) / f"{EID}.lock"
+    assert not lock.exists()
+    fd = acquire_slot(paths, EID, 1)
+    assert fd is not None
+    release_slot(paths, EID, fd)
+
+
+def test_an_unusable_explore_directory_refuses_the_slot(paths: TargetPaths) -> None:
+    root = explore_root(paths)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    write(root, "not a directory\n")
+    with pytest.raises(ExploreError):
+        acquire_slot(paths, EID, 2)
+
+
+def test_a_slot_error_refuses_the_run_before_any_log(
+    repo: Path, paths: TargetPaths, home: Path, tmp_path: Path
+) -> None:
+    question = question_file(paths)
+    lock = unreadable_lock(paths)
+    args_file = tmp_path / "args.json"
+    try:
+        with pytest.raises(ExploreError):
+            explore(
+                repo,
+                paths,
+                home,
+                "review_args",
+                question=question,
+                ORCH_FAKE_ARGS_FILE=str(args_file),
+            )
+    finally:
+        lock.chmod(0o600)
+    assert not args_file.exists()
+    assert not (paths.logs / "explore").exists()
+    assert not (explore_root(paths) / f"{EID}.lock").exists()
