@@ -1040,3 +1040,59 @@ def test_a_slot_error_refuses_the_run_before_any_log(
     assert not args_file.exists()
     assert not (paths.logs / "explore").exists()
     assert not (explore_root(paths) / f"{EID}.lock").exists()
+
+
+# Cleanup order and fsync (m-explore-p3, #612)
+
+
+def test_a_failed_slot_is_cleaned_up_while_the_guard_is_held(
+    paths: TargetPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = explore_root(paths)
+    guard_held: list[bool] = []
+    real_unlink = Path.unlink
+
+    def watching_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name == f"{EID}.lock":
+            guard_held.append(is_held(root / ".slots.lock"))
+        real_unlink(self, missing_ok=missing_ok)
+
+    def broken_truncate(fd: int, length: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "unlink", watching_unlink)
+    monkeypatch.setattr(os, "ftruncate", broken_truncate)
+    with pytest.raises(ExploreError):
+        acquire_slot(paths, EID, 2)
+    monkeypatch.undo()
+    assert guard_held == [True]
+    assert not (root / f"{EID}.lock").exists()
+
+
+def test_an_answer_is_fsynced_before_it_replaces_the_saved_one(
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def fsync(fd: int) -> None:
+        events.append("fsync")
+        real_fsync(fd)
+
+    def replace(src: object, dst: object) -> None:
+        events.append(f"replace:{Path(str(dst)).name}")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    result = saved_run(repo, paths, home, tmp_path, answer())
+    monkeypatch.undo()
+    assert result.outcome is ExploreOutcome.SAVED
+    saved = f"replace:{EID}.json"
+    assert saved in events
+    assert "fsync" in events[: events.index(saved)]
