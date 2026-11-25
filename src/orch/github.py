@@ -503,7 +503,11 @@ def compare(*, github: str, base: str, head: str, token: str) -> Comparison:
     _validate_token(token)
     if re.fullmatch(_GITHUB_PATTERN, github) is None:
         raise GitHubError("Invalid repository")
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", base) is None or ".." in base:
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", base) is None
+        or ".." in base
+        or base.endswith((".", "/"))
+    ):
         raise GitHubError("Invalid branch")
     if re.fullmatch(r"[0-9a-f]{40}", head) is None:
         raise GitHubError("Invalid head commit")
