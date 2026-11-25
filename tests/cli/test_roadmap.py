@@ -506,3 +506,15 @@ def test_build_report_raises_for_an_invalid_roadmap(repo: Path, tmp_path: Path) 
         conn.close()
     assert caught.value.error == "invalid_roadmap"
     assert Problem("schema_version", "schema_version") in caught.value.problems
+
+
+# The hub's own roadmap (h-roadmap-hub)
+
+
+def test_the_hub_roadmap_is_valid_and_has_one_current_phase() -> None:
+    hub = Path(__file__).resolve().parents[2]
+    parsed = roadmap.parse_roadmap(
+        (hub / roadmap.ROADMAP_PATH).read_text(encoding="utf-8")
+    )
+    assert [p.status for p in parsed.phases].count("current") == 1
+    assert "M19" in {m.id for p in parsed.phases for m in p.milestones}
