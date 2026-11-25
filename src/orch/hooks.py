@@ -12,7 +12,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from orch import config, guard, notify, runner, scheduler, store
+from orch import config, guard, notify, render, runner, scheduler, store
 from orch.models import TaskState
 
 Alive = Callable[[int, str], bool]
@@ -85,7 +85,13 @@ def recover(
     return tuple(orphaned)
 
 
-def summary(conn: sqlite3.Connection, *, target: str, orphaned: Sequence[str]) -> str:
+def summary(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    orphaned: Sequence[str],
+    now: datetime,
+) -> str:
     orphaned = [
         task_id
         for task_id in orphaned
@@ -102,7 +108,10 @@ def summary(conn: sqlite3.Connection, *, target: str, orphaned: Sequence[str]) -
             TaskState.PR_OPEN,
         ],
     )
-    if not tasks and not orphaned:
+    doctor_line = render.doctor_stale_line(
+        render.doctor_state(store.list_doctor_checks(conn), now)
+    )
+    if not tasks and not orphaned and doctor_line is None:
         return ""
     lines = [f"orch 복구 요약 (대상 {target})"]
     for task in tasks:
@@ -112,6 +121,8 @@ def summary(conn: sqlite3.Connection, *, target: str, orphaned: Sequence[str]) -
         lines.append(line)
     if orphaned:
         lines.append(f"이번에 orphaned로 바꾼 작업: {', '.join(orphaned)}")
+    if doctor_line is not None:
+        lines.append(doctor_line)
     return "\n".join(lines)
 
 
@@ -166,7 +177,11 @@ def handle_session_start(
                     environ, now, "session-start", f"{key} {type(exc).__name__}"
                 ),
             )
-            context = summary(conn, target=target, orphaned=orphaned) if target else ""
+            context = (
+                summary(conn, target=target, orphaned=orphaned, now=now)
+                if target
+                else ""
+            )
         if not context:
             return ""
         return json.dumps(
