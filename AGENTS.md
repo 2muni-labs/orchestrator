@@ -54,6 +54,7 @@ docs/decisions/    decision records (ADR), one per file
 src/orch/          orch package
 tests/             tests, owned by the main agent
 docs/github-tracking.json  reviewed project/issue recovery bindings
+docs/roadmap.toml  hub roadmap that orch roadmap reads
 docs/measurements/ measurement records, such as the CU0 baseline
 templates/task.md  task spec template
 schemas/           result, review and explore answer JSON schemas

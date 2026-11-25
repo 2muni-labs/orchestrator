@@ -1,0 +1,131 @@
+# Hub roadmap read by `orch roadmap` (technical design 4.13, decision D4).
+# Copied from docs/design/구축 절차.md; that document stays the source of truth.
+# Change both in the same pull request.
+
+schema_version = 1
+
+[[phase]]
+id = "P0"
+title = "환경 준비"
+status = "done"
+exit = ["환경 점검 체크리스트 전부 통과"]
+
+[[phase]]
+id = "P1"
+title = "최소 하네스"
+status = "done"
+exit = ["사용자 검토 후 main에 머지"]
+
+[[phase]]
+id = "P2"
+title = "수동 오케스트레이션으로 핵심부 구현"
+status = "done"
+exit = ["가짜 에이전트로 prepare → run → gate → pr → close 통합 테스트 통과"]
+
+  [[phase.milestone]]
+  id = "M1"
+  title = "models, store"
+
+  [[phase.milestone]]
+  id = "M2"
+  title = "redact, config, taskfile"
+
+  [[phase.milestone]]
+  id = "M3"
+  title = "gitops"
+
+  [[phase.milestone]]
+  id = "M4"
+  title = "results, 가짜 에이전트"
+
+  [[phase.milestone]]
+  id = "M5"
+  title = "store 추가분, scheduler"
+
+  [[phase.milestone]]
+  id = "M6"
+  title = "lanes, runner"
+
+  [[phase.milestone]]
+  id = "M7"
+  title = "gate"
+
+  [[phase.milestone]]
+  id = "M8"
+  title = "github, prflow"
+
+  [[phase.milestone]]
+  id = "M9"
+  title = "lifecycle, review, cli"
+
+  [[phase.milestone]]
+  id = "M10"
+  title = "통합 테스트"
+
+[[phase]]
+id = "P3"
+title = "자기 적용"
+status = "done"
+exit = ["허브 저장소 자체를 orch로 개발해 PR 3건 이상 생성"]
+
+  [[phase.milestone]]
+  id = "M11"
+  title = "render, orch watch"
+
+  [[phase.milestone]]
+  id = "M12"
+  title = "orch review"
+
+  [[phase.milestone]]
+  id = "M13"
+  title = "launcher, terminal/tmux"
+
+  [[phase.milestone]]
+  id = "M14"
+  title = "hooks, guard"
+
+  [[phase.milestone]]
+  id = "M15"
+  title = "doctor, service, gc"
+
+  [[phase.milestone]]
+  id = "M16"
+  title = "하네스 이관"
+
+[[phase]]
+id = "P4"
+title = "실환경 검증"
+status = "done"
+exit = ["요건 1장 시스템 완료 기준 충족"]
+
+[[phase]]
+id = "P5a"
+title = "운용 점검"
+status = "current"
+exit = ["M17~M19 설치 뒤 1주일 무인 운용 중 처리하지 못한 장애 없음"]
+
+  [[phase.milestone]]
+  id = "M17"
+  title = "출력 계약"
+
+  [[phase.milestone]]
+  id = "M18"
+  title = "테스트 묶음"
+
+  [[phase.milestone]]
+  id = "M19"
+  title = "파이프라인 확장"
+
+[[phase]]
+id = "P5b"
+title = "작업공간"
+status = "planned"
+exit = ["작업공간 v1이 Windows·iPhone·iPad에서 인수 시나리오를 모두 통과"]
+
+  [[phase.milestone]]
+  id = "M20"
+  title = "작업공간 기반"
+
+  [[phase.milestone]]
+  id = "M21"
+  title = "작업공간 v1 화면"
