@@ -24,6 +24,7 @@ from orch import (
     config,
     credentials,
     doctor,
+    events,
     gate,
     gc,
     github,
@@ -6168,14 +6169,14 @@ def test_other_commands_still_omit_schema_version_in_errors(orch: Call) -> None:
     assert "schema_version" not in result[1]
 
 
-# orch events (schemas/cli/events.v1.json)
+# orch events (schemas/cli/events.v2.json)
 
 
 def events_schema_errors(data: dict[str, object]) -> list[str]:
     import jsonschema
 
     schema = json.loads(
-        (HUB_SOURCE / "schemas" / "cli" / "events.v1.json").read_text(encoding="utf-8")
+        (HUB_SOURCE / "schemas" / "cli" / "events.v2.json").read_text(encoding="utf-8")
     )
     validator = jsonschema.Draft202012Validator(schema)
     return [error.message for error in validator.iter_errors(data)]
@@ -6184,8 +6185,10 @@ def events_schema_errors(data: dict[str, object]) -> list[str]:
 EVENT_KEYS = [
     "schema_version",
     "id",
+    "kind",
     "task_id",
     "target",
+    "session_id",
     "from_state",
     "to_state",
     "actor",
@@ -6248,6 +6251,84 @@ def test_events_prints_every_event_as_json_lines(
     assert (lines[0]["from_state"], lines[0]["to_state"]) == ("prepared", "reserved")
 
 
+def test_events_prints_wait_lines_in_the_same_stream(
+    env: Env, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_events(env)
+    conn = connect(env)
+    try:
+        store.record_wait(
+            conn,
+            kind="wait_start",
+            target=TARGET,
+            session_id="session-1",
+            note="permission_request",
+            at="2026-11-24T12:00:00+00:00",
+        )
+        store.record_wait(
+            conn,
+            kind="wait_start",
+            target="other",
+            session_id="session-2",
+            note="idle_prompt",
+            at="2026-11-24T12:00:01+00:00",
+        )
+    finally:
+        conn.close()
+    code, lines = run_events(capsys, "--since", "3")
+    assert code == 0
+    assert [(e["id"], e["kind"], e["target"]) for e in lines] == [
+        (4, "wait_start", TARGET),
+        (5, "wait_start", "other"),
+    ]
+    for line in lines:
+        assert list(line) == EVENT_KEYS
+        assert events_schema_errors(line) == []
+    assert lines[0]["task_id"] is None
+    assert lines[0]["session_id"] == "session-1"
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    code, lines = run_events(capsys)
+    assert [(e["id"], e["kind"]) for e in lines] == [
+        (1, "transition"),
+        (3, "transition"),
+        (4, "wait_start"),
+    ]
+
+
+def test_an_events_internal_error_carries_version_2(
+    env: Env, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(events, "stream", broken)
+    code, lines = run_events(capsys)
+    assert code == 70
+    assert len(lines) == 1
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"] == "internal"
+    assert lines[0]["schema_version"] == 2
+    assert events_schema_errors(lines[0]) == []
+
+
+def test_other_contract_errors_keep_version_1(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, data = orch_show_missing(capsys)
+    assert code != 0
+    assert data["ok"] is False
+    assert data["schema_version"] == 1
+
+
+def orch_show_missing(
+    capsys: pytest.CaptureFixture[str],
+) -> tuple[int, dict[str, object]]:
+    code = main(["show", "no-such-task"])
+    captured = capsys.readouterr()
+    sys.stderr.write(captured.err)
+    return code, json.loads(captured.out)
+
+
 def test_events_prints_no_final_object(
     env: Env, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -6308,7 +6389,7 @@ def test_events_target_other_than_the_session_is_refused(
     assert len(lines) == 1
     assert_error((code, lines[0]), USAGE, "refused")
     assert list(lines[0])[:2] == ["ok", "schema_version"]
-    assert lines[0]["schema_version"] == 1
+    assert lines[0]["schema_version"] == 2
     assert events_schema_errors(lines[0]) == []
 
 
@@ -6341,7 +6422,7 @@ def test_events_bad_arguments_are_usage_errors_with_schema_version(
     assert len(lines) == 1
     assert_error((code, lines[0]), USAGE, "usage")
     assert list(lines[0])[:2] == ["ok", "schema_version"]
-    assert lines[0]["schema_version"] == 1
+    assert lines[0]["schema_version"] == 2
     assert events_schema_errors(lines[0]) == []
 
 

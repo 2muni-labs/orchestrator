@@ -20,8 +20,9 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     connection.close()
 
 
-def test_the_schema_is_version_eight() -> None:
-    assert len(store.MIGRATIONS) == 8
+def test_the_suite_runs_table_is_the_v8_migration() -> None:
+    assert len(store.MIGRATIONS) >= 8
+    assert store.MIGRATIONS[7][0].lstrip().startswith("CREATE TABLE suite_runs")
 
 
 def test_a_selection_round_trips(conn: sqlite3.Connection) -> None:
@@ -137,7 +138,8 @@ def test_a_version_seven_database_gains_the_table(tmp_path: Path) -> None:
     old.close()
     conn = store.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert version == len(store.MIGRATIONS)
         record_suite_run(
             conn, "m-a", 1, Gate.G2, full=True, groups=(), reasons=(), failed_tests=()
         )

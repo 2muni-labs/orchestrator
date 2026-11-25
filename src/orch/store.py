@@ -173,7 +173,15 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             PRIMARY KEY (task_id, attempt, gate)
         )""",
     ),
+    (
+        "ALTER TABLE events ADD COLUMN kind TEXT",
+        "ALTER TABLE events ADD COLUMN session_id TEXT",
+        "ALTER TABLE events ADD COLUMN target TEXT",
+    ),
 )
+
+
+WAIT_KINDS = ("wait_start", "wait_end")
 
 
 class StoreError(Exception):
@@ -781,3 +789,26 @@ def clear_suite_runs(
             "DELETE FROM suite_runs WHERE task_id = ? AND attempt = ? AND gate = ?",
             ((task_id, attempt, gate.value) for gate in gates),
         )
+
+
+def record_wait(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    target: str,
+    session_id: str,
+    note: str,
+    at: str,
+) -> int:
+    """Record the start or end of a main session input wait and return its id."""
+    if kind not in WAIT_KINDS:
+        raise ValueError(f"Invalid wait kind: {kind}")
+    with transaction(conn):
+        cursor = conn.execute(
+            """INSERT INTO events (
+                task_id, from_state, to_state, actor, note, at, kind,
+                session_id, target
+            ) VALUES (NULL, NULL, NULL, 'hook', ?, ?, ?, ?, ?)""",
+            (note, at, kind, session_id, target),
+        )
+        return cursor.lastrowid

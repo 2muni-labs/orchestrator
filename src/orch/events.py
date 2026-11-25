@@ -1,4 +1,4 @@
-"""Read task state transitions from the events table as JSON Lines."""
+"""Read task state transitions and input waits as JSON Lines."""
 
 import json
 import sqlite3
@@ -9,14 +9,16 @@ from collections.abc import Callable
 def read_events(
     conn: sqlite3.Connection, *, since: int, target: str | None
 ) -> list[dict[str, object]]:
-    """Return the events after since in id order, for target's tasks or all."""
-    query = """SELECT e.id, e.task_id, t.target, e.from_state, e.to_state,
+    """Return transitions and waits after since in id order, filtered by target."""
+    event_target = "CASE WHEN e.kind IS NULL THEN t.target ELSE e.target END"
+    query = f"""SELECT e.id, COALESCE(e.kind, 'transition'), e.task_id,
+                      {event_target}, e.session_id, e.from_state, e.to_state,
                       e.actor, e.note, e.at
-               FROM events AS e JOIN tasks AS t ON t.id = e.task_id
-               WHERE e.id > ?"""
+               FROM events AS e LEFT JOIN tasks AS t ON t.id = e.task_id
+               WHERE e.id > ? AND (e.kind IS NOT NULL OR t.id IS NOT NULL)"""
     parameters: list[object] = [since]
     if target is not None:
-        query += " AND t.target = ?"
+        query += f" AND {event_target} = ?"
         parameters.append(target)
     query += " ORDER BY e.id"
     cursor = conn.execute(query, parameters)
@@ -24,8 +26,19 @@ def read_events(
         rows = cursor.fetchall()
     finally:
         cursor.close()
-    keys = ("id", "task_id", "target", "from_state", "to_state", "actor", "note", "at")
-    return [{"schema_version": 1, **dict(zip(keys, row, strict=True))} for row in rows]
+    keys = (
+        "id",
+        "kind",
+        "task_id",
+        "target",
+        "session_id",
+        "from_state",
+        "to_state",
+        "actor",
+        "note",
+        "at",
+    )
+    return [{"schema_version": 2, **dict(zip(keys, row, strict=True))} for row in rows]
 
 
 def stream(
