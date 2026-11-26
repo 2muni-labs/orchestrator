@@ -233,6 +233,9 @@ def main():
     elif scenario == "slow_long_summary":
         time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
         report(worktree, task_id, summary="가" * 700)
+    elif scenario == "slow_long_unresolved":
+        time.sleep(float(os.environ.get("ORCH_FAKE_SLEEP", "1")))
+        report(worktree, task_id, summary="요약", unresolved=["나" * 690])
     elif scenario == "leftover_child":
         start_child()
         report(worktree, task_id)
