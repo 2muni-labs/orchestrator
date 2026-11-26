@@ -162,7 +162,10 @@ def current_model(
 
 
 def recorded_model(hub: Path, orch_home: Path) -> tuple[str, str]:
-    raise NotImplementedError
+    """Return the current recorded Codex model, falling back to the pins."""
+    pins = load_codex_pins(hub)
+    state = load_agents_state(agents_state_path(orch_home))
+    return current_model(state["agents"].get("codex", {}).get("current"), pins)
 
 
 # Pins and layout

@@ -97,6 +97,7 @@ def agent_report(
     warn: Sequence[str],
     state: Mapping[str, object] | None,
     record: LatestRecord | None,
+    default_model: str | None = None,
 ) -> dict[str, object]:
     """Return one agent's object of schemas/cli/versions.v1.json."""
     state = state or {}
@@ -120,6 +121,19 @@ def agent_report(
             ],
             "warnings": list(candidate_entry["warnings"]),
         }
+    models = None
+    if agent == "codex":
+        model = (
+            current_entry.get("model") if isinstance(current_entry, Mapping) else None
+        )
+        if isinstance(model, str) and model:
+            models = {"model": model, "source": "record"}
+        elif isinstance(default_model, str):
+            models = {"model": default_model, "source": "default"}
+    elif agent == "claude" and isinstance(current_entry, Mapping):
+        recorded_models = current_entry.get("models")
+        if isinstance(recorded_models, dict):
+            models = dict(recorded_models)
     return {
         "installed": installed,
         "baseline": baseline,
@@ -133,6 +147,7 @@ def agent_report(
             else None
         ),
         "candidate": candidate,
+        "models": models,
         "remeasure": {"blocking": list(blocking), "warn": list(warn)},
         "commands": {
             "apply": (
@@ -188,6 +203,7 @@ def build_report(
             warn=pins[agent].warn,
             state=states.get(agent),
             record=record,
+            default_model=pins["codex"].default_model if agent == "codex" else None,
         )
         for agent in AGENTS
     }

@@ -157,7 +157,12 @@ def parse_task(text: str) -> TaskSpec:
         Grade.L3R: ("opus", None),
     }
     pair = (data["model"], effort)
-    codex_match = pair == ("gpt-6.1-sol", codex_efforts[grade])
+    codex_match = (
+        isinstance(data["model"], str)
+        and re.fullmatch(r"[a-z0-9][a-z0-9.-]*", data["model"]) is not None
+        and data["model"] not in ("haiku", "sonnet", "opus")
+        and effort == codex_efforts[grade]
+    )
     claude_match = pair == claude[grade]
     if not (
         (lane in (Lane.B, Lane.D) and codex_match)
