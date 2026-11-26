@@ -190,13 +190,50 @@ def build_package(pkg: Path, version: str) -> None:
         path.chmod(0o755)
 
 
+def model_entry(
+    slug: str,
+    priority: int,
+    *,
+    visibility: str = "list",
+    api: object = True,
+    efforts: Sequence[str] = ("low", "medium", "high", "xhigh"),
+) -> dict[str, object]:
+    """One item of codex debug models as measured on 0.171.0 (fields trimmed)."""
+    return {
+        "slug": slug,
+        "display_name": slug,
+        "visibility": visibility,
+        "supported_in_api": api,
+        "priority": priority,
+        "supported_reasoning_levels": [
+            {"effort": effort, "description": effort} for effort in efforts
+        ],
+        "default_reasoning_level": "medium",
+    }
+
+
+def models_json(*entries: dict[str, object]) -> str:
+    return json.dumps({"models": list(entries)}, indent=2) + "\n"
+
+
+# The default answer picks the default model, so nothing but the candidate changes.
+DEFAULT_MODEL = "gpt-6.1-sol"
+DEFAULT_MODELS = models_json(
+    model_entry("gpt-6.1-sol", 1), model_entry("gpt-6.1-terra", 2)
+)
+
+
 @dataclass
 class FakeCommands:
-    """codesign and --version."""
+    """codesign, --version and debug models."""
 
     codesign_fail: set[str] = field(default_factory=set)
     codesign_raises: bool = False
     version_output: dict[str, str] = field(default_factory=dict)
+    models_output: dict[str, str] = field(default_factory=dict)
+    models_default: str = DEFAULT_MODELS
+    models_exit: int = 0
+    models_raises: BaseException | None = None
     calls: list[tuple[list[str], float]] = field(default_factory=list)
 
     def __call__(
@@ -208,6 +245,11 @@ class FakeCommands:
                 raise OSError("codesign failed to start")
             name = Path(argv[-1]).name
             return completed(argv, 3 if name in self.codesign_fail else 0)
+        if list(argv[1:]) == ["debug", "models"]:
+            if self.models_raises is not None:
+                raise self.models_raises
+            body = self.models_output.get(argv[0], self.models_default)
+            return completed(argv, self.models_exit, body)
         if list(argv[1:]) == ["--version"]:
             if argv[0] in self.version_output:
                 return completed(argv, 0, self.version_output[argv[0]])
@@ -870,6 +912,7 @@ def isolation_context(tmp_path: Path, run: FakeCodexRun) -> IsolationContext:
         project,
         run,
         {"HOME": "/home/u", "PATH": selfcheck.SESSION_PATH},
+        "gpt-6.2-sol",
     )
 
 
@@ -879,7 +922,7 @@ def test_isolation_argv() -> None:
         "-C",
         "/p",
         "-m",
-        "gpt-6.1-sol",
+        "gpt-6.2-sol",
         "-c",
         "model_reasoning_effort=low",
         "--sandbox",
@@ -888,12 +931,14 @@ def test_isolation_argv() -> None:
         "/w/x.last",
         "-",
     ]
-    assert isolation_argv(binary, project, out, isolated=False) == [
+    assert isolation_argv(
+        binary, project, out, isolated=False, model="gpt-6.2-sol"
+    ) == [
         "/b/codex",
         "exec",
         *tail,
     ]
-    assert isolation_argv(binary, project, out, isolated=True) == [
+    assert isolation_argv(binary, project, out, isolated=True, model="gpt-6.2-sol") == [
         "/b/codex",
         "exec",
         *ISOLATION_ARGS,
@@ -907,8 +952,20 @@ def test_isolation_passes_as_measured(tmp_path: Path) -> None:
     assert check_isolation(ctx) == CheckResult("isolation", "pass", "")
     work = tmp_path / "work"
     assert [call[0] for call in run.calls] == [
-        isolation_argv(ctx.binary, ctx.project, work / "control.last", isolated=False),
-        isolation_argv(ctx.binary, ctx.project, work / "isolated.last", isolated=True),
+        isolation_argv(
+            ctx.binary,
+            ctx.project,
+            work / "control.last",
+            isolated=False,
+            model=ctx.model,
+        ),
+        isolation_argv(
+            ctx.binary,
+            ctx.project,
+            work / "isolated.last",
+            isolated=True,
+            model=ctx.model,
+        ),
     ]
     for argv, cwd, env, timeout, text in run.calls:
         assert "--json" not in argv
@@ -1193,6 +1250,7 @@ def sandbox_context(
         canary_token=CANARY_TOKEN,
         write_token=WRITE_TOKEN,
         proxy_factory=px,
+        model="gpt-6.2-sol",
     )
 
 
@@ -1201,7 +1259,7 @@ def canary_of(ctx: SandboxContext) -> Path:
 
 
 def test_sandbox_probe_argv() -> None:
-    assert sandbox_probe_argv(Path("/b/codex"), Path("/p")) == [
+    assert sandbox_probe_argv(Path("/b/codex"), Path("/p"), "gpt-6.2-sol") == [
         "/b/codex",
         "exec",
         "--json",
@@ -1209,7 +1267,7 @@ def test_sandbox_probe_argv() -> None:
         "-C",
         "/p",
         "-m",
-        "gpt-6.1-sol",
+        "gpt-6.2-sol",
         "-c",
         "model_reasoning_effort=low",
         "--sandbox",
@@ -1241,7 +1299,7 @@ def test_the_sandbox_checks_pass_as_measured(tmp_path: Path) -> None:
     tmpdir = ctx.workdir / "tmp"
     assert tmpdir.is_dir()
     assert argv == sandbox.wrap_codex(
-        sandbox_probe_argv(ctx.binary, ctx.project),
+        sandbox_probe_argv(ctx.binary, ctx.project, ctx.model),
         executable=sandbox.SANDBOX_EXEC,
         worktree=ctx.project,
         tmpdir=tmpdir,
@@ -1474,6 +1532,7 @@ def test_after_the_bootstrap_a_candidate_that_passes_is_ready(world: World) -> N
     binary = world.layout.installs / "0.170.0" / "bin" / "codex"
     assert world.codex()["candidate"] == {
         "version": "0.170.0",
+        "model": DEFAULT_MODEL,
         "status": "ready",
         "sha256": selfcheck.sha256_file(binary),
         "path": str(binary),
@@ -1510,6 +1569,7 @@ def test_the_report_json(world: World) -> None:
         "warnings": list(load_codex_pins(world.hub).warn),
         "reused": False,
         "notified": "sent",
+        "model": DEFAULT_MODEL,
     }
 
 
@@ -1757,6 +1817,7 @@ def test_a_blocking_id_without_a_check_is_not_automated(world: World) -> None:
     pins = load_codex_pins(world.hub)
     assert world.codex()["candidate"] == {
         "version": "0.170.0",
+        "model": None,
         "status": "not_automated",
         "sha256": None,
         "path": None,
@@ -1984,6 +2045,7 @@ def _record_ready_candidate(world: World, version: str) -> Path:
     state = world.state()
     state["agents"]["codex"]["candidate"] = {  # type: ignore[index]
         "version": version,
+        "model": DEFAULT_MODEL,
         "status": "ready",
         "sha256": selfcheck.sha256_file(binary),
         "path": str(binary),
