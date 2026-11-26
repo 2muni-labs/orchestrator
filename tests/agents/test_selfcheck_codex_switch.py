@@ -138,6 +138,7 @@ def ready_candidate(world: World, version: str = NEW) -> dict[str, object]:
     binary = world.install(version)
     return {
         "version": version,
+        "model": "gpt-6.2-sol",
         "status": "ready",
         "sha256": sha(binary),
         "path": str(binary),
@@ -296,6 +297,7 @@ def test_apply_switches_the_link_the_files_and_the_record(world: World) -> None:
         "version": NEW,
         "sha256": candidate["sha256"],  # type: ignore[index]
         "path": str(target),
+        "model": "gpt-6.2-sol",
         "at": LATER.isoformat(),
         "source": "apply",
     }
@@ -423,7 +425,14 @@ def refuse_not_newer(world: World) -> None:
 def refuse_same_version(world: World) -> None:
     applyable(world)
     binary = world.layout.installs / CURRENT / "bin" / "codex"
-    _set_candidate(world, version=CURRENT, path=str(binary), sha256=sha(binary))
+    # The same version and the model the record already uses (the pins default).
+    _set_candidate(
+        world,
+        version=CURRENT,
+        path=str(binary),
+        sha256=sha(binary),
+        model="gpt-6.1-sol",
+    )
 
 
 def refuse_link_elsewhere(world: World) -> None:

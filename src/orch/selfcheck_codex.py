@@ -62,6 +62,8 @@ MISE_INSTALL_TIMEOUT_SEC = 900
 ISOLATION_MODEL = "gpt-6.1-sol"
 ISOLATION_TIMEOUT_SEC = 180
 ISOLATION_PROMPT = "Reply with the single word ok."
+MODELS_TIMEOUT_SEC = 60
+REQUIRED_EFFORTS = ("low", "medium", "high", "xhigh")
 MACHO_MAGICS = frozenset(
     {
         b"\xcf\xfa\xed\xfe",
@@ -104,6 +106,23 @@ def run_with_input(
     )
 
 
+# Models (ADR 0032)
+
+
+def select_model(stdout: str) -> str | None:
+    raise NotImplementedError
+
+
+def list_model(binary: Path, command: Command) -> str | None:
+    raise NotImplementedError
+
+
+def current_model(
+    entry: Mapping[str, object] | None, pins: CodexPins
+) -> tuple[str, str]:
+    raise NotImplementedError
+
+
 # Pins and layout
 
 
@@ -114,6 +133,7 @@ class CodexPins:
     codesign_team: str
     blocking: tuple[str, ...]
     warn: tuple[str, ...]
+    default_model: str = ""
 
 
 def load_codex_pins(hub: Path) -> CodexPins:
