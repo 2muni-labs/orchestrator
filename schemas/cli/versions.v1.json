@@ -38,6 +38,7 @@
                 "latest_checked_at",
                 "behind",
                 "candidate",
+                "models",
                 "remeasure",
                 "commands"
               ],
@@ -143,6 +144,29 @@
                       "items": {
                         "type": "string"
                       }
+                    }
+                  }
+                },
+                "models": {
+                  "description": "Model ID each tier alias resolved to in the current record (ADR 0032), or null when not recorded.",
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "haiku",
+                    "sonnet",
+                    "opus"
+                  ],
+                  "properties": {
+                    "haiku": {
+                      "type": "string"
+                    },
+                    "sonnet": {
+                      "type": "string"
+                    },
+                    "opus": {
+                      "type": "string"
                     }
                   }
                 },
@@ -201,6 +225,7 @@
                 "latest_checked_at",
                 "behind",
                 "candidate",
+                "models",
                 "remeasure",
                 "commands"
               ],
@@ -306,6 +331,28 @@
                       "items": {
                         "type": "string"
                       }
+                    }
+                  }
+                },
+                "models": {
+                  "description": "Codex model of the current record, or the pins default_model when the record has none (ADR 0032).",
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "model",
+                    "source"
+                  ],
+                  "properties": {
+                    "model": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "enum": [
+                        "record",
+                        "default"
+                      ]
                     }
                   }
                 },

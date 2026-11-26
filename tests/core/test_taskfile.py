@@ -314,7 +314,10 @@ def test_claude_effort_is_rejected_where_the_table_has_none() -> None:
     ("lane", "grade", "model"),
     [
         ("B", "L2", "sonnet"),
-        ("B", "L2", "gpt-6-astra"),
+        ("B", "L2", "GPT-6.1-sol"),
+        ("B", "L2", "gpt 6"),
+        ("B", "L2", "-gpt"),
+        ("D", "L2", "haiku"),
         ("C", "L2", "gpt-6.1-sol"),
         ("C", "L1", "sonnet"),
         ("C", "L2", "opus"),

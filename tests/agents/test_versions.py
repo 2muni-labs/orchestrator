@@ -328,6 +328,7 @@ def test_agent_report_with_everything_known() -> None:
             ],
             "warnings": ["FL-M1: check by hand"],
         },
+        "models": None,
         "remeasure": {"blocking": ["FL-M3", "m14-cli"], "warn": ["FL-M1: by hand"]},
         "commands": {
             "apply": "orch selfcheck --apply claude",
@@ -346,6 +347,7 @@ def test_agent_report_keys_follow_the_schema_order() -> None:
         "latest_checked_at",
         "behind",
         "candidate",
+        "models",
         "remeasure",
         "commands",
     ]

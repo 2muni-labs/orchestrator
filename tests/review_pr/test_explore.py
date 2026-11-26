@@ -81,6 +81,10 @@ def answer_file(tmp_path: Path, value: object) -> Path:
     return path
 
 
+# Any recorded Codex model; the CLI passes the one in agents.json.
+EXPLORE_MODEL = "gpt-6.2-sol"
+
+
 def explore(
     repo: Path,
     paths: TargetPaths,
@@ -95,6 +99,7 @@ def explore(
 ) -> ExploreRun:
     return run_explore(
         question_file(paths) if question is None else question,
+        model=EXPLORE_MODEL,
         dir_arg=dir_arg,
         target=make_target(repo),
         config=make_config(limits=Limits(lane_a=lane_a)),
@@ -665,7 +670,7 @@ def test_the_agent_gets_the_sandboxed_command_and_the_prompt(
     assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
     assert argv[argv.index("-o") + 1] == str(paths.logs / "explore" / f"{EID}.1.out")
     assert argv[argv.index("-C") + 1] == str(repo.resolve())
-    assert argv[argv.index("-m") + 1] == review.REVIEW_MODEL
+    assert argv[argv.index("-m") + 1] == EXPLORE_MODEL
     assert f"model_reasoning_effort={review.REVIEW_EFFORT}" in argv
     assert argv[-1] == "-" and "--json" in argv
     assert Path(seen["cwd"]).resolve() == repo.resolve()
@@ -785,6 +790,7 @@ def test_an_agent_that_cannot_start_is_a_failure(
         config=make_config(codex_path=home / "missing" / "codex"),
         paths=paths,
         environ={"PATH": "/usr/bin", "HOME": str(home)},
+        model=EXPLORE_MODEL,
     )
     assert (result.outcome, result.exit_code) == (ExploreOutcome.FAILED, None)
     assert not (explore_root(paths) / f"{EID}.lock").exists()

@@ -1005,8 +1005,10 @@ def review_paths(env: Env) -> dict[str, str]:
     }
 
 
-def test_the_review_model_is_policy_in_review_py() -> None:
-    assert (review.REVIEW_MODEL, review.REVIEW_EFFORT) == ("gpt-6.1-sol", "medium")
+def test_the_review_effort_is_policy_in_review_py() -> None:
+    # The model is the recorded Codex model (ADR 0032), not a constant.
+    assert review.REVIEW_EFFORT == "medium"
+    assert not hasattr(review, "REVIEW_MODEL")
 
 
 @pytest.mark.usefixtures("target")
@@ -1078,17 +1080,19 @@ def test_a_review_that_is_not_saved_keeps_reviewing(
 
 
 @pytest.mark.usefixtures("target")
-def test_the_review_runs_codex_with_the_policy_model_and_effort(
+def test_the_review_runs_codex_with_the_recorded_model_and_policy_effort(
     orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     make_codex_reviewing(orch, env)
+    # Recorded after the task was prepared: the review follows the record.
+    record_codex_model(env, "gpt-6.2-sol")
     args_file = env.home / "review-args.json"
     monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_args")
     monkeypatch.setenv("ORCH_FAKE_ARGS_FILE", str(args_file))
     code, data = orch("review", TASK, "--by", "codex")
     assert code == 0, data
     argv = json.loads(args_file.read_text(encoding="utf-8"))["argv"]
-    assert argv[argv.index("-m") + 1] == "gpt-6.1-sol"
+    assert argv[argv.index("-m") + 1] == "gpt-6.2-sol"
     assert "model_reasoning_effort=medium" in argv
     assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
 
@@ -1186,7 +1190,8 @@ def test_each_outcome_has_its_exit_code_and_the_call_is_exact(
         "orch_home",
     }
     assert call["task_id"] == TASK
-    assert call["model"] == review.REVIEW_MODEL
+    # Without an agents.json record, the pins default.
+    assert call["model"] == "gpt-6.1-sol"
     assert call["effort"] == review.REVIEW_EFFORT
     assert call["paths"] == env.paths
     assert call["environ"] is os.environ
@@ -7323,3 +7328,121 @@ def test_status_survives_an_unreadable_doctor_run(orch: Call, env: Env) -> None:
     assert code == 0, data
     assert data["doctor"] == {"last_at": None, "stale": True}
     assert contract_errors("status", data) == []
+
+
+# The recorded Codex model (ADR 0032, m-agent-model-use)
+
+
+def record_codex_model(env: Env, model: str | None) -> None:
+    """Write agents.json with a Codex current record, with or without a model."""
+    current: dict[str, object] = {
+        "version": "0.171.0",
+        "sha256": "c" * 64,
+        "path": "/x/agent-mise/data/installs/codex/0.171.0/bin/codex",
+        "at": "2026-11-26T00:00:00+00:00",
+        "source": "apply",
+    }
+    if model is not None:
+        current["model"] = model
+    state = {
+        "format": 1,
+        "agents": {"codex": {"current": current, "previous": None, "candidate": None}},
+    }
+    write(env.orch_home / "agents.json", json.dumps(state))
+
+
+def codex_spec(model: str, *, lane: str = "B") -> str:
+    text = spec_text(lane=lane)
+    if lane == "D":
+        text = text.replace(
+            'model = "sonnet"', 'model = "gpt-6.1-sol"\neffort = "medium"'
+        )
+    assert 'model = "gpt-6.1-sol"' in text
+    return text.replace('model = "gpt-6.1-sol"', f'model = "{model}"')
+
+
+@pytest.mark.usefixtures("target")
+def test_prepare_takes_the_recorded_codex_model(orch: Call, env: Env) -> None:
+    record_codex_model(env, "gpt-6.2-sol")
+    code, data = orch("prepare", str(draft(env, codex_spec("gpt-6.2-sol"))))
+    assert code == 0, data
+    assert data["state"] == "prepared"
+
+
+@pytest.mark.usefixtures("target")
+@pytest.mark.parametrize("lane", ["B", "D"])
+def test_prepare_refuses_another_codex_model(orch: Call, env: Env, lane: str) -> None:
+    record_codex_model(env, "gpt-6.2-sol")
+    result = orch(
+        "prepare", str(draft(env, codex_spec("gpt-6.1-sol", lane=lane))), unchecked=True
+    )
+    assert_error(result, USAGE, "refused")
+    assert "gpt-6.2-sol" in str(result[1]["message"])
+    assert not (env.paths.tasks / f"{TASK}.md").exists()
+    assert not (env.paths.worktrees / TASK).exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_a_record_without_a_model_means_the_pins_default(orch: Call, env: Env) -> None:
+    record_codex_model(env, None)
+    result = orch("prepare", str(draft(env, codex_spec("gpt-6.2-sol"))), unchecked=True)
+    assert_error(result, USAGE, "refused")
+    assert "gpt-6.1-sol" in str(result[1]["message"])
+    code, data = orch("prepare", str(draft(env, codex_spec("gpt-6.1-sol"))))
+    assert code == 0, data
+
+
+@pytest.mark.usefixtures("target")
+def test_an_unreadable_record_refuses_a_codex_prepare(orch: Call, env: Env) -> None:
+    write(env.orch_home / "agents.json", "{not json")
+    result = orch("prepare", str(draft(env, codex_spec("gpt-6.1-sol"))), unchecked=True)
+    assert_error(result, USAGE, "refused")
+    assert not (env.paths.tasks / f"{TASK}.md").exists()
+
+
+@pytest.mark.usefixtures("target")
+def test_a_claude_spec_is_not_compared_with_the_codex_record(
+    orch: Call, env: Env
+) -> None:
+    record_codex_model(env, "gpt-6.2-sol")
+    code, data = orch("prepare", str(draft(env, spec_text(lane="C"))))
+    assert code == 0, data
+
+
+@pytest.mark.usefixtures("target")
+def test_explore_runs_codex_with_the_recorded_model(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_codex_model(env, "gpt-6.2-sol")
+    question = explore_question(env)
+    args_file = env.home / "explore-args.json"
+    monkeypatch.setenv("ORCH_FAKE_SCENARIO", "review_args")
+    monkeypatch.setenv("ORCH_FAKE_ARGS_FILE", str(args_file))
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    orch("explore", str(question))
+    argv = json.loads(args_file.read_text(encoding="utf-8"))["argv"]
+    assert argv[argv.index("-m") + 1] == "gpt-6.2-sol"
+    assert "model_reasoning_effort=medium" in argv
+
+
+@pytest.mark.usefixtures("target")
+def test_an_unreadable_record_refuses_explore(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(env.orch_home / "agents.json", "{not json")
+    question = explore_question(env)
+    monkeypatch.setenv("ORCH_TARGET", TARGET)
+    assert_error(orch("explore", str(question)), USAGE, "refused")
+
+
+def test_versions_reports_the_models_of_the_records(
+    orch: Call, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    versions_setup(env, monkeypatch)
+    record_codex_model(env, "gpt-6.2-sol")
+    code, data = orch("versions")
+    assert code == 0, data
+    agents = data["agents"]
+    assert agents["codex"]["models"] == {"model": "gpt-6.2-sol", "source": "record"}
+    assert agents["claude"]["models"] is None
+    assert contract_errors("versions", data) == []

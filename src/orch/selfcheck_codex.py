@@ -161,6 +161,10 @@ def current_model(
     return pins.default_model, "default"
 
 
+def recorded_model(hub: Path, orch_home: Path) -> tuple[str, str]:
+    raise NotImplementedError
+
+
 # Pins and layout
 
 
