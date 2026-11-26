@@ -48,7 +48,7 @@ from orch import (
     waiter,
     watch,
 )
-from orch.models import Task, TaskState
+from orch.models import Lane, Task, TaskState
 from orch.terminal import (
     MainPaneStatus,
     TerminalError,
@@ -251,6 +251,14 @@ def _which_absolute(name: str) -> Path:
     if value is None or not Path(value).is_absolute():
         raise config.ConfigError(f"Cannot locate an absolute path for {name}")
     return Path(value)
+
+
+def _codex_model(hub: Path, orch_home: Path) -> str:
+    """Read the Codex model selected by selfcheck."""
+    try:
+        return selfcheck_codex.recorded_model(hub, orch_home)[0]
+    except selfcheck.SelfcheckError as exc:
+        raise config.ConfigError("Cannot read the recorded Codex model") from exc
 
 
 def _environment(
@@ -809,6 +817,7 @@ def _execute(
             config=config.load_config(orch_home),
             paths=config.target_paths(orch_home, name),
             environ=os.environ,
+            model=_codex_model(hub, orch_home),
         )
         code = {
             explore.ExploreOutcome.SAVED: 0,
@@ -1060,6 +1069,14 @@ def _command(
         _check_target(spec.target)
         assert hub is not None
         target = _target(hub, spec.target)
+        if spec.lane == Lane.B or (
+            spec.lane == Lane.D and spec.model not in ("haiku", "sonnet", "opus")
+        ):
+            recorded = _codex_model(hub, orch_home)
+            if spec.model != recorded:
+                raise taskfile.TaskFileError(
+                    f"Codex model must be the recorded model: {recorded}"
+                )
         paths = config.ensure_target(orch_home, target.name, target.github)
         task = lifecycle.prepare_task(conn, Path(args.spec), target, paths)
         return 0, {
@@ -1414,7 +1431,7 @@ def _command(
                 config=settings,
                 paths=paths,
                 environ=os.environ,
-                model=review.REVIEW_MODEL,
+                model=_codex_model(hub, orch_home),
                 effort=review.REVIEW_EFFORT,
                 home=home,
                 orch_home=orch_home,

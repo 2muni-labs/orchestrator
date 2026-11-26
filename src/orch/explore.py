@@ -266,6 +266,7 @@ def run_explore(
     config: Config,
     paths: TargetPaths,
     environ: Mapping[str, str],
+    model: str,
     timeout_sec: int | None = None,
 ) -> ExploreRun:
     """Run one explore question under the Codex review sandbox."""
@@ -322,7 +323,7 @@ def run_explore(
                 worktree=worktree,
                 prompt=explore_prompt(explore_id, question_text),
                 output_path=output_path,
-                model=review.REVIEW_MODEL,
+                model=model,
                 effort=review.REVIEW_EFFORT,
                 config=config,
                 environ=environ,
