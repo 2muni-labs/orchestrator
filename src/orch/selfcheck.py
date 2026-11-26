@@ -26,6 +26,8 @@ from orch.config import Config
 
 AGENTS_FORMAT = 1
 SESSION_MODEL = "claude-haiku-5-5"
+ALIASES = ("haiku", "sonnet", "opus")
+ALIAS_PROMPT = "Reply with the single word ok."
 SESSION_MAX_TURNS = 3
 SESSION_TIMEOUT_SEC = 120
 HOOK_TIMEOUT_SEC = 3
@@ -398,6 +400,16 @@ def load_agents_state(path: Path) -> dict[str, object]:
         return data
     except (ValueError, TypeError, KeyError) as exc:
         raise SelfcheckError("Invalid agents state") from exc
+
+
+def alias_argv(binary: Path, alias: str) -> list[str]:
+    raise NotImplementedError
+
+
+def resolve_aliases(
+    binary: Path, session: Session, cwd: Path, env: Mapping[str, str]
+) -> dict[str, str] | None:
+    raise NotImplementedError
 
 
 def _validate_candidate(candidate: object) -> None:

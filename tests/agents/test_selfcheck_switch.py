@@ -16,7 +16,7 @@ import pytest
 
 from orch import notify, selfcheck
 from orch.selfcheck import CurrentCheck, SwitchReport
-from selfcheck_support import binary_bytes, make_hub
+from selfcheck_support import RESOLVED, binary_bytes, make_hub
 from test_selfcheck import World, lock_is_free, pins_sha
 
 LATER = datetime(2026, 11, 21, 1, 0, tzinfo=UTC)
@@ -49,6 +49,7 @@ def ready_candidate(world: World, version: str = "2.1.326") -> dict[str, object]
     path = world.install(version)
     return {
         "version": version,
+        "models": dict(RESOLVED),
         "status": "ready",
         "sha256": sha(path),
         "path": str(path),
@@ -197,6 +198,7 @@ def test_apply_switches_the_link_and_records_the_versions(world: World) -> None:
         "version": "2.1.326",
         "sha256": sha(target),
         "path": str(target),
+        "models": RESOLVED,
         "at": LATER.isoformat(),
         "source": "apply",
     }
@@ -492,6 +494,8 @@ def test_rollback_swaps_current_and_previous(world: World) -> None:
         "version": "2.1.319",
         "sha256": old["sha256"],  # type: ignore[index]
         "path": old["path"],  # type: ignore[index]
+        # The rolled-back record carries its own resolved models.
+        "models": old["models"],  # type: ignore[index]
         "at": LATER.isoformat(),
         "source": "rollback",
     }

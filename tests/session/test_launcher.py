@@ -20,7 +20,7 @@ from orch.selfcheck import CurrentCheck
 
 
 def test_pinned_values() -> None:
-    assert MAIN_MODEL == "claude-opus-5-5"
+    assert MAIN_MODEL == "opus"
 
 
 def test_the_fixed_version_check_is_gone() -> None:
@@ -236,7 +236,7 @@ def test_plan_argv_cwd_env(layout: dict[str, Path]) -> None:
     assert result.argv == (
         str(layout["claude"]),
         "--model",
-        "claude-opus-5-5",
+        "opus",
         "--settings",
         str(layout["hub"] / "config" / "settings.json"),
         "--append-system-prompt-file",

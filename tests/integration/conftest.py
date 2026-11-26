@@ -402,7 +402,7 @@ class Sandbox:
             effort = {"L2": "medium", "L3": "high"}[grade]
             agent = ['model = "gpt-6.1-sol"', f'effort = "{effort}"']
         else:
-            agent = ['model = "claude-sonnet-5-5"']
+            agent = ['model = "sonnet"']
             if grade == "L3":
                 agent.append('effort = "high"')
         dependencies = ", ".join(f'"{item}"' for item in depends_on)

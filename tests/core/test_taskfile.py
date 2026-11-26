@@ -281,9 +281,9 @@ def test_unknown_effort_raises(value: str) -> None:
 @pytest.mark.parametrize(
     ("grade", "model"),
     [
-        ("L1", "claude-haiku-5-5"),
-        ("L2", "claude-sonnet-5-5"),
-        ("L3R", "claude-opus-5-5"),
+        ("L1", "haiku"),
+        ("L2", "sonnet"),
+        ("L3R", "opus"),
     ],
 )
 @pytest.mark.parametrize("lane", ["C", "D"])
@@ -297,7 +297,7 @@ def test_claude_mapping_without_effort(lane: str, grade: str, model: str) -> Non
 
 
 def test_claude_l3_requires_high_effort() -> None:
-    changes = {"lane": '"C"', "grade": '"L3"', "model": '"claude-sonnet-5-5"'}
+    changes = {"lane": '"C"', "grade": '"L3"', "model": '"sonnet"'}
     assert parse_task(spec_text(effort='"high"', **changes)).effort is Effort.HIGH
     with pytest.raises(TaskFileError):
         parse_task(spec_text(drop=("effort",), **changes))
@@ -307,22 +307,20 @@ def test_claude_l3_requires_high_effort() -> None:
 
 def test_claude_effort_is_rejected_where_the_table_has_none() -> None:
     with pytest.raises(TaskFileError):
-        parse_task(
-            spec_text(lane='"C"', model='"claude-sonnet-5-5"', effort='"medium"')
-        )
+        parse_task(spec_text(lane='"C"', model='"sonnet"', effort='"medium"'))
 
 
 @pytest.mark.parametrize(
     ("lane", "grade", "model"),
     [
-        ("B", "L2", "claude-sonnet-5-5"),
+        ("B", "L2", "sonnet"),
         ("B", "L2", "gpt-6-astra"),
         ("C", "L2", "gpt-6.1-sol"),
-        ("C", "L1", "claude-sonnet-5-5"),
-        ("C", "L2", "claude-opus-5-5"),
-        ("C", "L3R", "claude-sonnet-5-5"),
+        ("C", "L1", "sonnet"),
+        ("C", "L2", "opus"),
+        ("C", "L3R", "sonnet"),
         ("C", "L2", "claude-fable-5-1"),
-        ("D", "L2", "claude-opus-5-5"),
+        ("D", "L2", "opus"),
     ],
 )
 def test_models_outside_the_table_raise(lane: str, grade: str, model: str) -> None:

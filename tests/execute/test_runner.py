@@ -64,7 +64,7 @@ Body of the task.
 
 MODEL_LINES = {
     "B": 'model = "gpt-6.1-sol"\neffort = "medium"\n',
-    "C": 'model = "claude-sonnet-5-5"\n',
+    "C": 'model = "sonnet"\n',
     "D": 'model = "gpt-6.1-sol"\neffort = "medium"\n',
 }
 
