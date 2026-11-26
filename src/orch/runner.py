@@ -66,6 +66,11 @@ def latest_log_path(logs: Path, task_id: str) -> Path | None:
     return latest
 
 
+def append_note(result: TaskResult, note: str) -> TaskResult:
+    """Return result with note appended to unresolved, cut to SUMMARY_LIMIT."""
+    raise NotImplementedError
+
+
 def log_label(log_path: Path, environ: Mapping[str, str]) -> str:
     """Return the log path as a sub-agent reports it, with the home as a tilde."""
     if home := environ.get("HOME"):
