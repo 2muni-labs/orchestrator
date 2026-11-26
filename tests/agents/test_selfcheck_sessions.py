@@ -60,7 +60,7 @@ def prefix(ctx: CheckContext) -> list[str]:
         "--output-format",
         "json",
         "--model",
-        "claude-haiku-5-5",
+        "haiku",
         "--max-turns",
         "3",
     ]
@@ -109,7 +109,7 @@ def test_session_argv_puts_the_prompt_last(tmp_path: Path) -> None:
         "--output-format",
         "json",
         "--model",
-        "claude-haiku-5-5",
+        "haiku",
         "--max-turns",
         "3",
         "--permission-mode",

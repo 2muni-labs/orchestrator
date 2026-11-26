@@ -97,7 +97,7 @@ def spec_text(
     agent = (
         ['model = "gpt-6.1-sol"', 'effort = "medium"']
         if lane == "B"
-        else ['model = "claude-sonnet-5-5"']
+        else ['model = "sonnet"']
     )
     lines = [
         "+++",
@@ -3854,7 +3854,7 @@ def test_open_starts_the_main_session_and_panels(
             [
                 CLAUDE_BIN,
                 "--model",
-                "claude-opus-5-5",
+                "opus",
                 "--settings",
                 str(env.hub / "config" / "settings.json"),
                 "--append-system-prompt-file",

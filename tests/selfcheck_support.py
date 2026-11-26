@@ -276,6 +276,42 @@ def _expand(rule_path: str, home: str) -> str:
     return home + rule_path[1:] if rule_path.startswith("~/") else rule_path
 
 
+# Claude Code 2.1.330 as measured on 2026-11-26 (ADR 0032).
+RESOLVED = {
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+}
+
+
+def alias_stream(model: str) -> str:
+    """The stream-json lines of one alias session: init, assistant, result."""
+    events = [
+        {
+            "type": "system",
+            "subtype": "init",
+            "cwd": "/tmp/project",
+            "session_id": "00000000-0000-0000-0000-000000000000",
+            "tools": ["Bash", "Read"],
+            "model": model,
+            "permissionMode": "default",
+        },
+        {
+            "type": "assistant",
+            "message": {"model": model, "content": [{"type": "text", "text": "ok"}]},
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "num_turns": 1,
+            "result": "ok",
+            "modelUsage": {model: {"inputTokens": 3, "outputTokens": 1}},
+        },
+    ]
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
 def _prompt_tool(prompt: str) -> str:
     return "Edit" if "Edit tool" in prompt else prompt.split()[2]
 
@@ -291,6 +327,7 @@ class FakeClaude:
     with only Read in the denials and no Edit call.
     """
 
+    resolved: dict[str, str] = field(default_factory=lambda: dict(RESOLVED))
     hook_blocks: set[str] = field(default_factory=lambda: {"exit2", "deny"})
     hook_skipped: set[str] = field(default_factory=set)
     unlisted_denials: set[str] = field(default_factory=set)
@@ -322,6 +359,8 @@ class FakeClaude:
         timeout: float,
     ) -> subprocess.CompletedProcess[str]:
         argv = list(argv)
+        if _option(argv, "--output-format") == "stream-json":
+            return self._alias(argv, cwd, env, timeout)
         settings_path = _option(argv, "--settings")
         settings = (
             json.loads(Path(settings_path).read_text(encoding="utf-8"))
@@ -372,6 +411,23 @@ class FakeClaude:
                     "permission_denials": denials,
                 }
             )
+        return subprocess.CompletedProcess(argv, self.exit_codes.get(key, 0), out, "")
+
+    def _alias(
+        self, argv: list[str], cwd: Path, env: Mapping[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        """An alias session (key alias-<alias>): the init event names the model."""
+        alias = _option(argv, "--model")
+        key = f"alias-{alias}"
+        self.calls.append((key, argv, cwd, dict(env), timeout))
+        if self.on_call is not None:
+            self.on_call(key)
+        if key in self.raises:
+            raise self.raises[key]
+        if key in self.stdout:
+            out = self.stdout[key]
+        else:
+            out = alias_stream(self.resolved.get(str(alias), f"claude-{alias}"))
         return subprocess.CompletedProcess(argv, self.exit_codes.get(key, 0), out, "")
 
     def _hook(

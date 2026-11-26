@@ -29,6 +29,7 @@ from selfcheck_support import (
     NOW,
     PLATFORM,
     REPO,
+    RESOLVED,
     Commands,
     FakeClaude,
     Release,
@@ -824,6 +825,7 @@ def test_the_report_json_names_every_field() -> None:
         "warnings": ["w"],
         "reused": False,
         "notified": "sent",
+        "models": None,
     }
     json.dumps(report.to_json())
 
@@ -915,6 +917,7 @@ class World:
                 "path": str(path),
                 "at": "2026-11-19T00:00:00+00:00",
                 "source": "bootstrap",
+                "models": dict(RESOLVED),
             },
             "previous": None,
             "candidate": None,
@@ -982,12 +985,15 @@ def test_bootstrap_records_the_verified_current_binary(world: World) -> None:
                     "path": str(path.resolve()),
                     "at": NOW.isoformat(),
                     "source": "bootstrap",
+                    # Filled after the bootstrap from the three alias sessions.
+                    "models": RESOLVED,
                 },
                 "previous": None,
                 "candidate": None,
             }
         },
     }
+    assert world.claude.keys() == ["alias-haiku", "alias-sonnet", "alias-opus"]
     assert world.sent.calls == []
     assert [argv[0] for argv, _ in world.commands.calls] == [
         "/usr/bin/codesign",
@@ -1138,6 +1144,7 @@ def test_the_measured_releases_give_2_1_326_as_a_ready_candidate(
     candidate = world.claude_state()["candidate"]
     assert candidate == {
         "version": "2.1.326",
+        "models": RESOLVED,
         "status": "ready",
         "sha256": hashlib.sha256(binary_bytes("2.1.326")).hexdigest(),
         "path": str(dest),

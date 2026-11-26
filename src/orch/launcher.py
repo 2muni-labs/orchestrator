@@ -10,7 +10,7 @@ from typing import Final
 from orch import selfcheck
 from orch.config import Target, target_paths
 
-MAIN_MODEL: Final = "claude-opus-5-5"
+MAIN_MODEL: Final = "opus"
 AGENT_KEYS: Final = frozenset({"name", "description", "model", "tools"})
 
 
