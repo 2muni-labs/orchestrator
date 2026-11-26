@@ -2022,6 +2022,32 @@ def test_the_denial_note_cuts_the_summary_to_the_limit(
     load_result(paths.results / f"{TASK}.json", TASK)
 
 
+def test_the_denial_note_cuts_long_unresolved_items_to_the_limit(
+    conn: sqlite3.Connection,
+    repo: Path,
+    paths: TargetPaths,
+    home: Path,
+    worktree: Path,
+) -> None:
+    environ = make_env(home, "slow_long_unresolved", ORCH_FAKE_PROXY="deny")
+    result = run_task(
+        conn,
+        TASK,
+        target=make_target(repo),
+        config=make_config(),
+        paths=paths,
+        environ=environ,
+    )
+    note = (
+        f"프록시가 연결 1건을 거부했습니다: {log_label(proxy_log_of(paths), environ)}"
+    )
+    assert result.status is Outcome.DONE
+    assert result.unresolved == ("나" * (results.SUMMARY_LIMIT - len(note)), note)
+    assert result.summary == ""
+    assert load_result(paths.results / f"{TASK}.json", TASK) == result
+    assert get_task(conn, TASK).state is TaskState.JUDGING
+
+
 def test_a_denial_is_noted_on_a_failed_run_too(
     conn: sqlite3.Connection,
     repo: Path,
