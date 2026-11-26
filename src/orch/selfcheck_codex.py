@@ -59,7 +59,6 @@ SUMS_URL = (
 SUMS_LIMIT = 64 << 10
 MISE_TIMEOUT_SEC = 120
 MISE_INSTALL_TIMEOUT_SEC = 900
-ISOLATION_MODEL = "gpt-6.1-sol"
 ISOLATION_TIMEOUT_SEC = 180
 ISOLATION_PROMPT = "Reply with the single word ok."
 MODELS_TIMEOUT_SEC = 60
@@ -110,17 +109,56 @@ def run_with_input(
 
 
 def select_model(stdout: str) -> str | None:
-    raise NotImplementedError
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        return None
+    selected: str | None = None
+    priority: int | None = None
+    for item in data["models"]:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        rank = item.get("priority")
+        levels = item.get("supported_reasoning_levels")
+        if (
+            not isinstance(slug, str)
+            or not slug
+            or item.get("visibility") != "list"
+            or item.get("supported_in_api") is not True
+            or not isinstance(rank, int)
+            or isinstance(rank, bool)
+            or not isinstance(levels, list)
+        ):
+            continue
+        efforts = {
+            level["effort"]
+            for level in levels
+            if isinstance(level, dict) and isinstance(level.get("effort"), str)
+        }
+        if set(REQUIRED_EFFORTS) <= efforts and (priority is None or rank < priority):
+            selected, priority = slug, rank
+    return selected
 
 
 def list_model(binary: Path, command: Command) -> str | None:
-    raise NotImplementedError
+    try:
+        result = command([str(binary), "debug", "models"], MODELS_TIMEOUT_SEC)
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    return select_model(result.stdout) if result.returncode == 0 else None
 
 
 def current_model(
     entry: Mapping[str, object] | None, pins: CodexPins
 ) -> tuple[str, str]:
-    raise NotImplementedError
+    if isinstance(entry, Mapping):
+        model = entry.get("model")
+        if isinstance(model, str) and model:
+            return model, "record"
+    return pins.default_model, "default"
 
 
 # Pins and layout
@@ -159,8 +197,11 @@ def load_codex_pins(hub: Path) -> CodexPins:
         warn = data["warn"]
         if not isinstance(warn, list) or any(not isinstance(i, str) for i in warn):
             raise ValueError("Invalid warnings")
+        model = data["default_model"]
+        if not isinstance(model, str) or not model:
+            raise ValueError("Invalid default model")
         return CodexPins(
-            hashlib.sha256(body).hexdigest(), version, team, ids, tuple(warn)
+            hashlib.sha256(body).hexdigest(), version, team, ids, tuple(warn), model
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SelfcheckError("Cannot load Codex pins") from exc
@@ -415,6 +456,7 @@ class IsolationContext:
     project: Path
     run: Run
     env: Mapping[str, str]
+    model: str
 
 
 def codex_env(home: Path, environ: Mapping[str, str]) -> dict[str, str]:
@@ -429,7 +471,7 @@ def codex_env(home: Path, environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def isolation_argv(
-    binary: Path, project: Path, output: Path, *, isolated: bool
+    binary: Path, project: Path, output: Path, *, isolated: bool, model: str
 ) -> list[str]:
     return [
         str(binary),
@@ -438,7 +480,7 @@ def isolation_argv(
         "-C",
         str(project),
         "-m",
-        ISOLATION_MODEL,
+        model,
         "-c",
         "model_reasoning_effort=low",
         "--sandbox",
@@ -453,7 +495,9 @@ def check_isolation(ctx: IsolationContext) -> CheckResult:
     try:
         for case, isolated in (("control", False), ("isolated", True)):
             output = ctx.workdir / f"{case}.last"
-            argv = isolation_argv(ctx.binary, ctx.project, output, isolated=isolated)
+            argv = isolation_argv(
+                ctx.binary, ctx.project, output, isolated=isolated, model=ctx.model
+            )
             try:
                 result = ctx.run(
                     argv, ctx.project, ctx.env, ISOLATION_TIMEOUT_SEC, ISOLATION_PROMPT
@@ -505,9 +549,10 @@ class SandboxContext:
     canary_token: str
     write_token: str
     proxy_factory: ProxyFactory
+    model: str
 
 
-def sandbox_probe_argv(binary: Path, project: Path) -> list[str]:
+def sandbox_probe_argv(binary: Path, project: Path, model: str) -> list[str]:
     return [
         str(binary),
         "exec",
@@ -516,7 +561,7 @@ def sandbox_probe_argv(binary: Path, project: Path) -> list[str]:
         "-C",
         str(project),
         "-m",
-        ISOLATION_MODEL,
+        model,
         "-c",
         "model_reasoning_effort=low",
         "--sandbox",
@@ -562,7 +607,7 @@ def check_sandbox(ctx: SandboxContext) -> tuple[CheckResult, CheckResult]:
                     return _sandbox_failure("probe:proxy")
                 try:
                     argv = sandbox.wrap_codex(
-                        sandbox_probe_argv(ctx.binary, ctx.project),
+                        sandbox_probe_argv(ctx.binary, ctx.project, ctx.model),
                         executable=sandbox.SANDBOX_EXEC,
                         worktree=ctx.project,
                         tmpdir=tmpdir,
@@ -683,6 +728,7 @@ class CodexReport:
     warnings: tuple[str, ...]
     reused: bool
     notified: str | None
+    model: str | None = None
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -695,6 +741,7 @@ class CodexReport:
             "warnings": list(self.warnings),
             "reused": self.reused,
             "notified": self.notified,
+            "model": self.model,
         }
 
 
@@ -776,6 +823,7 @@ class _CodexRun:
     candidate: str | None = None
     checks: tuple[CheckResult, ...] = ()
     warnings: tuple[str, ...] = ()
+    model: str | None = None
 
     def report(
         self,
@@ -795,6 +843,7 @@ class _CodexRun:
             self.warnings,
             reused,
             notified,
+            self.model,
         )
 
     def save(self, state: Mapping[str, object]) -> None:
@@ -846,8 +895,6 @@ class _CodexRun:
             return self.report("unknown", "latest")
         self.latest = max(releases, key=parse_version)
         current_version = parse_version(self.current)
-        if parse_version(self.latest) <= current_version:
-            return self.report("up_to_date", "latest")
         candidates = [
             version
             for version, published in releases.items()
@@ -856,13 +903,32 @@ class _CodexRun:
             and self.now - published
             >= timedelta(days=self.settings.selfcheck_min_age_days)
         ]
-        if not candidates:
-            return self.report("up_to_date", "no_candidate")
-        self.candidate = max(candidates, key=parse_version)
+        model_only = not candidates
+        current = codex["current"]
+        if model_only:
+            reason = (
+                "latest"
+                if parse_version(self.latest) <= current_version
+                else "no_candidate"
+            )
+            model = list_model(Path(current["path"]), self.command)
+            if model is None or model == current_model(current, pins)[0]:
+                return self.report("up_to_date", reason)
+            self.model = model
+            self.candidate = self.current
+        else:
+            self.candidate = max(candidates, key=parse_version)
         self.warnings = pins.warn
         old_candidate = codex.get("candidate")
         automated = all(item in CODEX_AUTOMATED_IDS for item in pins.blocking)
-        if self.reuse(old_candidate, pins, automated=automated):
+        if (
+            not model_only
+            or not automated
+            or (
+                isinstance(old_candidate, dict)
+                and old_candidate.get("model") == self.model
+            )
+        ) and self.reuse(old_candidate, pins, automated=automated):
             return self.report(old_candidate["status"], reused=True)
 
         layout = codex_layout(self.orch_home)
@@ -874,7 +940,9 @@ class _CodexRun:
             if isinstance(entry, dict) and isinstance(entry.get("path"), str):
                 protected.add(Path(entry["path"]).resolve())
         prepared: Prepared | str | None = None
+        reason = None
         if not automated:
+            self.model = None
             self.checks = tuple(
                 CheckResult(
                     item, "skipped" if item in CODEX_AUTOMATED_IDS else "missing", ""
@@ -886,32 +954,53 @@ class _CodexRun:
             self.checks = tuple(
                 CheckResult(item, "skipped", "") for item in pins.blocking
             )
-            prepared = prepare_version(
-                self.candidate,
-                layout=layout,
-                pins=pins,
-                platform=platform,
-                mise_path=self.settings.mise_path,
-                home=self.home,
-                environ=self.environ,
-                mise=self.mise,
-                fetch=self.fetch,
-                command=self.command,
-            )
+            if model_only:
+                binary = Path(current["path"])
+                try:
+                    valid = (
+                        binary.is_file() and sha256_file(binary) == current["sha256"]
+                    )
+                except OSError:
+                    valid = False
+                prepared = (
+                    Prepared(self.candidate, binary, current["sha256"])
+                    if valid
+                    else "binary_changed"
+                )
+            else:
+                prepared = prepare_version(
+                    self.candidate,
+                    layout=layout,
+                    pins=pins,
+                    platform=platform,
+                    mise_path=self.settings.mise_path,
+                    home=self.home,
+                    environ=self.environ,
+                    mise=self.mise,
+                    fetch=self.fetch,
+                    command=self.command,
+                )
             if isinstance(prepared, str):
                 self.set_check(CheckResult("FL-M4", "fail", prepared))
             else:
                 self.set_check(CheckResult("FL-M4", "pass", ""))
-                self.check_candidate(prepared)
+                if not model_only:
+                    self.model = list_model(prepared.binary, self.command)
+                if self.model is None:
+                    reason = "model"
+                else:
+                    self.check_candidate(prepared, self.model)
             status = (
                 "ready"
-                if all(check.result == "pass" for check in self.checks)
+                if reason is None
+                and all(check.result == "pass" for check in self.checks)
                 else "failed"
             )
-        if status == "failed":
+        if status == "failed" and not model_only:
             remove_install(layout, self.candidate, protected)
         elif (
             status == "ready"
+            and not model_only
             and isinstance(old_candidate, dict)
             and old_candidate.get("status") == "ready"
             and old_candidate.get("version") != self.candidate
@@ -919,6 +1008,7 @@ class _CodexRun:
             remove_install(layout, old_candidate["version"], protected)
         codex["candidate"] = {
             "version": self.candidate,
+            "model": self.model,
             "status": status,
             "sha256": prepared.sha256 if status == "ready" else None,
             "path": str(prepared.binary) if status == "ready" else None,
@@ -939,7 +1029,7 @@ class _CodexRun:
             ).value
         except Exception:
             notified = "failed"
-        return self.report(status, notified=notified)
+        return self.report(status, reason, notified=notified)
 
     def reuse(self, candidate: object, pins: CodexPins, *, automated: bool) -> bool:
         if (
@@ -953,7 +1043,9 @@ class _CodexRun:
             if status != "not_automated":
                 return False
         elif status == "ready":
-            if not isinstance(candidate.get("path"), str):
+            if not isinstance(candidate.get("path"), str) or not isinstance(
+                candidate.get("model"), str
+            ):
                 return False
             path = Path(candidate["path"])
             try:
@@ -961,8 +1053,11 @@ class _CodexRun:
                     return False
             except OSError:
                 return False
-        elif status != "failed":
+            if list_model(path, self.command) != candidate["model"]:
+                return False
+        elif status != "failed" or not isinstance(candidate.get("model"), str):
             return False
+        self.model = candidate.get("model")
         self.checks = tuple(CheckResult(**check) for check in candidate["checks"])
         self.warnings = tuple(candidate["warnings"])
         return True
@@ -972,7 +1067,7 @@ class _CodexRun:
             result if check.id == result.id else check for check in self.checks
         )
 
-    def check_candidate(self, prepared: Prepared) -> None:
+    def check_candidate(self, prepared: Prepared, model: str) -> None:
         with tempfile.TemporaryDirectory(prefix="orch-selfcheck-") as directory:
             workdir = Path(directory)
             project = workdir / "project"
@@ -1012,6 +1107,7 @@ class _CodexRun:
                                 canary_token=secrets.token_hex(16),
                                 write_token=secrets.token_hex(8),
                                 proxy_factory=self.proxy_factory,
+                                model=model,
                             )
                         )
                     sandbox_checked = True
@@ -1024,6 +1120,7 @@ class _CodexRun:
                                 project,
                                 self.session,
                                 codex_env(self.home, self.environ),
+                                model,
                             )
                         ),
                     )
@@ -1198,11 +1295,19 @@ class _CodexSwitch:
             return self.report("refused", "no_current")
         if pins is not None:
             target = codex.get("candidate")
-            if target is None or target["status"] != "ready":
+            if (
+                target is None
+                or target["status"] != "ready"
+                or not isinstance(target.get("model"), str)
+                or not target["model"]
+            ):
                 return self.report("refused", "no_ready_candidate")
             if target["pins_sha256"] != pins.sha256:
                 return self.report("refused", "pins_changed")
-            if parse_version(target["version"]) <= parse_version(current["version"]):
+            if parse_version(target["version"]) < parse_version(current["version"]) or (
+                target["version"] == current["version"]
+                and target["model"] == current_model(current, pins)[0]
+            ):
                 return self.report("refused", "not_newer")
         else:
             target = previous
@@ -1217,7 +1322,10 @@ class _CodexSwitch:
         if not isinstance(target["path"], str):
             return self.report("refused", "path")
         resolved = Path(target["path"]).resolve()
-        if (
+        same_version = target["version"] == current["version"]
+        if same_version and resolved != Path(current["path"]).resolve():
+            return self.report("refused", "path")
+        if not same_version and (
             resolved.name != "codex"
             or resolved.parent.name != "bin"
             or resolved.parent.parent.name != target["version"]
@@ -1229,7 +1337,7 @@ class _CodexSwitch:
         target_dir = (
             layout.candidate if pins is not None else layout.root / PREVIOUS_DIR
         )
-        if (
+        if not same_version and (
             not _valid_mise_files(layout.root, current["version"], target_platform)
             or (pins is None and (target_dir.is_symlink() or not target_dir.is_dir()))
             or not _valid_mise_files(target_dir, target["version"], target_platform)
@@ -1237,15 +1345,32 @@ class _CodexSwitch:
             return self.report("refused", "config")
         updated = dict(codex)
         updated["previous"] = current
+        path = target["path"]
+        if pins is not None:
+            path = current["path"] if same_version else str(resolved)
         updated["current"] = {
             "version": target["version"],
             "sha256": target["sha256"],
-            "path": str(resolved) if pins is not None else target["path"],
+            "path": path,
             "at": self.now.isoformat(),
             "source": "apply" if pins is not None else "rollback",
         }
+        if isinstance(target.get("model"), str):
+            updated["current"]["model"] = target["model"]
         if pins is not None:
             updated["candidate"] = None
+        if same_version:
+            state["agents"]["codex"] = updated
+            try:
+                save_agents_state(state_path, state)
+            except OSError:
+                return self.report("error", "state_write")
+            self.current = target["version"]
+            self.previous = current["version"]
+            removed = _prune_codex(layout, updated, keep_candidate=pins is None)
+            return self.report(
+                "applied" if pins is not None else "rolled_back", removed=removed
+            )
         before = _link_state(layout.link)
         with ExitStack() as undo:
             try:
