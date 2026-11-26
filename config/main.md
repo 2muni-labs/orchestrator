@@ -86,8 +86,10 @@ question through Codex, read-only, under the orch profile and the allowlist prox
 - At the start of a session, confirm that it runs under `orch open`:
   `tmux display-message -p '#S'` prints `orch-<target>` and `ORCH_TARGET` is set.
   If not, report that to the user and wait.
-- At the start of a session, confirm that the main model is Opus 5.5
-  (`claude-opus-5-5`). If it is not, report that to the user and wait.
+- At the start of a session, confirm that the main model is the model the `opus`
+  alias resolves to, as `orch versions` reports it from `~/.orch/agents.json`
+  (ADR 0032). Until that record exists, it is `claude-opus-5-5`. If it is not,
+  report that to the user and wait.
 - At the start of a session, confirm that this process started after the last
   harness pull request merged. After `git -C "$ORCH_HUB" fetch origin`, compare
   `ps -o lstart= -p <claude pid>` with

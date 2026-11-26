@@ -37,6 +37,7 @@ warn = [
   "W-M2: session record location, run key and usage fields",
   "orch open: a resumed session keeps its first system prompt",
   "FL-M1: claude install switches ~/.local/bin/claude at once; versions/<ver> runs by absolute path",
+  "ADR 0032: the system/init event of -p --output-format stream-json --verbose names the model each tier alias resolves to",
 ]
 
 [codex]
@@ -51,6 +52,10 @@ codesign_team = "2DC432GLL2"
 # after lowercasing and stripping a trailing dot. Add a host only after a denied
 # CONNECT to it is observed in a run log.
 proxy_hosts = ["chatgpt.com", "ab.chatgpt.com"]
+# ADR 0032: the model in use is the one selfcheck picked from the candidate's
+# `codex debug models` and the user applied, recorded in ~/.orch/agents.json. This
+# default stands in only for a record without a model (before v0.26.0, bootstrap).
+default_model = "gpt-6.1-sol"
 blocking = [
   { id = "FL-M4", what = "every Mach-O file in the installed package passes codesign --verify --strict for codesign_team; the lock checksum equals the release's codex-package_SHA256SUMS line" },
   { id = "S-M2", what = "with the built-in sandbox off, the orch profile around codex denies reads outside the worktree" },
@@ -59,6 +64,7 @@ blocking = [
 ]
 warn = [
   "codex-review-measure: exec exit codes, -o behaviour, --output-schema strictness",
+  "ADR 0032: codex debug models prints {\"models\": [...]} with slug, visibility, supported_in_api, priority, supported_reasoning_levels",
   "usage limit message and rate_limits in the rollout (BLOCKED_QUOTA)",
   "P5-M5: read-only explore answer format, exit code, -o, usage per question",
   "W-M1: rollout session_meta, token_count and rate_limits format",

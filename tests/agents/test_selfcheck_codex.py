@@ -401,7 +401,7 @@ def test_the_real_pins_load() -> None:
     assert pins.version == "0.160.0"
     assert pins.codesign_team == TEAM
     assert pins.blocking == ("FL-M4", "S-M2", "S-M2b", "isolation")
-    assert len(pins.warn) == 6
+    assert len(pins.warn) == 7
     assert all(isinstance(item, str) for item in pins.warn)
 
 
