@@ -140,6 +140,40 @@ def test_an_adopted_override_gets_the_label(
     assert task_of(conn).pr_url == OTHER
 
 
+def test_a_failed_override_label_records_nothing_and_a_rerun_adopts(
+    conn: sqlite3.Connection,
+    repo: Path,
+    remote: Path,
+    worktree: Path,
+    test_sha: str,
+    implemented: str,
+    tmp_path: Path,
+    hub: FakeGitHub,
+) -> None:
+    add_ready_task(conn, worktree, test_sha, grade=Grade.L3)
+    save_block(conn, tmp_path, TRIAGE)
+    hub.open_url = OTHER
+    hub.add_error = GitHubError("pr edit: HTTP 502")
+    with pytest.raises(GitHubError):
+        open_pr(conn, repo, tmp_path)
+    task = task_of(conn)
+    assert task.state is TaskState.READY
+    assert task.pr_url is None
+    assert task.pushed_sha == implemented
+    assert remote_tip(remote) == implemented
+    assert hub.created == []
+    assert hub.order == ["find", "edit", "add_label"]
+
+    hub.add_error = None
+    report = open_pr(conn, repo, tmp_path)
+    assert report.state is TaskState.PR_OPEN
+    assert report.adopted is True
+    assert task_of(conn).pr_url == OTHER
+    assert hub.created == []
+    label = {"url": OTHER, "name": "review-overridden", "token": TOKEN}
+    assert hub.added == [label, label]
+
+
 def test_a_failed_find_keeps_the_push_and_a_rerun_adopts(
     conn: sqlite3.Connection,
     repo: Path,
