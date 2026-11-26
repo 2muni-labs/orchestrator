@@ -68,7 +68,18 @@ def latest_log_path(logs: Path, task_id: str) -> Path | None:
 
 def append_note(result: TaskResult, note: str) -> TaskResult:
     """Return result with note appended to unresolved, cut to SUMMARY_LIMIT."""
-    raise NotImplementedError
+    note = note[: results.SUMMARY_LIMIT]
+    remaining = results.SUMMARY_LIMIT - len(note)
+    unresolved: list[str] = []
+    for item in result.unresolved:
+        if remaining == 0:
+            break
+        kept = item[:remaining]
+        unresolved.append(kept)
+        remaining -= len(kept)
+    return replace(
+        result, summary=result.summary[:remaining], unresolved=(*unresolved, note)
+    )
 
 
 def log_label(log_path: Path, environ: Mapping[str, str]) -> str:
@@ -339,11 +350,7 @@ def run_task(
                     f"프록시가 연결 {len(denials)}건을 거부했습니다: "
                     f"{log_label(proxy_log, environ)}"
                 )
-                unresolved = (*result.unresolved, note)
-                remaining = max(0, results.SUMMARY_LIMIT - sum(map(len, unresolved)))
-                result = replace(
-                    result, summary=result.summary[:remaining], unresolved=unresolved
-                )
+                result = append_note(result, note)
         return _finish_run(
             conn, run_id, task_id, destination, result, exit_code, substitute
         )
