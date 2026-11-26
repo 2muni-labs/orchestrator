@@ -962,6 +962,84 @@ def test_a_finished_connection_frees_its_slot(h: Harness) -> None:
     assert read_response(second) == ESTABLISHED
 
 
+def fill_send_buffer(sock: socket.socket) -> int:
+    """Write into sock until its peer's buffers are full; return the bytes sent."""
+    sock.setblocking(False)
+    sent = 0
+    for size in (65536, 4096, 1):
+        while True:
+            try:
+                sent += sock.send(b"x" * size)
+            except BlockingIOError:
+                break
+    sock.setblocking(True)
+    return sent
+
+
+def test_busy_connections_start_no_worker_thread(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names: list[str] = []
+    original = threading.Thread
+
+    class SpyThread(original):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+            names.append(self.name)
+
+    monkeypatch.setattr(threading, "Thread", SpyThread)
+    p = h.started(max_connections=1)
+    first = h.connect()
+    first.sendall(connect_request("chatgpt.com:443"))
+    assert read_response(first) == ESTABLISHED
+    for _ in range(5):
+        busy = h.connect()
+        assert read_to_eof(busy) == deny_response("503 Service Unavailable")
+    assert wait_until(lambda: len(p.events()) == 6)
+    assert [e.reason for e in p.denials()] == ["busy"] * 5
+    assert names.count("orch-proxy-connection") == 1
+
+
+def test_a_busy_client_that_takes_no_reply_does_not_hold_the_proxy(
+    h: Harness,
+) -> None:
+    p = h.started(max_connections=1, head_timeout=10.0)
+    first = h.connect()
+    first.sendall(connect_request("chatgpt.com:443"))
+    assert read_response(first) == ESTABLISHED
+    client, server_side = socket.socketpair()
+    client.settimeout(IO_TIMEOUT)
+    h.clients.append(client)
+    filled = fill_send_buffer(server_side)
+    h.listener.push(server_side)
+    # The proxy closes the busy socket at once instead of waiting to write.
+    assert wait_until(lambda: server_side.fileno() == -1)
+    assert [e.reason for e in p.denials()] == ["busy"]
+    data = read_to_eof(client)
+    assert len(data) == filled
+    assert b"503" not in data
+    later = h.connect()
+    assert read_to_eof(later) == deny_response("503 Service Unavailable")
+    assert [e.reason for e in p.denials()] == ["busy", "busy"]
+    assert p.alive() is True
+
+
+def test_a_busy_client_that_already_left_is_only_recorded(h: Harness) -> None:
+    p = h.started(max_connections=1)
+    first = h.connect()
+    first.sendall(connect_request("chatgpt.com:443"))
+    assert read_response(first) == ESTABLISHED
+    client, server_side = socket.socketpair()
+    client.close()
+    h.listener.push(server_side)
+    assert wait_until(lambda: server_side.fileno() == -1)
+    assert [e.reason for e in p.denials()] == ["busy"]
+    assert p.alive() is True
+    busy = h.connect()
+    assert read_to_eof(busy) == deny_response("503 Service Unavailable")
+    assert [e.reason for e in p.denials()] == ["busy", "busy"]
+
+
 # Fail closed
 
 
