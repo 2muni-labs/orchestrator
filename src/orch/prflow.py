@@ -76,6 +76,15 @@ def _tests_section(conn: sqlite3.Connection, task_id: str, attempt: int) -> str:
     return "\n\n" + "\n".join(lines)
 
 
+def _run_setup(target: Target, worktree: Path, log_path: Path) -> str | None:
+    code = gate.run_command(target.setup_command, worktree, log_path, sandbox=False)
+    if code is None:
+        return "setup 실패: 시간 초과"
+    if code != 0:
+        return f"setup 실패: 종료 코드 {code}"
+    return None
+
+
 def open_pull_request(
     conn: sqlite3.Connection,
     spec: TaskSpec,
@@ -160,8 +169,8 @@ def open_pull_request(
 
     head = gitops.rev_parse(worktree, "HEAD")
     skipped = task.gated_sha is not None and head == task.gated_sha
-    detail = None
-    if not skipped:
+    detail = None if skipped else _run_setup(target, worktree, log_path)
+    if not skipped and detail is None:
         changed = gitops.task_changed_paths(worktree, base, main_ref)
         plan = gate.plan_tests(target, task.grade, worktree, changed)
         offset = log_path.stat().st_size if log_path.exists() else 0
@@ -334,6 +343,9 @@ def update_pull_request(
 
     merged = gitops.rev_parse(worktree, "HEAD")
     try:
+        detail = _run_setup(target, worktree, log_path)
+        if detail is not None:
+            raise PullRequestFlowError(f"Setup failed: {spec.id} ({detail})")
         changed = gitops.task_changed_paths(
             worktree, task.base_sha or task.test_sha, main_ref
         )
