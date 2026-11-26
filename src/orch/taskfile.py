@@ -151,10 +151,10 @@ def parse_task(text: str) -> TaskSpec:
         Grade.L3R: Effort.XHIGH,
     }
     claude = {
-        Grade.L1: ("claude-haiku-5-5", None),
-        Grade.L2: ("claude-sonnet-5-5", None),
-        Grade.L3: ("claude-sonnet-5-5", Effort.HIGH),
-        Grade.L3R: ("claude-opus-5-5", None),
+        Grade.L1: ("haiku", None),
+        Grade.L2: ("sonnet", None),
+        Grade.L3: ("sonnet", Effort.HIGH),
+        Grade.L3R: ("opus", None),
     }
     pair = (data["model"], effort)
     codex_match = pair == ("gpt-6.1-sol", codex_efforts[grade])

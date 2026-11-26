@@ -25,7 +25,7 @@ from orch import notify, signature
 from orch.config import Config
 
 AGENTS_FORMAT = 1
-SESSION_MODEL = "claude-haiku-5-5"
+SESSION_MODEL = "haiku"
 ALIASES = ("haiku", "sonnet", "opus")
 ALIAS_PROMPT = "Reply with the single word ok."
 SESSION_MAX_TURNS = 3
@@ -394,22 +394,71 @@ def load_agents_state(path: Path) -> dict[str, object]:
                     or entry.get("source") not in ("bootstrap", "apply", "rollback")
                 ):
                     raise ValueError("Invalid installed version")
+                if agent_name == "claude" and "models" in entry:
+                    _validate_models(entry["models"])
             candidate = agent.get("candidate")
             if candidate is not None:
                 _validate_candidate(candidate)
+                if agent_name == "claude" and candidate.get("models") is not None:
+                    _validate_models(candidate["models"])
         return data
     except (ValueError, TypeError, KeyError) as exc:
         raise SelfcheckError("Invalid agents state") from exc
 
 
 def alias_argv(binary: Path, alias: str) -> list[str]:
-    raise NotImplementedError
+    return [
+        str(binary),
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        alias,
+        "--max-turns",
+        "1",
+        ALIAS_PROMPT,
+    ]
 
 
 def resolve_aliases(
     binary: Path, session: Session, cwd: Path, env: Mapping[str, str]
 ) -> dict[str, str] | None:
-    raise NotImplementedError
+    models: dict[str, str] = {}
+    for alias in ALIASES:
+        try:
+            result = session(alias_argv(binary, alias), cwd, env, SESSION_TIMEOUT_SEC)
+        except OSError, subprocess.TimeoutExpired:
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                isinstance(event, dict)
+                and event.get("type") == "system"
+                and event.get("subtype") == "init"
+            ):
+                model = event.get("model")
+                if not isinstance(model, str) or not model:
+                    return None
+                models[alias] = model
+                break
+        else:
+            return None
+    return models
+
+
+def _validate_models(models: object) -> None:
+    if (
+        not isinstance(models, dict)
+        or set(models) != set(ALIASES)
+        or any(not isinstance(model, str) or not model for model in models.values())
+    ):
+        raise ValueError("Invalid models")
 
 
 def _validate_candidate(candidate: object) -> None:
@@ -849,6 +898,7 @@ class ClaudeReport:
     warnings: tuple[str, ...]
     reused: bool
     notified: str | None
+    models: dict[str, str] | None = None
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -861,6 +911,7 @@ class ClaudeReport:
             "warnings": list(self.warnings),
             "reused": self.reused,
             "notified": self.notified,
+            "models": self.models,
         }
 
 
@@ -942,6 +993,7 @@ class _ClaudeRun:
     candidate: str | None = None
     checks: tuple[CheckResult, ...] = ()
     warnings: tuple[str, ...] = ()
+    models: dict[str, str] | None = None
 
     def report(
         self,
@@ -961,6 +1013,7 @@ class _ClaudeRun:
             self.warnings,
             reused,
             notified,
+            self.models,
         )
 
     def save(self, state: Mapping[str, object]) -> None:
@@ -993,6 +1046,17 @@ class _ClaudeRun:
             if reason:
                 return self.report("unverified", reason)
         self.current = claude["current"]["version"]
+        if "models" not in claude["current"]:
+            with tempfile.TemporaryDirectory(prefix="orch-selfcheck-") as temporary:
+                models = resolve_aliases(
+                    Path(claude["current"]["path"]),
+                    self.session,
+                    Path(temporary),
+                    session_env(self.home, self.environ),
+                )
+            if models is not None:
+                claude["current"]["models"] = models
+                self.save(state)
         try:
             latest = (
                 self.fetch(pins.claude.latest_url, LATEST_LIMIT).decode("ascii").strip()
@@ -1060,12 +1124,12 @@ class _ClaudeRun:
                 self.set_check(CheckResult("FL-M3", "pass", ""))
                 if self.check_sessions(dest, layout):
                     status, reason = "failed", "link_changed"
+                elif all(check.result == "pass" for check in self.checks):
+                    status = "ready" if self.models is not None else "failed"
+                    if self.models is None:
+                        reason = "model"
                 else:
-                    status = (
-                        "ready"
-                        if all(check.result == "pass" for check in self.checks)
-                        else "failed"
-                    )
+                    status = "failed"
         if status == "failed":
             _remove_binary(dest, layout, protected)
         present = status == "ready" and dest.is_file()
@@ -1077,6 +1141,7 @@ class _ClaudeRun:
             "pins_sha256": pins.sha256,
             "checks": [asdict(check) for check in self.checks],
             "warnings": list(self.warnings),
+            "models": self.models,
             "at": self.now.isoformat(),
         }
         self.save(state)
@@ -1157,6 +1222,7 @@ class _ClaudeRun:
             or candidate.get("status") != "ready"
             or candidate.get("pins_sha256") != pins.sha256
             or not isinstance(candidate.get("path"), str)
+            or not isinstance(candidate.get("models"), dict)
         ):
             return False
         path = Path(candidate["path"])
@@ -1164,6 +1230,7 @@ class _ClaudeRun:
             return False
         self.checks = tuple(CheckResult(**check) for check in candidate["checks"])
         self.warnings = tuple(candidate["warnings"])
+        self.models = candidate["models"]
         return True
 
     def set_check(self, result: CheckResult) -> None:
@@ -1244,6 +1311,10 @@ class _ClaudeRun:
                             self.set_check(result)
                             if result.result == "fail":
                                 break
+                    if all(check.result == "pass" for check in self.checks):
+                        self.models = resolve_aliases(
+                            ctx.binary, ctx.session, ctx.project, ctx.env
+                        )
         except Exception as exc:
             error = exc
         finally:
@@ -1414,7 +1485,11 @@ class _ClaudeSwitch:
             return self.report("refused", "no_current")
         if pins is not None:
             target = claude.get("candidate")
-            if target is None or target["status"] != "ready":
+            if (
+                target is None
+                or target["status"] != "ready"
+                or not isinstance(target.get("models"), dict)
+            ):
                 return self.report("refused", "no_ready_candidate")
             if target["pins_sha256"] != pins.sha256:
                 return self.report("refused", "pins_changed")
@@ -1449,6 +1524,8 @@ class _ClaudeSwitch:
             "at": self.now.isoformat(),
             "source": "apply" if pins is not None else "rollback",
         }
+        if "models" in target:
+            updated["current"]["models"] = target["models"]
         if pins is not None:
             updated["candidate"] = None
         before = os.readlink(layout.link)
