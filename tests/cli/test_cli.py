@@ -1368,6 +1368,7 @@ def test_pr_passes_the_paths_and_the_token(
         "conflicts": [],
         "detail": None,
         "user_check": False,
+        "adopted": False,
         "head_sha": None,
     }
     call = pr_calls[1]
