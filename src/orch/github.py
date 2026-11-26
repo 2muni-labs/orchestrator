@@ -196,6 +196,15 @@ def _validate_label(name: str) -> None:
         raise GitHubError("Invalid label name")
 
 
+def _validate_pull_request_refs(github: str, head: str, base: str) -> None:
+    if re.fullmatch(_GITHUB_PATTERN, github) is None:
+        raise GitHubError("Invalid repository")
+    if re.fullmatch(r"task/[A-Za-z0-9][A-Za-z0-9._-]*", head) is None:
+        raise GitHubError("Invalid head branch")
+    if base.startswith("-") or re.fullmatch(r"[A-Za-z0-9._/-]+", base) is None:
+        raise GitHubError("Invalid base branch")
+
+
 def create_pull_request(
     *,
     github: str,
@@ -210,12 +219,7 @@ def create_pull_request(
 ) -> str:
     """Create a pull request from redacted text and return its URL."""
     _validate_token(token)
-    if re.fullmatch(_GITHUB_PATTERN, github) is None:
-        raise GitHubError("Invalid repository")
-    if re.fullmatch(r"task/[A-Za-z0-9][A-Za-z0-9._-]*", head) is None:
-        raise GitHubError("Invalid head branch")
-    if base.startswith("-") or re.fullmatch(r"[A-Za-z0-9._/-]+", base) is None:
-        raise GitHubError("Invalid base branch")
+    _validate_pull_request_refs(github, head, base)
     if not title.strip() or not body.strip():
         raise GitHubError("Title and body must not be empty")
     label_args = []
@@ -284,14 +288,68 @@ def find_open_pull_request(
     *, github: str, head: str, base: str, token: str
 ) -> str | None:
     """Return the URL of the one open same-repository pull request head -> base."""
-    raise NotImplementedError
+    _validate_token(token)
+    _validate_pull_request_refs(github, head, base)
+    stdout = _gh(
+        token,
+        "pr",
+        "list",
+        "--repo",
+        github,
+        "--head",
+        head,
+        "--base",
+        base,
+        "--state",
+        "open",
+        "--json",
+        "url,headRefName,baseRefName,isCrossRepository",
+        "--limit",
+        "10",
+    )
+    try:
+        answer = json.loads(stdout)
+    except ValueError:
+        raise GitHubError("pr list: Invalid response") from None
+    if not isinstance(answer, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("url"), str)
+        or not isinstance(item.get("headRefName"), str)
+        or not isinstance(item.get("baseRefName"), str)
+        or not isinstance(item.get("isCrossRepository"), bool)
+        for item in answer
+    ):
+        raise GitHubError("pr list: Invalid response")
+
+    matches = [
+        item["url"]
+        for item in answer
+        if item["headRefName"] == head
+        and item["baseRefName"] == base
+        and item["isCrossRepository"] is False
+    ]
+    for url in matches:
+        try:
+            _validate_url(url)
+        except GitHubError:
+            raise GitHubError("pr list: Unexpected repository") from None
+        if not url.startswith(f"https://github.com/{github}/pull/"):
+            raise GitHubError("pr list: Unexpected repository")
+    if len(matches) > 1:
+        raise GitHubError("pr list: Multiple open pull requests")
+    return matches[0] if matches else None
 
 
 def edit_pull_request_body(
     *, url: str, body: str, token: str, home: Path, orch_home: Path
 ) -> None:
     """Replace a pull request's body with redacted text."""
-    raise NotImplementedError
+    _validate_token(token)
+    _validate_url(url)
+    if not body.strip():
+        raise GitHubError("Body must not be empty")
+    body = redact(body, home=home, orch_home=orch_home, secrets=(token,))
+    _gh(token, "pr", "edit", url, "--body-file", "-", input_text=body)
 
 
 def pull_request_status(*, url: str, token: str) -> PullRequestStatus:

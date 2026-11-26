@@ -34,6 +34,7 @@ class PullRequestReport:
     conflicts: tuple[str, ...] = ()
     detail: str | None = None
     user_check: bool = False
+    adopted: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -224,6 +225,7 @@ def open_pull_request(
     store.update_task(conn, spec.id, pushed_sha=head)
 
     changed = gitops.changed_paths(worktree, main_ref)
+    adopted = False
     if not task.pr_url or new_attempt:
         gate_results = store.gate_results(conn, spec.id, task.attempt)
     if task.pr_url:
@@ -284,17 +286,31 @@ def open_pull_request(
             ),
         )
         body += _tests_section(conn, spec.id, task.attempt)
-        url = github.create_pull_request(
+        url = github.find_open_pull_request(
             github=target.github,
             head=branch,
             base=target.default_branch,
-            title=task.title,
-            body=body,
             token=token,
-            home=home,
-            orch_home=orch_home,
-            labels=(OVERRIDE_LABEL,) if triage is not None else (),
         )
+        if url is None:
+            url = github.create_pull_request(
+                github=target.github,
+                head=branch,
+                base=target.default_branch,
+                title=task.title,
+                body=body,
+                token=token,
+                home=home,
+                orch_home=orch_home,
+                labels=(OVERRIDE_LABEL,) if triage is not None else (),
+            )
+        else:
+            github.edit_pull_request_body(
+                url=url, body=body, token=token, home=home, orch_home=orch_home
+            )
+            if triage is not None:
+                github.add_label(url=url, name=OVERRIDE_LABEL, token=token)
+            adopted = True
 
     with store.transaction(conn):
         store.update_task(conn, spec.id, pr_url=url)
@@ -306,6 +322,7 @@ def open_pull_request(
         user_check=user_check(
             changed, target.safety_paths, overridden=triage is not None
         ),
+        adopted=adopted,
     )
 
 
