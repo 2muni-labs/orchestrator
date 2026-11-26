@@ -262,18 +262,40 @@ class FakeGitHub:
         self.removed: list[dict[str, object]] = []
         self.remove_error: Exception | None = None
         self.on_remove: Callable[[], None] = lambda: None
+        self.open_url: str | None = None
+        self.found: list[dict[str, object]] = []
+        self.find_error: Exception | None = None
+        self.edited: list[dict[str, object]] = []
+        self.edit_error: Exception | None = None
+        self.order: list[str] = []
         monkeypatch.setattr(github, "add_label", self.add_label)
         monkeypatch.setattr(github, "remove_label", self.remove_label)
         monkeypatch.setattr(github, "create_pull_request", self.create)
         monkeypatch.setattr(github, "comment_on_pull_request", self.comment)
         monkeypatch.setattr(github, "pull_request_status", self.status)
         monkeypatch.setattr(github, "label_exists", self.label_exists)
+        monkeypatch.setattr(github, "find_open_pull_request", self.find)
+        monkeypatch.setattr(github, "edit_pull_request_body", self.edit)
+
+    def find(self, **options: object) -> str | None:
+        self.order.append("find")
+        self.found.append(options)
+        if self.find_error is not None:
+            raise self.find_error
+        return self.open_url
+
+    def edit(self, **options: object) -> None:
+        self.order.append("edit")
+        self.edited.append(options)
+        if self.edit_error is not None:
+            raise self.edit_error
 
     def label_exists(self, **options: object) -> bool:
         self.label_calls.append(options)
         return self.label_present
 
     def add_label(self, **options: object) -> None:
+        self.order.append("add_label")
         self.added.append(options)
         if self.add_error is not None:
             raise self.add_error
@@ -285,6 +307,7 @@ class FakeGitHub:
             raise self.remove_error
 
     def create(self, **options: object) -> str:
+        self.order.append("create")
         self.created.append(options)
         if self.create_error is not None:
             raise self.create_error
@@ -1198,10 +1221,10 @@ def test_the_token_stays_out_of_arguments_logs_and_reports(
     script = bin_dir / "gh"
     script.write_text(
         f"""#!/bin/sh
-printf '%s\\n' "$@" > '{record}.argv'
+printf '%s\\n' "$@" >> '{record}.argv'
 printf '%s' "$GH_TOKEN" > '{record}.token'
 cat > /dev/null
-echo {URL}
+if [ "$2" = list ]; then echo '[]'; else echo {URL}; fi
 """,
         encoding="utf-8",
     )

@@ -1429,3 +1429,223 @@ def test_compare_accepts_a_base_with_inner_dots_and_slashes(
 ) -> None:
     compared(gh, COMPARED, base=base)
     assert gh.calls() == [["api", f"repos/owner/sample/compare/{base}...{SHA}"]]
+
+
+# Finding an open pull request (m-pr-adopt)
+
+LIST_ARGV = [
+    "pr",
+    "list",
+    "--repo",
+    "owner/sample",
+    "--head",
+    "task/feat-x",
+    "--base",
+    "main",
+    "--state",
+    "open",
+    "--json",
+    "url,headRefName,baseRefName,isCrossRepository",
+    "--limit",
+    "10",
+]
+
+
+def listed(
+    url: str = URL,
+    head: str = "task/feat-x",
+    base: str = "main",
+    cross: object = False,
+) -> dict[str, object]:
+    return {
+        "baseRefName": base,
+        "headRefName": head,
+        "isCrossRepository": cross,
+        "url": url,
+    }
+
+
+def find(gh: FakeGh, answer: object, **overrides: object) -> str | None:
+    gh.stdout = (answer if isinstance(answer, str) else json.dumps(answer)) + "\n"
+    gh.write()
+    values: dict[str, object] = {
+        "github": "owner/sample",
+        "head": "task/feat-x",
+        "base": "main",
+        "token": TOKEN,
+    }
+    values.update(overrides)
+    return github.find_open_pull_request(**values)
+
+
+def test_find_runs_the_exact_command_and_returns_the_url(gh: FakeGh) -> None:
+    assert find(gh, [listed()]) == URL
+    assert gh.calls() == [LIST_ARGV]
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+def test_find_returns_none_without_an_open_pull_request(gh: FakeGh) -> None:
+    assert find(gh, []) is None
+    assert gh.calls() == [LIST_ARGV]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        listed(cross=True),
+        listed(head="task/feat-y"),
+        listed(base="develop"),
+    ],
+    ids=["cross_repository", "other_head", "other_base"],
+)
+def test_find_ignores_pull_requests_that_do_not_match(
+    gh: FakeGh, item: dict[str, object]
+) -> None:
+    assert find(gh, [item]) is None
+
+
+def test_find_picks_the_match_among_others(gh: FakeGh) -> None:
+    other = "https://github.com/owner/sample/pull/9"
+    answer = [listed(url=other, cross=True), listed(), listed(url=other, base="dev")]
+    assert find(gh, answer) == URL
+
+
+def test_find_refuses_two_open_pull_requests(gh: FakeGh) -> None:
+    other = "https://github.com/owner/sample/pull/9"
+    with pytest.raises(GitHubError, match="Multiple open pull requests"):
+        find(gh, [listed(), listed(url=other)])
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "not json",
+        "",
+        {"url": URL},
+        ["text"],
+        [{**listed(), "url": 7}],
+        [{**listed(), "headRefName": None}],
+        [{**listed(), "baseRefName": 1}],
+        [{**listed(), "isCrossRepository": "false"}],
+        [{k: v for k, v in listed().items() if k != "isCrossRepository"}],
+        [{k: v for k, v in listed().items() if k != "url"}],
+    ],
+    ids=str,
+)
+def test_find_refuses_an_invalid_answer(gh: FakeGh, answer: object) -> None:
+    with pytest.raises(GitHubError, match="pr list: Invalid response"):
+        find(gh, answer)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/other/repo/pull/7",
+        "https://example.com/owner/sample/pull/7",
+        URL + "/files",
+        "https://github.com/owner/sample/issues/7",
+    ],
+)
+def test_find_refuses_a_url_outside_the_repository(gh: FakeGh, url: str) -> None:
+    with pytest.raises(GitHubError, match="pr list: Unexpected repository"):
+        find(gh, [listed(url=url)])
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"github": "owner"},
+        {"github": "-owner/sample"},
+        {"github": "owner/sample\n"},
+        {"head": "main"},
+        {"head": "task/-x"},
+        {"head": "task/x y"},
+        {"base": ""},
+        {"base": "-x"},
+        {"base": "--help"},
+        {"token": ""},
+        {"token": "has space"},
+    ],
+    ids=str,
+)
+def test_find_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, overrides: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        find(gh, [listed()], **overrides)
+    assert gh.calls() == []
+
+
+def test_a_failing_find_raises_without_the_token(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = f"GraphQL: Something went wrong {TOKEN}\n"
+    with pytest.raises(GitHubError) as caught:
+        find(gh, [listed()])
+    assert TOKEN not in error_chain_text(caught.value)
+
+
+# Editing a pull request body (m-pr-adopt)
+
+
+def edit_body(**overrides: object) -> None:
+    values: dict[str, object] = {
+        "url": URL,
+        "body": "New body",
+        "token": TOKEN,
+        **REDACT,
+    }
+    values.update(overrides)
+    github.edit_pull_request_body(**values)
+
+
+def test_edit_runs_the_exact_command_with_a_redacted_body(gh: FakeGh) -> None:
+    worktree = FAKE_ORCH / "sample" / "worktrees" / "feat-x" / "src" / "a.py"
+    edit_body(body=f"See {worktree}")
+    assert gh.calls() == [["pr", "edit", URL, "--body-file", "-"]]
+    assert gh.stdin().startswith("See ")
+    assert str(FAKE_HOME) not in gh.stdin()
+    assert gh.env()["GH_TOKEN"] == TOKEN
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (TOKEN, SecretFoundError),
+        ("/" + "home" + "/someone/x", ResidualPathError),
+    ],
+    ids=["token", "residual_path"],
+)
+def test_edit_text_that_must_not_leave_stops_before_gh_runs(
+    gh: FakeGh, value: str, error: type[Exception]
+) -> None:
+    with pytest.raises(error):
+        edit_body(body=f"text {value}")
+    assert gh.calls() == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"body": ""},
+        {"body": " \n"},
+        {"url": "https://github.com/owner/sample/issues/7"},
+        {"url": URL + "/files"},
+        {"url": "--help"},
+        {"token": ""},
+    ],
+    ids=str,
+)
+def test_edit_refuses_bad_arguments_without_running_gh(
+    gh: FakeGh, overrides: dict[str, str]
+) -> None:
+    with pytest.raises(GitHubError):
+        edit_body(**overrides)
+    assert gh.calls() == []
+
+
+def test_a_failing_edit_raises(gh: FakeGh) -> None:
+    gh.code = 1
+    gh.stderr = "HTTP 502\n"
+    gh.write()
+    with pytest.raises(GitHubError):
+        edit_body()

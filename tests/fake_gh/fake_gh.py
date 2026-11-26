@@ -7,6 +7,10 @@ flags come from the help text of gh 2.102.0.
 
 gh api answers the three reads of orch wait in the shapes measured on gh 2.102.0: the
 review GraphQL query, the rules of main and the comparison of main with a head commit.
+gh pr list answers the JSON array measured on gh 2.102.0 (2026-11-26). With
+fail_after_create in the state, gh pr create records the pull request and then fails
+as a server error would, as #617 did.
+
 Each pull request keeps its label events; adding a label already there or removing
 one that is not there makes no event, as measured.
 """
@@ -21,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 VIEW_FIELDS = {"state", "mergedAt", "mergeable"}
+LIST_FIELDS = {"url", "headRefName", "baseRefName", "isCrossRepository", "state"}
 LABEL_FIELDS = {"name"}
 COMMANDS = {
     ("label", "list"): {
@@ -39,8 +44,13 @@ COMMANDS = {
         "positional": 1,
     },
     ("pr", "view"): {"flags": {"--json"}, "required": {"--json"}, "positional": 1},
+    ("pr", "list"): {
+        "flags": {"--repo", "--head", "--base", "--state", "--json", "--limit"},
+        "required": {"--repo", "--json"},
+        "positional": 0,
+    },
     ("pr", "edit"): {
-        "flags": {"--add-label", "--remove-label"},
+        "flags": {"--add-label", "--remove-label", "--body-file"},
         "required": set(),
         "positional": 1,
     },
@@ -49,6 +59,10 @@ COMMANDS = {
 
 class Refused(Exception):
     """GitHub would refuse this call."""
+
+
+class FailedAfterWrite(Exception):
+    """GitHub did the work but answered with a server error (fail_after_create)."""
 
 
 def parse(args: list[str]) -> tuple[tuple[str, str], dict[str, list[str]], list[str]]:
@@ -161,7 +175,42 @@ def pr_create(state: dict, options: dict[str, list[str]], stdin: str) -> str:
         }
     )
     edit_labels(state["pull_requests"][-1], labels, [])
+    if state.get("fail_after_create"):
+        raise FailedAfterWrite(
+            "HTTP 502: Server Error (https://api.github.com/graphql)"
+        )
     return url + "\n"
+
+
+def pr_list(state: dict, options: dict[str, list[str]]) -> str:
+    if single(options, "--repo") != state["repo"]:
+        raise Refused("unknown repository")
+    fields = single(options, "--json").split(",")
+    if set(fields) - LIST_FIELDS:
+        raise Refused(f"unknown fields: {sorted(set(fields) - LIST_FIELDS)}")
+    wanted = options.get("--state", ["open"])[0]
+    if wanted not in {"open", "closed", "merged", "all"}:
+        raise Refused(f"bad state: {wanted}")
+    limit = int(options.get("--limit", ["30"])[0])
+    head = options.get("--head", [None])[0]
+    base = options.get("--base", [None])[0]
+    found = []
+    for item in reversed(state["pull_requests"]):
+        if head is not None and item["head"] != head:
+            continue
+        if base is not None and item["base"] != base:
+            continue
+        if wanted != "all" and item["state"] != wanted.upper():
+            continue
+        values = {
+            "url": item["url"],
+            "headRefName": item["head"],
+            "baseRefName": item["base"],
+            "isCrossRepository": False,
+            "state": item["state"],
+        }
+        found.append({field: values[field] for field in fields})
+    return json.dumps(found[:limit]) + "\n"
 
 
 def pr_comment(state: dict, options: dict[str, list[str]], url: str, stdin: str) -> str:
@@ -185,11 +234,14 @@ def pr_view(state: dict, options: dict[str, list[str]], url: str) -> str:
     return json.dumps({field: values[field] for field in fields}) + "\n"
 
 
-def pr_edit(state: dict, options: dict[str, list[str]], url: str) -> str:
+def pr_edit(state: dict, options: dict[str, list[str]], url: str, stdin: str) -> str:
     added = options.get("--add-label", [])
     removed = options.get("--remove-label", [])
-    if not added and not removed:
+    body = read_body(options, stdin) if "--body-file" in options else None
+    if not added and not removed and body is None:
         raise Refused("nothing to edit")
+    if body is not None:
+        find_pull_request(state, url)["body"] = body
     for name in added + removed:
         if name not in state["labels"]:
             raise Refused(f"unknown label: {name}")
@@ -370,7 +422,9 @@ def handle(state: dict, args: list[str], stdin: str, token: str | None) -> str:
     if command == ("pr", "comment"):
         return pr_comment(state, options, positional[0], stdin)
     if command == ("pr", "edit"):
-        return pr_edit(state, options, positional[0])
+        return pr_edit(state, options, positional[0], stdin)
+    if command == ("pr", "list"):
+        return pr_list(state, options)
     return pr_view(state, options, positional[0])
 
 
@@ -382,14 +436,20 @@ def main() -> int:
     # orch passes DEVNULL when it has no input, which reads as empty here.
     stdin = sys.stdin.read()
     refused = None
+    failed_after_write = False
     stdout = ""
     try:
         stdout = handle(state, args, stdin, os.environ.get("GH_TOKEN"))
     except Refused as exc:
         refused = str(exc)
+    except FailedAfterWrite as exc:
+        refused = str(exc)
+        failed_after_write = True
     record = {"argv": args, "stdin": stdin, "refused": refused}
     with (folder / "calls.jsonl").open("a", encoding="utf-8") as calls:
         calls.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if failed_after_write:
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     if refused is not None:
         print(refused, file=sys.stderr)
         return 1

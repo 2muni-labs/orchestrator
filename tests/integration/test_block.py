@@ -195,14 +195,16 @@ def test_a_wrong_finding_overrides_the_block_with_the_label_and_section(
     assert data["state"] == "pr_open"
     assert sandbox.remote_sha(f"task/{TASK}") == sandbox.head(worktree)
 
-    # The label was checked first, then given on create, in gh's real call format.
+    # The label was checked first, then no open pull request was found, then the
+    # label was given on create, in gh's real call format.
     calls = sandbox.gh_calls()
     assert calls[0]["argv"] == [
         "label", "list", "--repo", GITHUB, "--search", LABEL, "--json", "name",
         "--limit", "100",
     ]  # fmt: skip
-    assert [call["refused"] for call in calls] == [None, None]
-    assert calls[1]["argv"] == [
+    assert [call["refused"] for call in calls] == [None, None, None]
+    assert calls[1]["argv"][:2] == ["pr", "list"]
+    assert calls[2]["argv"] == [
         "pr", "create", "--repo", GITHUB, "--head", f"task/{TASK}", "--base", "main",
         "--title", TITLE, "--label", LABEL, "--body-file", "-",
     ]  # fmt: skip

@@ -280,6 +280,20 @@ def comment_on_pull_request(
     _gh(token, "pr", "comment", url, "--body-file", "-", input_text=body)
 
 
+def find_open_pull_request(
+    *, github: str, head: str, base: str, token: str
+) -> str | None:
+    """Return the URL of the one open same-repository pull request head -> base."""
+    raise NotImplementedError
+
+
+def edit_pull_request_body(
+    *, url: str, body: str, token: str, home: Path, orch_home: Path
+) -> None:
+    """Replace a pull request's body with redacted text."""
+    raise NotImplementedError
+
+
 def pull_request_status(*, url: str, token: str) -> PullRequestStatus:
     """Return a pull request's state."""
     _validate_token(token)

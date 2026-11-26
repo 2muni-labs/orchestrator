@@ -541,3 +541,54 @@ def test_a_plain_push_is_never_a_force_push(sandbox: Sandbox) -> None:
     assert sandbox.remote_sha(f"task/{TASK}") == theirs
     assert sandbox.head(worktree) != theirs
     assert calls_named(sandbox, "pr", "create") == []
+
+
+# A pull request GitHub made while answering with an error (m-pr-adopt)
+
+
+def test_a_pull_request_made_during_a_server_error_is_adopted(
+    sandbox: Sandbox,
+) -> None:
+    worktree = sandbox.ready(TASK)
+    state = sandbox.gh_state()
+    state["fail_after_create"] = True
+    sandbox.write_gh_state(state)
+
+    # create answers with a server error, but the pull request exists on GitHub.
+    failed = sandbox.orch("pr", TASK, unchecked=True)
+    assert failed.code != 0, failed
+    assert failed.data["ok"] is False
+    assert sandbox.state(TASK) == "ready"
+    assert sandbox.task_row(TASK)["pr_url"] is None
+    pushed = sandbox.head(worktree)
+    assert sandbox.task_row(TASK)["pushed_sha"] == pushed
+    made = sandbox.gh_state()["pull_requests"]
+    assert len(made) == 1
+    assert made[0]["state"] == "OPEN"
+    url = made[0]["url"]
+
+    state = sandbox.gh_state()
+    state["fail_after_create"] = False
+    sandbox.write_gh_state(state)
+
+    # The rerun finds it, rewrites its body and records it instead of creating.
+    data = sandbox.ok("pr", TASK)
+    assert data["state"] == "pr_open"
+    assert data["pr_url"] == url
+    assert data["adopted"] is True
+    assert sandbox.state(TASK) == "pr_open"
+    assert sandbox.task_row(TASK)["pr_url"] == url
+    assert len(sandbox.gh_state()["pull_requests"]) == 1
+    assert len(calls_named(sandbox, "pr", "create")) == 1
+    lists = calls_named(sandbox, "pr", "list")
+    assert len(lists) == 2
+    assert all(call["refused"] is None for call in lists)
+    edits = calls_named(sandbox, "pr", "edit")
+    assert len(edits) == 1
+    assert edits[0]["refused"] is None
+    assert edits[0]["argv"] == ["pr", "edit", url, "--body-file", "-"]
+    assert sandbox.pull_request(url)["body"] == edits[0]["stdin"]
+    assert TASK in sandbox.pull_request(url)["body"]
+
+    sandbox.merge_pull_request(url)
+    assert sandbox.ok("close", TASK)["state"] == "closed"
