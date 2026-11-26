@@ -11,6 +11,7 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -360,26 +361,38 @@ class AllowlistProxy:
                 if self._stopped.is_set() or self._failed:
                     self._close(client)
                     return
-                busy = self._active >= self._max_connections
-                if not busy:
+                if self._active < self._max_connections:
                     self._active += 1
-                self._sockets.add(client)
-                worker = threading.Thread(
-                    target=self._serve,
-                    args=(client, busy),
-                    name="orch-proxy-connection",
-                    daemon=True,
-                )
-                self._workers.add(worker)
-                try:
-                    worker.start()
-                except Exception:
-                    self._workers.remove(worker)
-                    self._sockets.remove(client)
-                    if not busy:
+                    self._sockets.add(client)
+                    worker = threading.Thread(
+                        target=self._serve,
+                        args=(client,),
+                        name="orch-proxy-connection",
+                        daemon=True,
+                    )
+                    self._workers.add(worker)
+                    try:
+                        worker.start()
+                    except Exception:
+                        self._workers.remove(worker)
+                        self._sockets.remove(client)
                         self._active -= 1
+                        self._close(client)
+                        break
+                    continue
+            try:
+                if self._record(
+                    Decision(allowed=False, host="", port=None, reason="busy")
+                ):
+                    with suppress(OSError):
+                        client.setblocking(False)
+                        client.send(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                            b"Connection: close\r\n\r\n"
+                        )
+            finally:
+                with suppress(OSError):
                     self._close(client)
-                    break
         if not self._stopped.is_set():
             self._fail()
 
@@ -424,17 +437,9 @@ class AllowlistProxy:
         if self._record(decision):
             self._respond(client, status)
 
-    def _serve(self, client: socket.socket, busy: bool) -> None:
+    def _serve(self, client: socket.socket) -> None:
         upstream: socket.socket | None = None
         try:
-            if busy:
-                client.settimeout(self._head_timeout)
-                self._deny(
-                    client,
-                    Decision(allowed=False, host="", port=None, reason="busy"),
-                    "503 Service Unavailable",
-                )
-                return
             try:
                 method, target, early = self._read_head(client)
             except OSError, ValueError:
@@ -488,8 +493,7 @@ class AllowlistProxy:
                 self._sockets.discard(client)
                 if upstream is not None:
                     self._sockets.discard(upstream)
-                if not busy:
-                    self._active -= 1
+                self._active -= 1
                 self._workers.discard(threading.current_thread())
 
     def _copy(self, source: socket.socket, destination: socket.socket) -> None:
