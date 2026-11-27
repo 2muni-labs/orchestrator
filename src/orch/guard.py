@@ -219,7 +219,7 @@ class _Budget:
     def __init__(self) -> None:
         self.steps = 0
         self.deadline = time.monotonic() + _TIME_LIMIT_SEC
-        self.wrapped: dict[tuple[str, ...], Verdict] = {}
+        self.wrapped: dict[tuple[bool, tuple[str, ...]], Verdict] = {}
 
     def spend(self, steps: int = 1) -> None:
         self.steps += steps
@@ -375,6 +375,15 @@ def _judge_mise(args: list[str], *, home: str | None, budget: _Budget) -> Verdic
     return result
 
 
+def _sudo_shell_option(arg: str) -> bool:
+    if arg.startswith("--"):
+        option = arg.partition("=")[0]
+        return len(option) > 2 and (
+            "--shell".startswith(option) or "--login".startswith(option)
+        )
+    return arg.startswith("-") and ("s" in arg or "i" in arg)
+
+
 def _judge_simple(words: list[str], *, home: str | None, budget: _Budget) -> Verdict:
     budget.spend(len(words) + 1)
     secrets = ["~/.orch/secrets", "$HOME/.orch/secrets", "${HOME}/.orch/secrets"]
@@ -393,12 +402,19 @@ def _judge_simple(words: list[str], *, home: str | None, budget: _Budget) -> Ver
     executable = basename(words[index])
     args = words[index + 1 :]
     if executable in _WRAPPERS:
+        shell_mode = executable == "sudo" and any(
+            _sudo_shell_option(arg) for arg in args
+        )
         result = Verdict("allow")
         for wrapped in _wrapped_commands(executable, args, budget):
-            key = tuple(wrapped)
+            key = (shell_mode, tuple(wrapped))
             verdict = budget.wrapped.get(key)
             if verdict is None:
                 verdict = _judge_simple(wrapped, home=home, budget=budget)
+                if shell_mode and wrapped and verdict.decision != "deny":
+                    joined_verdict = _judge(" ".join(wrapped), home=home, budget=budget)
+                    if joined_verdict.decision == "deny" or verdict.decision == "allow":
+                        verdict = joined_verdict
                 budget.wrapped[key] = verdict
             if verdict.decision == "deny":
                 return verdict
