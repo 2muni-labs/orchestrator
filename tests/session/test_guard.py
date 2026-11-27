@@ -832,3 +832,149 @@ def test_a_command_over_the_length_limit_is_denied_before_it_is_split() -> None:
 
 def test_a_long_command_under_the_length_limit_is_judged() -> None:
     assert judge("ls " + "a" * 60_000, home=HOME) == Verdict("allow")
+
+
+# sudo shell mode: -s, -i and their long forms re-judge the joined command
+# (m-guard-sudo-shell, #657). sudo may escape the words before it hands them to
+# the shell; guard does not rely on that and judges both readings.
+
+SUDO_SHELL_DENY = [
+    "sudo -s 'ls; codex'",
+    "sudo -i 'ls; codex exec'",
+    "sudo -s 'true && claude -p hi'",
+    "sudo -s 'echo x | /usr/local/bin/codex exec'",
+    "sudo -s 'git push --force origin x'",
+    "sudo -s 'gh pr merge 3'",
+    "sudo -s 'cat ~/.orch/secrets/x'",
+    "sudo -s ls\; codex",
+    "sudo -s -- 'ls; codex'",
+    "sudo -E -s 'ls; codex'",
+    "sudo -Es 'ls; codex'",
+    "sudo -sE 'ls; codex'",
+    "sudo -is 'ls; codex'",
+    "sudo -u bob -s 'ls; codex'",
+    "sudo -s -u bob 'ls; codex'",
+    "sudo -iu bob 'ls; codex'",
+    "sudo --shell 'ls; codex'",
+    "sudo --login 'ls; codex'",
+    "sudo --sh 'ls; codex'",
+    "sudo --she 'ls; codex'",
+    "sudo --log 'ls; codex'",
+    "sudo --logi 'ls; codex'",
+    "sudo -Z x -s 'ls; codex'",
+    "sudo --zz x -s 'ls; codex'",
+    "env sudo -s 'ls; codex'",
+    "sudo env sudo -s 'ls; codex'",
+    "nohup sudo -i 'ls; codex'",
+    "bash -c \"sudo -s 'ls; codex'\"",
+    "sudo -s \"bash -c 'codex'\"",
+    "sudo -s 'sudo -s \"ls; codex\"'",
+]
+
+
+@pytest.mark.parametrize("command", SUDO_SHELL_DENY)
+def test_sudo_shell_mode_rejudges_the_joined_command(command: str) -> None:
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+    assert verdict.reason
+
+
+def test_a_plain_word_judgment_does_not_hide_the_shell_mode_judgment() -> None:
+    # The same wrapped words are judged without and with shell mode; a verdict
+    # kept for one must not stand in for the other.
+    verdict = judge("sudo 'ls; codex'; sudo -s 'ls; codex'", home=HOME)
+    assert verdict.decision == "deny"
+    verdict = judge("sudo -u bob 'ls; codex'; sudo -s 'ls; codex'", home=HOME)
+    assert verdict.decision == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -s 'ls; orch resume x'",
+        "sudo -i 'orch kill x'",
+        "sudo -s 'true && orch selfcheck --apply claude'",
+    ],
+)
+def test_sudo_shell_mode_keeps_an_ask(command: str) -> None:
+    assert judge(command, home=HOME).decision == "ask"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -s",
+        "sudo -i",
+        "sudo -s ls -la",
+        "sudo -i -u bob ls",
+        "sudo -s 'ls; pwd'",
+        "sudo --login 'make install && echo done'",
+        "sudo -E -s 'cd /tmp && ls'",
+        "sudo -u bob ls codex",
+    ],
+)
+def test_harmless_sudo_shell_commands_are_allowed(command: str) -> None:
+    assert judge(command, home=HOME) == Verdict("allow")
+
+
+_SUDO_SHELL_WORDS = [
+    ["-s"],
+    ["-i"],
+    ["-Es"],
+    ["-sE"],
+    ["-is"],
+    ["-iu", "root"],
+    ["-nis"],
+    ["--shell"],
+    ["--login"],
+    ["--sh"],
+    ["--logi"],
+]
+_SHELL_DENIED_TAILS = [
+    "ls; codex exec",
+    "true && claude -p hi",
+    "echo x | /usr/local/bin/codex exec",
+    "(cd /tmp; codex)",
+    "ls\ncodex exec",
+    "x=$(codex exec)",
+    "git push -f origin x",
+]
+
+
+def _generated_sudo_shell_commands(count: int) -> list[str]:
+    import random
+    import shlex
+
+    rng = random.Random(657)
+    commands = []
+    for _ in range(count):
+        options = [rng.choice(_WRAPPER_OPTION_WORDS["sudo"]) for _ in range(3)]
+        options = options[: rng.randint(0, 3)]
+        options.insert(rng.randint(0, len(options)), rng.choice(_SUDO_SHELL_WORDS))
+        words = [word for option in options for word in option]
+        if rng.random() < 0.3:
+            words.append("--")
+        tail = rng.choice(_SHELL_DENIED_TAILS)
+        prefix = rng.choice(["", "env ", "nohup ", "sudo -u bob ", "env -i FOO=1 "])
+        commands.append(f"{prefix}sudo {' '.join(words)} {shlex.quote(tail)}")
+    return commands
+
+
+@pytest.mark.parametrize("command", _generated_sudo_shell_commands(300))
+def test_generated_sudo_shell_mode_never_allows_a_denied_command(
+    command: str,
+) -> None:
+    # Invariant: a command guard denies stays denied when sudo runs it through
+    # a shell, under any option order or reading of unknown options.
+    verdict = judge(command, home=HOME)
+    assert verdict.decision == "deny", command
+
+
+def test_nested_sudo_shell_modes_are_judged_within_the_limits() -> None:
+    import time
+
+    started = time.monotonic()
+    assert judge("sudo -s " * 3000 + "codex", home=HOME).decision == "deny"
+    judge("sudo -s " * 3000 + "ls", home=HOME)
+    judge("sudo -s '" + "sudo -s " * 500 + "ls'", home=HOME)
+    assert time.monotonic() - started < 10
