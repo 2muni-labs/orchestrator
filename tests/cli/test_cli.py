@@ -7156,6 +7156,9 @@ def test_roadmap_does_not_fetch(
 # orch versions (m-p5-versions, schemas/cli/versions.v1.json)
 
 
+FAKE_BINARY_TIMEOUT_SEC = 120
+
+
 def fake_binary(path: Path, output: str) -> Path:
     write(path, f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
     path.chmod(0o755)
@@ -7171,6 +7174,9 @@ def versions_setup(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
         env.orch_home / "config", f'[agents]\nclaude = "{claude}"\ncodex = "{codex}"\n'
     )
     monkeypatch.setenv("PATH", str(bin_dir))
+    # Under concurrent full suites a fresh fake binary took up to 30 s to answer
+    # (2026-11-27, #654), past the 10 s production limit.
+    monkeypatch.setattr(versions, "VERSION_TIMEOUT_SEC", FAKE_BINARY_TIMEOUT_SEC)
 
 
 def test_versions_reports_configured_binaries_and_the_contract(
