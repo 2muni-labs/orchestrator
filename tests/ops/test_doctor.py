@@ -2142,3 +2142,58 @@ def test_a_failing_latest_check_is_an_error_and_others_still_run(
 
 def test_agent_latest_is_not_a_pause_item() -> None:
     assert "agent_latest" not in doctor.PAUSE_ITEMS
+
+
+# Task and pause list reads (B48)
+
+
+def test_a_failing_task_list_is_an_error_and_keeps_the_checks(
+    h: Harness, conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    healthy = h.go()
+    add_running(conn, "a", started=NOW - LIMIT * 2)
+    monkeypatch.setattr(
+        store, "list_tasks", fail_with(sqlite3.OperationalError("private"))
+    )
+    report = h.go()
+    assert report.errors == ("stuck_task OperationalError",)
+    assert [(c.target, c.item, c.level) for c in report.checks] == [
+        (c.target, c.item, c.level) for c in healthy.checks
+    ]
+    assert report.killed == ()
+    assert h.kills == []
+    assert report.paused == ()
+    assert "private" not in str(report)
+
+
+def test_a_failing_pause_list_is_an_error_and_keeps_the_checks(
+    h: Harness, conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.results["codex"] = (1, "")
+    add_running(conn, "a", started=NOW - LIMIT * 2)
+    monkeypatch.setattr(
+        store, "list_pauses", fail_with(sqlite3.OperationalError("private"))
+    )
+    report = h.go()
+    assert report.errors == ("paused OperationalError",)
+    assert result_of(report, "codex_auth")[0] is CheckLevel.FAIL
+    assert report.killed == ("a",)
+    assert report.paused == ()
+    assert "private" not in str(report)
+    monkeypatch.undo()
+    assert pauses(conn) == ["codex_auth"]
+
+
+def test_list_errors_follow_the_item_errors_in_order(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.results["codex"] = RuntimeError("private")
+    monkeypatch.setattr(store, "list_tasks", fail_with(ValueError("private")))
+    monkeypatch.setattr(store, "list_pauses", fail_with(TypeError("private")))
+    report = h.go()
+    assert report.errors == (
+        "codex_auth RuntimeError",
+        "stuck_task ValueError",
+        "paused TypeError",
+    )
+    assert "private" not in str(report)
