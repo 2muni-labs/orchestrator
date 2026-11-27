@@ -1614,18 +1614,38 @@ def test_a_failed_bootstrap_removes_the_install_and_records_nothing(
     assert not (world.layout.root / "config.toml").exists()
 
 
-def test_a_bootstrap_that_cannot_save_restores_the_link(world: World) -> None:
-    world.orch_home.mkdir()
-    (world.orch_home / "agents.json.lock").touch()
-    world.layout.root.mkdir()
-    world.layout.link.parent.mkdir()
-    world.orch_home.chmod(0o555)
-    try:
-        report = world.run()
-    finally:
-        world.orch_home.chmod(0o755)
+def fail_state_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A replaced save instead of a read-only directory, which root could still
+    # write (m-selfcheck-restore, #656).
+    def fail(path: Path, state: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(selfcheck_codex, "save_agents_state", fail)
+
+
+def test_a_bootstrap_that_cannot_save_restores_the_link(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fail_state_write(monkeypatch)
+    report = world.run()
     assert (report.status, report.reason) == ("error", "state_write")
     assert not world.layout.link.is_symlink()
+    assert not world.layout.link.exists()
+    assert not world.state_path.exists()
+    assert world.send.calls == []
+
+
+def test_a_bootstrap_that_cannot_save_restores_an_existing_link(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.layout.link.parent.mkdir(parents=True)
+    world.layout.link.symlink_to("/somewhere/else/codex")
+    fail_state_write(monkeypatch)
+    report = world.run()
+    assert (report.status, report.reason) == ("error", "state_write")
+    assert world.layout.link.is_symlink()
+    assert os.readlink(world.layout.link) == "/somewhere/else/codex"
+    assert not [p for p in world.layout.link.parent.iterdir() if p != world.layout.link]
     assert not world.state_path.exists()
     assert world.send.calls == []
 
