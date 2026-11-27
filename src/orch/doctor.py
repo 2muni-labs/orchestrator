@@ -237,7 +237,13 @@ def run_doctor(
     ):
         process_item(item)
 
-    for task in store.list_tasks(conn, states=[TaskState.RUNNING]):
+    try:
+        running_tasks = store.list_tasks(conn, states=[TaskState.RUNNING])
+    except Exception as exc:
+        errors.append(f"stuck_task {type(exc).__name__}")
+        running_tasks = ()
+
+    for task in running_tasks:
         try:
             latest = store.latest_run(conn, task.id)
             if latest is None or latest.started_at is None:
@@ -266,10 +272,16 @@ def run_doctor(
         except Exception as exc:
             errors.append(f"stuck_task/{task.id} {type(exc).__name__}")
 
+    try:
+        paused = tuple(pause.reason for pause in store.list_pauses(conn))
+    except Exception as exc:
+        errors.append(f"paused {type(exc).__name__}")
+        paused = ()
+
     return DoctorReport(
         checks=tuple(checks),
         killed=tuple(killed),
-        paused=tuple(pause.reason for pause in store.list_pauses(conn)),
+        paused=paused,
         errors=tuple(errors),
         gc=gc_report,
     )
