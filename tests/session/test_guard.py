@@ -846,7 +846,7 @@ SUDO_SHELL_DENY = [
     "sudo -s 'git push --force origin x'",
     "sudo -s 'gh pr merge 3'",
     "sudo -s 'cat ~/.orch/secrets/x'",
-    "sudo -s ls\; codex",
+    r"sudo -s ls\; codex",
     "sudo -s -- 'ls; codex'",
     "sudo -E -s 'ls; codex'",
     "sudo -Es 'ls; codex'",
@@ -975,6 +975,21 @@ def test_nested_sudo_shell_modes_are_judged_within_the_limits() -> None:
 
     started = time.monotonic()
     assert judge("sudo -s " * 3000 + "codex", home=HOME).decision == "deny"
-    judge("sudo -s " * 3000 + "ls", home=HOME)
-    judge("sudo -s '" + "sudo -s " * 500 + "ls'", home=HOME)
+    # Past the work limits the judgment fails closed, even for a harmless tail.
+    assert judge("sudo -s " * 3000 + "ls", home=HOME).decision == "deny"
+    nested = "sudo -s '" + "sudo -s " * 500 + "ls'"
+    assert judge(nested, home=HOME).decision == "deny"
     assert time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -s 'orch kill x; codex'",
+        r"sudo -s orch kill x\; codex",
+        "sudo -i 'orch resume x && claude -p hi'",
+        "sudo -s 'codex; orch selfcheck --apply claude'",
+    ],
+)
+def test_deny_wins_over_ask_in_sudo_shell_mode(command: str) -> None:
+    assert judge(command, home=HOME).decision == "deny", command
