@@ -23,6 +23,8 @@ from orch.taskfile import TaskFileError, parse_task
 TERM_GRACE_SEC = 10
 KILL_SUMMARY = "orch kill로 중단했습니다."
 PROXY_POLL_SEC = 0.5
+LANE_ERROR_SUMMARY = "Codex 실행 명령을 만들지 못했습니다"
+LANE_ERROR_DETAIL_LIMIT = 200
 
 
 class RunError(Exception):
@@ -383,6 +385,13 @@ def run_task(
                     environ=environ,
                     log_label=label,
                     codex_sandbox=codex.CodexSandbox(port=port, tmpdir=tmpdir),
+                )
+            except lanes.LaneError as exc:
+                detail = str(exc)[:LANE_ERROR_DETAIL_LIMIT]
+                summary = f"{LANE_ERROR_SUMMARY}: {detail}"
+                return finish(
+                    substitute(FailureReason.ABORTED, summary),
+                    None,
                 )
             except Exception:
                 return finish(
