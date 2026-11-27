@@ -8,8 +8,12 @@ HTTP 200 with the bare version string, the npm registry returns JSON whose
 import email.message
 import io
 import json
+import socket
+import threading
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -724,3 +728,183 @@ def test_a_real_response_returns_after_one_recv_per_read(tmp_path: Path) -> None
     finally:
         left.close()
         right.close()
+
+
+# The whole fetch is bounded by its timeout (m-latest-connect-timeout, #658)
+
+
+class BlockingOpener:
+    """An opener whose open() hangs, as a slow connect or TLS handshake would."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.opened = threading.Event()
+
+    def open(self, url: str, timeout: float) -> FakeResponse:
+        self.opened.set()
+        self.release.wait(10)
+        return FakeResponse(200, [b"2.1.330\n"])
+
+
+def test_a_hanging_open_hits_the_total_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opener = BlockingOpener()
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: opener)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            latest.http_fetch(CLAUDE_URL, 0.3)
+        elapsed = time.monotonic() - started
+    finally:
+        opener.release.set()
+    assert opener.opened.is_set()
+    assert elapsed < 2.5
+
+
+def test_a_hanging_open_is_recorded_as_a_fetch_error(
+    orch_home: Path, hub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opener = BlockingOpener()
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: opener)
+    monkeypatch.setattr(latest, "FETCH_TIMEOUT_SEC", 0.3)
+    started = time.monotonic()
+    try:
+        result = latest.refresh(orch_home=orch_home, hub=hub, now=NOW)
+        elapsed = time.monotonic() - started
+    finally:
+        opener.release.set()
+    assert elapsed < 5
+    assert result.agents["claude"] == AgentLatest(None, "fetch")
+    assert result.agents["codex"] == AgentLatest(None, "fetch")
+
+
+def test_an_exception_from_the_fetch_is_raised_to_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_opener(monkeypatch, urllib.error.URLError("refused"))
+    with pytest.raises(urllib.error.URLError) as caught:
+        latest.http_fetch(CLAUDE_URL, 10)
+    assert not isinstance(caught.value, urllib.error.HTTPError)
+
+
+class PairSocket(socket.socket):
+    """A socketpair end that ignores the TCP options http.client sets."""
+
+    def setsockopt(self, level: int, option: int, value: object, *args: object) -> None:
+        if level == socket.IPPROTO_TCP:
+            return
+        super().setsockopt(level, option, value, *args)  # type: ignore[call-overload]
+
+
+class LocalServer:
+    """Serve each connection the fetch opens with ``handle`` over a socketpair.
+
+    The gate sandbox denies TCP binds and connects, so socket.create_connection,
+    which http.client uses to connect, hands out one end of a socketpair and a
+    thread runs ``handle`` on the other.
+    """
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        handle: Callable[[socket.socket], None],
+    ) -> None:
+        self.handle = handle
+        self.stop = threading.Event()
+        self.threads: list[threading.Thread] = []
+        self.connected: list[tuple[str, int]] = []
+        monkeypatch.setattr(socket, "create_connection", self.create_connection)
+
+    url = "http://latest.example/latest"
+
+    def create_connection(
+        self,
+        address: tuple[str, int],
+        timeout: object = socket._GLOBAL_DEFAULT_TIMEOUT,  # type: ignore[attr-defined]
+        source_address: object = None,
+        **kwargs: object,
+    ) -> socket.socket:
+        self.connected.append(address)
+        pair, far = socket.socketpair()
+        near = PairSocket(fileno=pair.detach())
+        if isinstance(timeout, (int, float)):
+            near.settimeout(timeout)
+        thread = threading.Thread(target=self.serve, args=(far,), daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        return near
+
+    def serve(self, connection: socket.socket) -> None:
+        with connection:
+            try:
+                self.handle(connection)
+            except OSError:
+                pass
+
+    def __enter__(self) -> LocalServer:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop.set()
+        for thread in self.threads:
+            thread.join(10)
+
+
+def test_slowly_sent_headers_hit_the_total_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each byte arrives well within the socket timeout, so only a limit on the
+    # whole fetch can stop it. Without one the fetch returns 200 after ~4 s.
+    response = (
+        b"HTTP/1.1 200 OK\r\nX-Pad: " + b"a" * 30 + b"\r\nContent-Length: 8\r\n\r\n"
+    )
+
+    def trickle(connection: socket.socket) -> None:
+        connection.recv(65536)
+        for byte in response:
+            if server.stop.is_set():
+                return
+            connection.sendall(bytes([byte]))
+            time.sleep(0.07)
+        connection.sendall(b"2.1.330\n")
+
+    with LocalServer(monkeypatch, trickle) as server:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            latest.http_fetch(server.url, 0.5)
+        elapsed = time.monotonic() - started
+    assert elapsed < 2.5
+
+
+def test_the_real_opener_refuses_a_redirect_to_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def redirect(connection: socket.socket) -> None:
+        connection.recv(65536)
+        connection.sendall(
+            b"HTTP/1.1 302 Found\r\n"
+            b"Location: http://127.0.0.1:9/elsewhere\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+
+    with LocalServer(monkeypatch, redirect) as server:
+        with pytest.raises(urllib.error.URLError) as caught:
+            latest.http_fetch(server.url, 5)
+    assert not isinstance(caught.value, urllib.error.HTTPError)
+    assert "non-https" in str(caught.value.reason)
+
+
+def test_a_real_fetch_returns_status_and_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def answer(connection: socket.socket) -> None:
+        connection.recv(65536)
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n"
+            b"2.1.330\n"
+        )
+
+    with LocalServer(monkeypatch, answer) as server:
+        assert latest.http_fetch(server.url, 5) == (200, b"2.1.330\n")
+    assert server.connected == [("latest.example", 80)]
