@@ -44,6 +44,14 @@ def _replace_worktree(match: re.Match[str]) -> str:
     return "" if match.group("file_separator") else "."
 
 
+def _contains_encoded_path(text: str, path: Path) -> bool:
+    path_text = str(path)
+    return (
+        path_text.replace("/", "-") in text
+        or re.sub(r"[^A-Za-z0-9]", "-", path_text) in text
+    )
+
+
 def redact(
     text: str, *, home: Path, orch_home: Path, secrets: Iterable[str] = ()
 ) -> str:
@@ -75,7 +83,8 @@ def redact(
         + r"(?:(?P<file_separator>/(?=[A-Za-z0-9._-]))|/)?"
     )
     text = re.sub(worktree_pattern, _replace_worktree, text)
-    if not orch_home.is_relative_to(home):
+    orch_home_is_outside_home = not orch_home.is_relative_to(home)
+    if orch_home_is_outside_home:
         text = re.sub(_START + re.escape(str(orch_home)) + _END, "$ORCH_HOME", text)
     text = re.sub(_START + re.escape(str(home)) + _END, "~", text)
 
@@ -84,6 +93,8 @@ def redact(
             raise ResidualPathError(blocked_path)
     if re.search(r"/root" + _END, text):
         raise ResidualPathError("/root")
-    if str(home).replace("/", "-") in text:
+    if _contains_encoded_path(text, home):
         raise ResidualPathError("encoded home path")
+    if orch_home_is_outside_home and _contains_encoded_path(text, orch_home):
+        raise ResidualPathError("encoded orch_home path")
     return text
