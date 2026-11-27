@@ -512,26 +512,40 @@ def _fulltest(
     failed = False
     with closing(store.connect(config.state_db_path(orch_home))) as conn:
         for target in targets:
-            report = fulltest.run_fulltest(
-                conn,
-                target,
-                config.target_paths(orch_home, target.name),
-                timeout_sec=settings.gate_timeout_min * 60,
-            )
-            reports.append(asdict(report))
-            if report.outcome not in {
-                fulltest.FulltestOutcome.PASSED,
-                fulltest.FulltestOutcome.BUSY,
-            }:
-                failed = True
-                _send_notification(
-                    "fulltest_failed",
-                    settings=settings,
-                    orch_home=orch_home,
-                    home=Path.home(),
-                    secrets=secrets,
-                    target=target.name,
+            paths = config.target_paths(orch_home, target.name)
+            try:
+                report = fulltest.run_fulltest(
+                    conn,
+                    target,
+                    paths,
+                    timeout_sec=settings.gate_timeout_min * 60,
                 )
+            except Exception as exc:
+                if not args.all:
+                    raise
+                reports.append(
+                    {
+                        "target": target.name,
+                        "outcome": "error",
+                        "detail": type(exc).__name__,
+                    }
+                )
+            else:
+                reports.append(asdict(report))
+                if report.outcome in {
+                    fulltest.FulltestOutcome.PASSED,
+                    fulltest.FulltestOutcome.BUSY,
+                }:
+                    continue
+            failed = True
+            _send_notification(
+                "fulltest_failed",
+                settings=settings,
+                orch_home=orch_home,
+                home=Path.home(),
+                secrets=secrets,
+                target=target.name,
+            )
     if failed:
         return 20, {
             "ok": False,
