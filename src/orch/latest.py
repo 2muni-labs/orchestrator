@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
@@ -68,7 +69,27 @@ class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def http_fetch(url: str, timeout: float) -> tuple[int, bytes]:
-    """GET url and return its status and at most BODY_LIMIT + 1 body bytes."""
+    """GET url within timeout and return its status and up to BODY_LIMIT + 1 bytes."""
+    outcome: tuple[int, bytes] | BaseException
+
+    def fetch() -> None:
+        nonlocal outcome
+        try:
+            outcome = _http_fetch(url, timeout)
+        except BaseException as exc:
+            outcome = exc
+
+    worker = threading.Thread(target=fetch, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError("Latest version fetch exceeded its deadline")
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome
+
+
+def _http_fetch(url: str, timeout: float) -> tuple[int, bytes]:
     opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
     deadline = time.monotonic() + timeout
     try:
