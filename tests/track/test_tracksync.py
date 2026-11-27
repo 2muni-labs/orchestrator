@@ -801,6 +801,51 @@ def test_a_failing_issue_fails_only_its_record(
     assert (sync_run.consecutive_failures, sync_run.last_error) == (1, "records_failed")
 
 
+def test_a_tracking_error_after_creating_fails_only_its_record(
+    run: Run,
+    api: FakeApi,
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(conn: sqlite3.Connection, **kwargs: object) -> None:
+        raise tracking.TrackingError("private detail")
+
+    monkeypatch.setattr(tracking, "set_issue_url", refuse)
+    report = run()
+    assert report.failed == (("new", "tracking_error"),)
+    assert report.outcome == "failed"
+    assert set(report.written) == {"h-merged", "t-done", "t-gone", "t-run"}
+    assert tracking.get_record(conn, TARGET, "new").issue_url is None
+    state = tracking.get_state(conn, TARGET, "new")
+    assert (state.failures, state.last_error) == (1, "tracking_error")
+    sync_run = tracking.get_run(conn, TARGET)
+    assert (sync_run.consecutive_failures, sync_run.last_error) == (1, "records_failed")
+    assert "private" not in str(report)
+
+
+def test_a_record_that_failed_after_creating_adopts_its_issue_next_run(
+    run: Run,
+    api: FakeApi,
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(conn: sqlite3.Connection, **kwargs: object) -> None:
+        raise tracking.TrackingError("x")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tracking, "set_issue_url", refuse)
+        run()
+    created = api.calls.count("create_issue")
+    report = run()
+    assert "new" in report.written
+    assert api.calls.count("create_issue") == created
+    assert tracking.get_record(conn, TARGET, "new").issue_url is not None
+
+
+def test_error_code_of_a_tracking_error() -> None:
+    assert tracksync._error_code(tracking.TrackingError("x")) == "tracking_error"
+
+
 def test_a_failed_record_is_tried_again_next_run(
     run: Run, api: FakeApi, conn: sqlite3.Connection
 ) -> None:
