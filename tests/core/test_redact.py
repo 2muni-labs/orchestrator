@@ -596,3 +596,94 @@ def test_sources_hold_no_token_shaped_string(relative: str) -> None:
     ]
     for shape in shapes:
         assert re.search(shape, source) is None
+
+
+# Encoded forms: every non-alphanumeric character to a dash (B05), and an
+# ORCH_HOME outside home (B06).
+
+ODD_HOMES = [
+    Path(f"{USERS}/a.b"),
+    Path(f"{USERS}/a_b"),
+    Path(f"{USERS}/a.b_c"),
+    Path(f"{HOME_DIR}/x.y"),
+]
+OUTSIDE_ORCH_HOMES = [OUTSIDE, Path("/srv/my_orch.d"), Path("/Volumes/data/o.rch")]
+
+
+def dashes(path: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def slashes(path: Path) -> str:
+    return str(path).replace("/", "-")
+
+
+@pytest.mark.parametrize("home", ODD_HOMES)
+def test_the_all_dash_form_of_home_raises(home: Path) -> None:
+    encoded = dashes(home)
+    assert encoded != slashes(home)
+    for text in (
+        encoded,
+        f"{encoded}-Repositories-orchestrator",
+        f"{encoded}--orch-orchestrator",
+        f"~/.claude/projects/{encoded}-x/memory/a.md",
+        f"x{encoded}",
+    ):
+        with pytest.raises(ResidualPathError, match="encoded home path"):
+            run(text, home=home, orch_home=home / ".orch")
+
+
+@pytest.mark.parametrize("home", ODD_HOMES)
+def test_the_slash_form_of_an_odd_home_still_raises(home: Path) -> None:
+    with pytest.raises(ResidualPathError, match="encoded home path"):
+        run(slashes(home), home=home, orch_home=home / ".orch")
+
+
+@pytest.mark.parametrize("orch_home", OUTSIDE_ORCH_HOMES)
+@pytest.mark.parametrize("encode", [dashes, slashes])
+def test_an_encoded_orch_home_outside_home_raises(
+    orch_home: Path, encode: object
+) -> None:
+    encoded = encode(orch_home)  # type: ignore[operator]
+    for text in (encoded, f"{encoded}-orchestrator-worktrees-m1", f"a{encoded}b"):
+        with pytest.raises(ResidualPathError, match="encoded orch_home path"):
+            run(text, orch_home=orch_home)
+
+
+def test_an_encoded_orch_home_inside_home_is_reported_as_home() -> None:
+    with pytest.raises(ResidualPathError, match="encoded home path"):
+        run(dashes(ORCH))
+
+
+def test_home_is_checked_before_an_outside_orch_home() -> None:
+    text = f"{dashes(HOME)} {dashes(OUTSIDE)}"
+    with pytest.raises(ResidualPathError, match="encoded home path"):
+        run(text, orch_home=OUTSIDE)
+
+
+def test_the_encoded_forms_are_not_regexes() -> None:
+    home = Path(f"{USERS}/a.b")
+    assert run(f"{USERS}-axb".replace("/", "-"), home=home, orch_home=OUTSIDE) == (
+        f"{USERS}-axb".replace("/", "-")
+    )
+    orch_home = Path("/srv/o.d")
+    assert run("-srv-oxd", orch_home=orch_home) == "-srv-oxd"
+
+
+def test_other_outside_paths_in_encoded_form_pass() -> None:
+    assert run(dashes(Path("/opt/other")), orch_home=OUTSIDE) == "-opt-other"
+    assert run(dashes(OUTSIDE)) == dashes(OUTSIDE)
+
+
+@pytest.mark.parametrize("home", [HOME, *ODD_HOMES])
+@pytest.mark.parametrize("orch_home", [None, *OUTSIDE_ORCH_HOMES])
+@pytest.mark.parametrize("prefix", ["", "x", "-", "projects/"])
+@pytest.mark.parametrize("suffix", ["", "-", "-Repositories-o", "/memory"])
+def test_no_encoded_form_ever_passes(
+    home: Path, orch_home: Path | None, prefix: str, suffix: str
+) -> None:
+    orch = home / ".orch" if orch_home is None else orch_home
+    for path in {home, orch}:
+        for encoded in (dashes(path), slashes(path)):
+            with pytest.raises(ResidualPathError):
+                run(f"{prefix}{encoded}{suffix}", home=home, orch_home=orch)
