@@ -143,6 +143,8 @@ def _error_code(error: Exception) -> str:
         return "not_found"
     if isinstance(error, RedactionError):
         return "redaction_failed"
+    if isinstance(error, tracking.TrackingError):
+        return "tracking_error"
     return "api_error"
 
 
@@ -475,7 +477,12 @@ def sync(
                     at=at,
                 )
                 written.append(record.record_id)
-            except (_RecordError, github.GitHubError, RedactionError) as exc:
+            except (
+                _RecordError,
+                github.GitHubError,
+                RedactionError,
+                tracking.TrackingError,
+            ) as exc:
                 fail_record(record.record_id, _error_code(exc))
         if dry_run:
             return report("dry_run")
