@@ -583,6 +583,7 @@ class FakeRun:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.calls: list[dict[str, object]] = []
         self.outcomes: dict[str, FulltestOutcome] = {}
+        self.errors: dict[str, Exception] = {}
         monkeypatch.setattr(fulltest, "run_fulltest", self)
 
     def __call__(
@@ -593,6 +594,8 @@ class FakeRun:
         **kwargs: object,
     ) -> FulltestReport:
         self.calls.append({"conn": conn, "target": target, "paths": paths, **kwargs})
+        if target.name in self.errors:
+            raise self.errors[target.name]
         outcome = self.outcomes.get(target.name, FulltestOutcome.PASSED)
         return report_for(target.name, outcome)
 
@@ -714,6 +717,53 @@ def test_cli_a_failed_notification_changes_nothing(
     assert data["error"] == "fulltest_failed"
     assert [r["outcome"] for r in data["results"]] == ["failed", "passed"]  # type: ignore[index]
     assert len(fake_run.calls) == 2
+
+
+def test_cli_all_isolates_an_unexpected_error_per_target(
+    orch: Call, env: Path, fake_run: FakeRun, fake_send: FakeSend
+) -> None:
+    fake_run.errors[ALPHA] = sqlite3.OperationalError("private detail")
+    code, data = orch("fulltest", "--all")
+    assert code == 20
+    assert data == {
+        "ok": False,
+        "error": "fulltest_failed",
+        "message": "기본 브랜치 전체 테스트가 통과하지 못한 대상이 있습니다.",
+        "results": [
+            {"target": ALPHA, "outcome": "error", "detail": "OperationalError"},
+            plain(report_for(BETA, FulltestOutcome.PASSED)),
+        ],
+    }
+    assert [c["target"].name for c in fake_run.calls] == [ALPHA, BETA]  # type: ignore[attr-defined]
+    [(event, kwargs)] = fake_send.calls
+    assert event == "fulltest_failed"
+    assert kwargs["target"] == ALPHA
+    assert kwargs["orch_home"] == env
+    assert "private" not in json.dumps(data)
+
+
+def test_cli_all_notifies_every_target_that_raised(
+    orch: Call, fake_run: FakeRun, fake_send: FakeSend
+) -> None:
+    fake_run.errors[ALPHA] = ValueError("x")
+    fake_run.errors[BETA] = RuntimeError("y")
+    code, data = orch("fulltest", "--all")
+    assert code == 20
+    assert data["results"] == [  # type: ignore[comparison-overlap]
+        {"target": ALPHA, "outcome": "error", "detail": "ValueError"},
+        {"target": BETA, "outcome": "error", "detail": "RuntimeError"},
+    ]
+    assert [kwargs["target"] for _, kwargs in fake_send.calls] == [ALPHA, BETA]
+
+
+def test_cli_one_target_still_raises_an_unexpected_error(
+    orch: Call, fake_run: FakeRun, fake_send: FakeSend
+) -> None:
+    fake_run.errors[BETA] = RuntimeError("private detail")
+    code, data = orch("fulltest", "--target", BETA)
+    assert code == 70
+    assert data["ok"] is False and data["error"] == "internal"
+    assert fake_send.calls == []
 
 
 @pytest.mark.parametrize(
