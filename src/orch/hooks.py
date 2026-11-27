@@ -91,6 +91,7 @@ def summary(
     target: str,
     orphaned: Sequence[str],
     now: datetime,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str:
     orphaned = [
         task_id
