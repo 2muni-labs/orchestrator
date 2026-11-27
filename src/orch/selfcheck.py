@@ -1529,22 +1529,26 @@ class _ClaudeSwitch:
         if pins is not None:
             updated["candidate"] = None
         before = os.readlink(layout.link)
+        write_error = "link_write"
         try:
             _switch_link(layout.link, str(resolved))
-        except OSError:
-            return self.report("error", "link_write")
-        state["agents"]["claude"] = updated
-        try:
+            write_error = "state_write"
+            state["agents"]["claude"] = updated
             save_agents_state(state_path, state)
-        except OSError:
+        except Exception as exc:
             try:
                 _switch_link(layout.link, before)
             except OSError:
                 pass
-            return self.report("error", "state_write")
+            if isinstance(exc, OSError):
+                return self.report("error", write_error)
+            raise
         self.current = target["version"]
         self.previous = current["version"]
-        removed = _prune_claude(layout, updated, keep_candidate=pins is None)
+        try:
+            removed = _prune_claude(layout, updated, keep_candidate=pins is None)
+        except Exception:
+            removed = ()
         return self.report(
             "applied" if pins is not None else "rolled_back",
             hold=f"claude@{current['version']}" if pins is None else None,

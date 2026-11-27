@@ -661,6 +661,91 @@ def test_a_failed_rollback_state_write_restores_the_link(
     unchanged(world, before, report)
 
 
+# Exceptions other than OSError around the switch (m-selfcheck-restore, #656)
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), TypeError("bad"), KeyError("x")])
+def test_any_state_write_exception_restores_the_link_on_apply(
+    world: World, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    applyable(world)
+    before = snapshot(world)
+
+    def fail(path: Path, state: object) -> None:
+        raise error
+
+    monkeypatch.setattr(selfcheck, "save_agents_state", fail)
+    report = apply(world)
+    assert (report.status, report.reason) == ("error", "internal")
+    unchanged(world, before, report)
+    assert (world.versions / "2.1.326").is_file()
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), TypeError("bad"), KeyError("x")])
+def test_any_state_write_exception_restores_the_link_on_rollback(
+    world: World, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    rolled_world(world)
+    before = snapshot(world)
+
+    def fail(path: Path, state: object) -> None:
+        raise error
+
+    monkeypatch.setattr(selfcheck, "save_agents_state", fail)
+    report = rollback(world)
+    assert (report.status, report.reason) == ("error", "internal")
+    unchanged(world, before, report)
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("boom"), KeyError("path"), ValueError("bad"), OSError("io")]
+)
+def test_a_failed_prune_after_apply_keeps_the_switch(
+    world: World, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    applyable(world)
+
+    def boom(*args: object, **kwargs: object) -> tuple[str, ...]:
+        raise error
+
+    monkeypatch.setattr(selfcheck, "_prune_claude", boom)
+    report = apply(world)
+    target = (world.versions / "2.1.326").resolve()
+    assert (report.status, report.reason) == ("applied", None)
+    assert (report.current, report.previous, report.hold) == (
+        "2.1.326",
+        "2.1.319",
+        None,
+    )
+    assert report.removed == ()
+    assert os.readlink(world.link) == str(target)
+    assert world.claude_state()["current"]["version"] == "2.1.326"  # type: ignore[index]
+    assert world.claude_state()["previous"]["version"] == "2.1.319"  # type: ignore[index]
+    lock_is_free(world)
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("boom"), KeyError("path"), ValueError("bad"), OSError("io")]
+)
+def test_a_failed_prune_after_rollback_keeps_the_switch(
+    world: World, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    rolled_world(world)
+
+    def boom(*args: object, **kwargs: object) -> tuple[str, ...]:
+        raise error
+
+    monkeypatch.setattr(selfcheck, "_prune_claude", boom)
+    report = rollback(world)
+    assert (report.status, report.reason) == ("rolled_back", None)
+    assert (report.current, report.previous) == ("2.1.319", "2.1.326")
+    assert report.hold == "claude@2.1.326"
+    assert report.removed == ()
+    assert world.link.resolve() == (world.versions / "2.1.319").resolve()
+    assert world.claude_state()["current"]["version"] == "2.1.319"  # type: ignore[index]
+    lock_is_free(world)
+
+
 # check_current_claude
 
 
