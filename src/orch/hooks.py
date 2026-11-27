@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +20,7 @@ RecoverErrorHandler = Callable[[str, Exception], None]
 
 SESSION_ID_PATTERN = r"[A-Za-z0-9_-]{1,128}"
 WAIT_MARKER_MAX_AGE = timedelta(days=7)
+DOCTOR_UNREADABLE_LINE = "doctor 상태를 읽지 못함"
 END_HOOKS: Mapping[str, str] = {
     "post-tool-use": "post_tool_use",
     "post-tool-use-failure": "post_tool_use_failure",
@@ -109,9 +110,15 @@ def summary(
             TaskState.PR_OPEN,
         ],
     )
-    doctor_line = render.doctor_stale_line(
-        render.doctor_state(store.list_doctor_checks(conn), now)
-    )
+    try:
+        doctor_line = render.doctor_stale_line(
+            render.doctor_state(store.list_doctor_checks(conn), now)
+        )
+    except Exception as exc:
+        doctor_line = DOCTOR_UNREADABLE_LINE
+        if on_error is not None:
+            with suppress(Exception):
+                on_error(exc)
     if not tasks and not orphaned and doctor_line is None:
         return ""
     lines = [f"orch 복구 요약 (대상 {target})"]
@@ -179,7 +186,15 @@ def handle_session_start(
                 ),
             )
             context = (
-                summary(conn, target=target, orphaned=orphaned, now=now)
+                summary(
+                    conn,
+                    target=target,
+                    orphaned=orphaned,
+                    now=now,
+                    on_error=lambda exc: _log(
+                        environ, now, "session-start", "doctor " + type(exc).__name__
+                    ),
+                )
                 if target
                 else ""
             )
