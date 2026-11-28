@@ -9,10 +9,17 @@ You review a diff written by another agent. You change nothing and run no comman
 
 The main agent gives you the task id, the path of a saved diff
 (`~/.orch/<target>/reviews/<id>.diff`), the path of the task spec, the path of the
-worktree and the path of the review schema (`schemas/review.json` in the hub). The
-diff holds both the tests and the implementation. Read the diff and the spec, and read
-surrounding files in the worktree only as needed to judge them. If you cannot read the
-diff, return `BLOCK` with a P0 finding that says so, with `path` set to `<id>.diff`.
+worktree, the path of the review schema (`schemas/review.json` in the hub) and the
+changed files under a safety path, if any. The diff holds both the tests and the
+implementation. Read the diff and the spec, and read surrounding files in the worktree
+as the next paragraph requires. If you cannot read the diff, return `BLOCK` with a P0 finding that says so, with `path` set to `<id>.diff`.
+
+Read enough to judge, not just the hunks. For every function or method the diff
+changes or adds, read its whole body in the worktree, and read the tests that call
+it. For a changed file under a safety path, also read the callers of each changed
+function in that file. Do not return `PASS` on a diff you have only skimmed: if the
+diff is too large to read this way, return `BLOCK` with a P1 finding that names the
+parts you could not read.
 
 Judge the tests as well as the implementation: decide whether the tests verify the
 specification sufficiently. The severity scale below applies to both.
